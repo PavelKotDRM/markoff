@@ -69,27 +69,7 @@ enum Commands {
 }
 
 fn parse_format_spec(spec: &str) -> Result<Format, MarkoffError> {
-    let value = spec.trim();
-    let normalized = value.to_ascii_lowercase();
-
-    match normalized.as_str() {
-        "docx" => Ok(Format::Docx),
-        "md" | "markdown" => Ok(Format::Markdown),
-        "xlsx" | "xlsm" => Ok(Format::Xlsx),
-        "json" => Ok(Format::Json),
-        "csv" => Ok(Format::Csv),
-        "yaml" | "yml" => Ok(Format::Yaml),
-        "toml" => Ok(Format::Toml),
-        "pptx" => Ok(Format::Pptx),
-        _ => Format::from_extension(value),
-    }
-}
-
-fn is_text_format(format: Format) -> bool {
-    matches!(
-        format,
-        Format::Markdown | Format::Json | Format::Csv | Format::Yaml | Format::Toml
-    )
+    Format::from_extension(spec)
 }
 
 fn temporary_path(format: Format) -> PathBuf {
@@ -130,7 +110,7 @@ fn convert_one(
     let to = target_format(to, output)?;
     let reads_stdin = input == Path::new("-");
     let writes_stdout = output == Some(Path::new("-"));
-    if (reads_stdin || writes_stdout) && (!is_text_format(from) || !is_text_format(to)) {
+    if (reads_stdin || writes_stdout) && (!from.is_text() || !to.is_text()) {
         return Err(anyhow::anyhow!(
             "stdin/stdout are available only for text formats"
         ));
