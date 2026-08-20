@@ -1,0 +1,30 @@
+[package]
+name = "markoff_core"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Core conversion engine for markoff"
+publish = false
+
+[dependencies]
+anyhow = "1.0"
+calamine = "0.31"
+csv = "1.0"
+pulldown-cmark = "0.12"
+quick-xml = "0.38"
+rust_xlsxwriter = "0.92"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+thiserror = "2.0"
+toml = "0.8"
+tracing = "0.1"
+zip = "2.0"
+
+[dev-dependencies]
+criterion = "0.6"
+proptest = "1.11"
+
+[[bench]]
+name = "conversion"
+harness = false

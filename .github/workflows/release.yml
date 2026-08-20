@@ -1,0 +1,39 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    name: Package ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows-x86_64
+            archive: markoff-windows-x86_64.zip
+          - os: ubuntu-latest
+            name: linux-x86_64
+            archive: markoff-linux-x86_64.tar.gz
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build release binaries
+        run: cargo build --release -p markoff_cli -p markoff_gui
+      - name: Package Windows binaries
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path target/release/markoff_cli.exe,target/release/markoff_gui.exe -DestinationPath ${{ matrix.archive }}
+      - name: Package Linux binaries
+        if: runner.os == 'Linux'
+        run: tar -czf ${{ matrix.archive }} -C target/release markoff_cli markoff_gui
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.archive }}
