@@ -36,55 +36,142 @@ The project has moved beyond the initial stub stage:
 - DOCX tables, links, images, and footnotes
 - PPTX conversion support
 
-## Roadmap & progress
+## Getting started
 
-- [x] Phase 1: Architecture & project setup
-  - [x] Cargo workspace and crate initialization
-  - [x] Vergen metadata integration
-  - [x] CI/CD pipeline setup
-- [x] Phase 2: Core conversion engine
-  - [x] DOCX ⇄ Markdown basic parser and generator
-  - [x] Markdown table ⇄ XLSX conversion engine
-  - [x] Data format bridge (JSON, CSV, YAML, TOML) ⇄ XLSX
-  - [x] Text conversion bridge for JSON/CSV ↔ Markdown
-  - [x] Round-trip and property-based testing
-- [x] Phase 3: CLI interface
-  - [x] Production command workflows and streaming I/O
-  - [x] Batch processing with progress bars
-- [x] Phase 4: GUI
-  - [x] Egui responsive layout and theme engine
-  - [x] Platform backends: glow (Windows) and wgpu (Linux)
-  - [x] Dual-pane live preview
-  - [x] Drag-and-drop queue
-- [x] Phase 5: Benchmarks, polish, and release
-  - [x] Criterion benchmark suite
-  - [x] Full rustdoc coverage
-  - [x] Binary release packaging
+Install the current stable [Rust toolchain](https://www.rust-lang.org/tools/install), clone the repository, and build the workspace from its root:
 
-## Quick start
-
-### Build
-
-```bash
+```powershell
 cargo build --workspace
 ```
 
-### Run CLI
+Run the test suite before using a locally built version:
 
-```bash
+```powershell
+cargo test --workspace
+```
+
+The commands below use `cargo run` during development. A release build is created with `cargo build --release`; its executable is available at `target/release/markoff_cli` (or `markoff_cli.exe` on Windows).
+
+### Use the executable file
+
+To use the application without `cargo run`, build the release binary once:
+
+```powershell
+cargo build --release -p markoff_cli
+```
+
+In PowerShell, run the executable from the repository root with its relative path:
+
+```powershell
+.\target\release\markoff_cli.exe --help
+.\target\release\markoff_cli.exe --version
+.\target\release\markoff_cli.exe convert .\report.csv --to md
+```
+
+To call `markoff_cli.exe` from any directory, copy it to a directory already listed in the `PATH` environment variable, or add `target\release` to `PATH` for the current PowerShell session:
+
+```powershell
+$env:Path += ";$PWD\target\release"
+markoff_cli.exe convert .\report.csv --to md
+```
+
+On Linux and macOS, use `./target/release/markoff_cli` instead. The commands in the following sections show the development form with `cargo run`; replace `cargo run -p markoff_cli --` with the executable path to run the same command from the compiled application.
+
+## Command line
+
+Display the list of commands and supported arguments:
+
+```powershell
 cargo run -p markoff_cli -- --help
-cargo run -p markoff_cli -- convert sample.csv --to md
+cargo run -p markoff_cli -- convert --help
+cargo run -p markoff_cli -- --version
 ```
 
-### Run GUI
+### Convert one file
 
-```bash
+The general command is:
+
+```text
+markoff convert INPUT [--from FORMAT] [--to FORMAT] [-o OUTPUT]
+```
+
+The source format is detected from the input extension and the target format from `--to` or the output extension. Use `--from` when the source format cannot be inferred. When `-o` is omitted, the converted file is written next to the source file with the target extension.
+
+```powershell
+# CSV to a Markdown table; creates .\report.md
+cargo run -p markoff_cli -- convert .\report.csv --to md
+
+# Markdown to DOCX with an explicit output path
+cargo run -p markoff_cli -- convert .\notes.md -o .\output\notes.docx
+
+# DOCX to Markdown
+cargo run -p markoff_cli -- convert .\report.docx --to markdown
+
+# Markdown table to an XLSX workbook
+cargo run -p markoff_cli -- convert .\scores.md -o .\scores.xlsx
+
+# JSON array of objects to XLSX
+cargo run -p markoff_cli -- convert .\people.json --to xlsx
+
+# XLSX to JSON
+cargo run -p markoff_cli -- convert .\people.xlsx -o .\people.json
+```
+
+Supported format identifiers are `docx`, `md`/`markdown`, `xlsx`/`xlsm`, `json`, `csv`, `yaml`/`yml`, and `toml`. `pptx` is recognized as a file extension, but its conversion is not implemented.
+
+### Standard input and output
+
+Use `-` as the input path to read from standard input and as the output path to write to standard output. Both ends must be text formats: Markdown, JSON, CSV, YAML, or TOML. Specify both formats when neither filename can provide them.
+
+```powershell
+'{"name":"Ada","active":true}' | cargo run -p markoff_cli -- convert - --from json --to markdown -o -
+
+Get-Content .\table.csv | cargo run -p markoff_cli -- convert - --from csv --to md -o -
+```
+
+Binary Office files (`.docx`, `.xlsx`, `.xlsm`) cannot be read from stdin or written to stdout.
+
+### Batch conversion
+
+Convert every matching file in a directory. The output directory is created by the converter when needed.
+
+```powershell
+# Convert all DOCX files from .\documents into Markdown files in .\converted
+cargo run -p markoff_cli -- batch .\documents --pattern '*.docx' --to md -o .\converted
+
+# Convert CSV files to XLSX workbooks
+cargo run -p markoff_cli -- batch .\exports --pattern '*.csv' --to xlsx -o .\workbooks
+```
+
+The pattern is relative to the supplied directory. The progress bar counts matching files; conversion stops and returns an error when an individual input is unsupported or invalid.
+
+## Graphical application
+
+Start the GUI directly during development or via the CLI command:
+
+```powershell
 cargo run -p markoff_gui
+cargo run -p markoff_cli -- gui
 ```
+
+1. Select **Add files** or drag files into the application window.
+2. Choose the desired target format in **Convert to**.
+3. Select **Apply format** to refresh output filenames for queued files.
+4. Choose a file in the queue and select **Convert selected**.
+5. Inspect the source and result previews. The converted file is saved beside the original source using the selected target extension.
+
+The toolbar also switches between dark and light themes and opens build information in **About**. Files are converted one at a time from the selected queue entry; adding the same source path twice does not create a duplicate job.
+
+## Format behavior and limitations
+
+- DOCX and Markdown preserve headings, paragraphs, flat ordered and bulleted lists, bold text, italic text, bookmarks, and `PAGEREF` links.
+- Markdown tables convert to and from XLSX. Each `## Sheet name` heading represents a workbook sheet; the first table row becomes the frozen header row in XLSX.
+- JSON, CSV, YAML, and TOML convert to XLSX as tabular data. JSON/YAML/TOML input for this route must be an array of objects.
+- DOCX tables, ordinary hyperlinks, images, footnotes, strikethrough, code blocks, nested lists, advanced Word formatting, Excel formulas/styles/charts, and PPTX conversion are not yet semantically preserved.
 
 ### Run benchmark
 
-```bash
+```powershell
 cargo bench -p markoff_core --bench conversion
 ```
 

@@ -2,7 +2,19 @@ name: CI
 
 on:
   push:
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "build.rs"
+      - "crates/**"
+      - ".github/workflows/ci.yml"
   pull_request:
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "build.rs"
+      - "crates/**"
+      - ".github/workflows/ci.yml"
 
 permissions:
   contents: read
