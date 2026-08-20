@@ -12,7 +12,8 @@
 //! assert!(matches!(detect_format("report.md"), Ok(Format::Markdown)));
 //! ```
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 mod csv_format;
 mod data;
@@ -21,6 +22,7 @@ mod docx_reader;
 mod docx_writer;
 mod error;
 mod model;
+mod pdf;
 mod tables;
 mod text;
 mod xlsx;
@@ -31,7 +33,10 @@ use csv_format::{convert_csv_to_markdown, convert_markdown_to_csv};
 use data::{convert_data_to_xlsx, convert_xlsx_to_data};
 use docx_reader::convert_docx_to_markdown;
 use docx_writer::convert_markdown_to_docx;
+use pdf::convert_pdf_to_markdown;
 use xlsx::{convert_markdown_to_xlsx, convert_xlsx_to_markdown};
+
+static INTERMEDIATE_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Converts a document using a conversion request.
 ///
@@ -65,6 +70,16 @@ pub fn convert_document(request: &ConversionRequest) -> Result<(), MarkoffError>
         (Format::Markdown, Format::Docx) => {
             convert_markdown_to_docx(&request.input, &request.output)
         }
+        (Format::Docx, Format::Csv | Format::Xlsx) => {
+            convert_docx_via_markdown(&request.input, &request.output, request.to)
+        }
+        (Format::Docx, Format::Json | Format::Yaml | Format::Toml) => {
+            convert_docx_table_to_data(&request.input, &request.output, request.to)
+        }
+        (Format::Csv | Format::Xlsx, Format::Docx) => {
+            convert_to_docx_via_markdown(&request.input, &request.output, request.from)
+        }
+        (Format::Pdf, Format::Markdown) => convert_pdf_to_markdown(&request.input, &request.output),
         (Format::Json, Format::Markdown) => {
             text::convert_json_to_markdown(&request.input, &request.output)
         }
@@ -96,6 +111,62 @@ pub fn convert_document(request: &ConversionRequest) -> Result<(), MarkoffError>
             to: request.to,
         }),
     }
+}
+
+fn convert_docx_via_markdown(
+    input: &Path,
+    output: &Path,
+    format: Format,
+) -> Result<(), MarkoffError> {
+    let markdown = intermediate_path("md");
+    let result = convert_docx_to_markdown(input, &markdown).and_then(|()| match format {
+        Format::Csv => convert_markdown_to_csv(&markdown, output),
+        Format::Xlsx => convert_markdown_to_xlsx(&markdown, output),
+        _ => unreachable!("only CSV and XLSX use this helper"),
+    });
+    std::fs::remove_file(markdown).ok();
+    result
+}
+
+fn convert_docx_table_to_data(
+    input: &Path,
+    output: &Path,
+    format: Format,
+) -> Result<(), MarkoffError> {
+    let markdown = intermediate_path("md");
+    let workbook = intermediate_path("xlsx");
+    let result = convert_docx_to_markdown(input, &markdown)
+        .and_then(|()| convert_markdown_to_xlsx(&markdown, &workbook))
+        .and_then(|()| convert_xlsx_to_data(&workbook, output, format));
+    std::fs::remove_file(markdown).ok();
+    std::fs::remove_file(workbook).ok();
+    result
+}
+
+fn convert_to_docx_via_markdown(
+    input: &Path,
+    output: &Path,
+    format: Format,
+) -> Result<(), MarkoffError> {
+    let markdown = intermediate_path("md");
+    let result = match format {
+        Format::Csv => convert_csv_to_markdown(input, &markdown),
+        Format::Xlsx => convert_xlsx_to_markdown(input, &markdown),
+        _ => unreachable!("only CSV and XLSX use this helper"),
+    }
+    .and_then(|()| convert_markdown_to_docx(&markdown, output));
+    std::fs::remove_file(markdown).ok();
+    result
+}
+
+fn intermediate_path(extension: &str) -> PathBuf {
+    let sequence = INTERMEDIATE_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!(
+        "markoff_intermediate_{}_{}.{}",
+        std::process::id(),
+        sequence,
+        extension
+    ))
 }
 
 /// Convenience wrapper for converting a single file using the input and output paths.
@@ -134,6 +205,7 @@ mod tests {
     #[test]
     fn detects_known_formats() {
         assert!(matches!(detect_format("report.md"), Ok(Format::Markdown)));
+        assert!(matches!(detect_format("report.pdf"), Ok(Format::Pdf)));
         assert!(matches!(detect_format("sheet.xlsx"), Ok(Format::Xlsx)));
         assert!(matches!(detect_format("records.csv"), Ok(Format::Csv)));
     }
@@ -155,6 +227,54 @@ mod tests {
         assert!(rendered.contains("```json"));
         assert!(rendered.contains("Ada"));
         assert!(rendered.contains("42"));
+
+        fs::remove_file(input).ok();
+        fs::remove_file(output).ok();
+    }
+
+    #[test]
+    fn converts_pdf_to_markdown() {
+        let input = unique_temp_path("pdf_to_markdown_input");
+        let output = unique_temp_path("pdf_to_markdown_output");
+        let content = b"BT /F1 12 Tf 72 720 Td (Hello from PDF) Tj ET";
+        let objects = [
+            b"<< /Type /Catalog /Pages 2 0 R >>".as_slice(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".as_slice(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>".as_slice(),
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".as_slice(),
+        ];
+        let mut pdf = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::new();
+        for (index, object) in objects.iter().enumerate() {
+            offsets.push(pdf.len());
+            pdf.extend_from_slice(format!("{} 0 obj\n", index + 1).as_bytes());
+            pdf.extend_from_slice(object);
+            pdf.extend_from_slice(b"\nendobj\n");
+        }
+        offsets.push(pdf.len());
+        pdf.extend_from_slice(b"5 0 obj\n<< /Length ");
+        pdf.extend_from_slice(content.len().to_string().as_bytes());
+        pdf.extend_from_slice(b" >>\nstream\n");
+        pdf.extend_from_slice(content);
+        pdf.extend_from_slice(b"\nendstream\nendobj\n");
+        let xref_offset = pdf.len();
+        pdf.extend_from_slice(b"xref\n0 6\n0000000000 65535 f \n");
+        for offset in offsets {
+            pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!("trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n")
+                .as_bytes(),
+        );
+        fs::write(&input, pdf).unwrap();
+
+        convert_file(&input, &output, Format::Pdf, Format::Markdown).unwrap();
+
+        assert!(
+            fs::read_to_string(&output)
+                .unwrap()
+                .contains("Hello from PDF")
+        );
 
         fs::remove_file(input).ok();
         fs::remove_file(output).ok();
@@ -350,7 +470,7 @@ mod tests {
         assert!(rendered.contains("- First task"));
         assert!(rendered.contains("- Second task"));
         assert!(rendered.contains("1. First step"));
-        assert!(rendered.contains("1. Second step"));
+        assert!(rendered.contains("2. Second step"));
 
         fs::remove_file(markdown).ok();
         fs::remove_file(document).ok();

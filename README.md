@@ -26,7 +26,9 @@ The project has moved beyond the initial stub stage:
   - `Markdown -> CSV`
 - `Markdown Tables <-> XLSX`, including multi-sheet workbooks, frozen header rows, and fitted column widths
 - `JSON / CSV / YAML / TOML <-> XLSX` for arrays of objects and tabular sheets
-- `DOCX <-> Markdown` for headings, paragraphs, bulleted/numbered lists, and bold/italic inline text
+- `DOCX <-> Markdown` for headings, paragraphs, tables, nested bulleted/numbered lists, bold/italic/strikethrough/underline text, inline and fenced code, blockquotes, horizontal rules, footnotes, bookmarks, and `PAGEREF` links
+- `DOCX tables -> CSV / XLSX / JSON / YAML / TOML`, plus `CSV / XLSX -> DOCX`
+- `PDF -> Markdown` for documents with an embedded text layer
 - CLI `convert` with text stdin/stdout and `batch` with glob patterns and progress bars
 - GUI conversion queue with file picker, drag-and-drop, selectable target format, themes, and dual-pane text preview
 - Unit, integration, and property-based core tests covering DOCX and XLSX round-trips
@@ -107,6 +109,9 @@ cargo run -p markoff_cli -- convert .\notes.md -o .\output\notes.docx
 # DOCX to Markdown
 cargo run -p markoff_cli -- convert .\report.docx --to markdown
 
+# PDF to Markdown
+cargo run -p markoff_cli -- convert .\report.pdf --to markdown
+
 # Markdown table to an XLSX workbook
 cargo run -p markoff_cli -- convert .\scores.md -o .\scores.xlsx
 
@@ -117,7 +122,7 @@ cargo run -p markoff_cli -- convert .\people.json --to xlsx
 cargo run -p markoff_cli -- convert .\people.xlsx -o .\people.json
 ```
 
-Supported format identifiers are `docx`, `md`/`markdown`, `xlsx`/`xlsm`, `json`, `csv`, `yaml`/`yml`, and `toml`. `pptx` is recognized as a file extension, but its conversion is not implemented.
+Supported format identifiers are `docx`, `pdf`, `md`/`markdown`, `xlsx`/`xlsm`, `json`, `csv`, `yaml`/`yml`, and `toml`. PDF is supported only as an input to Markdown; scanned PDF files without an embedded text layer require OCR and are not currently supported. `pptx` is recognized as a file extension, but its conversion is not implemented.
 
 ### Standard input and output
 
@@ -164,10 +169,11 @@ The toolbar also switches between dark and light themes and opens build informat
 
 ## Format behavior and limitations
 
-- DOCX and Markdown preserve headings, paragraphs, flat ordered and bulleted lists, bold text, italic text, bookmarks, and `PAGEREF` links.
+- DOCX and Markdown preserve headings, paragraphs, nested ordered and bulleted lists, tables, bold/italic/strikethrough/underline text, inline and fenced code blocks, blockquotes, horizontal rules, footnotes, bookmarks, and `PAGEREF` links. A fenced-code language identifier is not preserved.
+- PDF to Markdown extracts the document text layer. Page layout, images, tables, and scanned text are not preserved.
 - Markdown tables convert to and from XLSX. Each `## Sheet name` heading represents a workbook sheet; the first table row becomes the frozen header row in XLSX.
 - JSON, CSV, YAML, and TOML convert to XLSX as tabular data. JSON/YAML/TOML input for this route must be an array of objects.
-- DOCX tables, ordinary hyperlinks, images, footnotes, strikethrough, code blocks, nested lists, advanced Word formatting, Excel formulas/styles/charts, and PPTX conversion are not yet semantically preserved.
+- Ordinary hyperlinks, images, advanced Word table layout, Excel formulas/styles/charts, PDF output, and PPTX conversion are not yet semantically preserved.
 
 ### Run benchmark
 

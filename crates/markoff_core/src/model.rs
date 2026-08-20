@@ -8,6 +8,8 @@ use thiserror::Error;
 pub enum Format {
     /// Microsoft Word document format.
     Docx,
+    /// Portable Document Format.
+    Pdf,
     /// Markdown text format.
     Markdown,
     /// Microsoft Excel workbook format.
@@ -28,6 +30,7 @@ impl fmt::Display for Format {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let value = match self {
             Self::Docx => "docx",
+            Self::Pdf => "pdf",
             Self::Markdown => "md",
             Self::Xlsx => "xlsx",
             Self::Json => "json",
@@ -49,6 +52,7 @@ impl Format {
     pub fn from_extension(extension: &str) -> Result<Self, MarkoffError> {
         match extension.trim().to_ascii_lowercase().as_str() {
             "docx" => Ok(Self::Docx),
+            "pdf" => Ok(Self::Pdf),
             "md" | "markdown" => Ok(Self::Markdown),
             "xlsx" | "xlsm" => Ok(Self::Xlsx),
             "json" => Ok(Self::Json),

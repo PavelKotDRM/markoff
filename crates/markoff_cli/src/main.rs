@@ -25,7 +25,7 @@ const BUILD_INFO: &str = concat!(
     long_version = BUILD_INFO,
     about = "Bi-directional Office <-> Markdown converter",
     long_about = "Convert Office documents, Markdown, and structured data files.",
-    after_help = "FORMATS:\n  docx, md/markdown, xlsx/xlsm, json, csv, yaml/yml, toml\n  PPTX is recognized but conversion is not implemented yet.\n\nSTREAMING:\n  Use '-' as INPUT or --output to read/write stdin/stdout. Streaming supports\n  text formats only: Markdown, JSON, CSV, YAML, and TOML.\n\nEXAMPLES:\n  markoff convert report.csv --to md\n  markoff convert report.md -o report.docx\n  markoff convert - --from json --to yaml -o -\n  markoff batch documents --pattern '*.docx' --to md -o converted"
+    after_help = "FORMATS:\n  docx, pdf, md/markdown, xlsx/xlsm, json, csv, yaml/yml, toml\n  PDF conversion supports PDF -> Markdown for documents with a text layer.\n  PPTX is recognized but conversion is not implemented yet.\n\nSTREAMING:\n  Use '-' as INPUT or --output to read/write stdin/stdout. Streaming supports\n  text formats only: Markdown, JSON, CSV, YAML, and TOML.\n\nEXAMPLES:\n  markoff convert report.csv --to md\n  markoff convert report.pdf --to md\n  markoff convert report.md -o report.docx\n  markoff convert - --from json --to yaml -o -\n  markoff batch documents --pattern '*.docx' --to md -o converted"
 )]
 struct Cli {
     #[command(subcommand)]

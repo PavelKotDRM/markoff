@@ -167,7 +167,7 @@ fn load_source_preview(input: &PathBuf) -> String {
     match std::fs::read_to_string(input) {
         Ok(content) => content,
         Err(read_error) => match detect_format(input) {
-            Ok(format @ (Format::Docx | Format::Xlsx)) => {
+            Ok(format @ (Format::Docx | Format::Pdf | Format::Xlsx)) => {
                 let preview = preview_path();
                 let rendered = convert_file(input, &preview, format, Format::Markdown)
                     .and_then(|()| std::fs::read_to_string(&preview).map_err(Into::into));

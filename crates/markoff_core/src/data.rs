@@ -152,10 +152,17 @@ pub(crate) fn convert_xlsx_to_data(
         Format::Yaml => {
             std::fs::write(output, serde_yaml::to_string(&value).map_err(invalid_data)?)?
         }
-        Format::Toml => std::fs::write(
-            output,
-            toml::to_string_pretty(&value).map_err(invalid_data)?,
-        )?,
+        Format::Toml => {
+            let value = if value.is_array() {
+                serde_json::json!({ "rows": value })
+            } else {
+                value
+            };
+            std::fs::write(
+                output,
+                toml::to_string_pretty(&value).map_err(invalid_data)?,
+            )?
+        }
         Format::Csv => {
             let rows = sheets
                 .values()

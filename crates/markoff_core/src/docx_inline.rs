@@ -5,9 +5,16 @@ fn xml_escape(value: &str) -> String {
         .replace('>', "&gt;")
 }
 
-fn docx_run(text: &str, bold: bool, italic: bool, strikethrough: bool, underline: bool) -> String {
+fn docx_run(
+    text: &str,
+    bold: bool,
+    italic: bool,
+    strikethrough: bool,
+    underline: bool,
+    code: bool,
+) -> String {
     let mut properties = String::new();
-    if bold || italic || strikethrough || underline {
+    if bold || italic || strikethrough || underline || code {
         properties.push_str("<w:rPr>");
         if bold {
             properties.push_str("<w:b/>");
@@ -20,6 +27,11 @@ fn docx_run(text: &str, bold: bool, italic: bool, strikethrough: bool, underline
         }
         if underline {
             properties.push_str("<w:u w:val=\"single\"/>");
+        }
+        if code {
+            properties.push_str(
+                "<w:rFonts w:ascii=\"Consolas\" w:hAnsi=\"Consolas\" w:cs=\"Consolas\"/>",
+            );
         }
         properties.push_str("</w:rPr>");
     }
@@ -36,7 +48,8 @@ pub(crate) fn markdown_inline_to_docx_runs(value: &str) -> String {
     let mut italic = false;
     let mut strikethrough = false;
     let mut underline = false;
-    let mut pending: Option<(bool, bool, bool, bool, String)> = None;
+    let mut code = false;
+    let mut pending: Option<(bool, bool, bool, bool, bool, String)> = None;
 
     while !remaining.is_empty() {
         let delimiter = if remaining.starts_with("**") || remaining.starts_with("__") {
@@ -63,6 +76,10 @@ pub(crate) fn markdown_inline_to_docx_runs(value: &str) -> String {
             underline = false;
             remaining = &remaining[4..];
             continue;
+        } else if remaining.starts_with('`') {
+            code = !code;
+            remaining = &remaining[1..];
+            continue;
         } else if remaining.starts_with('*') || remaining.starts_with('_') {
             italic = !italic;
             remaining = &remaining[1..];
@@ -74,6 +91,7 @@ pub(crate) fn markdown_inline_to_docx_runs(value: &str) -> String {
                     || remaining[index..].starts_with("~~")
                     || remaining[index..].starts_with("<u>")
                     || remaining[index..].starts_with("</u>")
+                    || remaining[index..].starts_with('`')
                     || remaining[index..].starts_with('*')
                     || remaining[index..].starts_with('_'))
                 .then_some(index)
@@ -87,6 +105,7 @@ pub(crate) fn markdown_inline_to_docx_runs(value: &str) -> String {
                 previous_italic,
                 previous_strikethrough,
                 previous_underline,
+                previous_code,
                 previous_text,
             )) = pending.as_mut()
                 && (
@@ -94,22 +113,52 @@ pub(crate) fn markdown_inline_to_docx_runs(value: &str) -> String {
                     *previous_italic,
                     *previous_strikethrough,
                     *previous_underline,
-                ) == (bold, italic, strikethrough, underline)
+                    *previous_code,
+                ) == (bold, italic, strikethrough, underline, code)
             {
                 previous_text.push_str(text);
             } else {
-                if let Some((bold, italic, strikethrough, underline, text)) = pending.take() {
-                    runs.push_str(&docx_run(&text, bold, italic, strikethrough, underline));
+                if let Some((bold, italic, strikethrough, underline, code, text)) = pending.take() {
+                    runs.push_str(&docx_run(
+                        &text,
+                        bold,
+                        italic,
+                        strikethrough,
+                        underline,
+                        code,
+                    ));
                 }
-                pending = Some((bold, italic, strikethrough, underline, text.to_string()));
+                pending = Some((
+                    bold,
+                    italic,
+                    strikethrough,
+                    underline,
+                    code,
+                    text.to_string(),
+                ));
             }
         }
         remaining = rest;
     }
-    if let Some((bold, italic, strikethrough, underline, text)) = pending {
-        runs.push_str(&docx_run(&text, bold, italic, strikethrough, underline));
+    if let Some((bold, italic, strikethrough, underline, code, text)) = pending {
+        runs.push_str(&docx_run(
+            &text,
+            bold,
+            italic,
+            strikethrough,
+            underline,
+            code,
+        ));
     }
     runs
+}
+
+pub(crate) fn markdown_code_block_to_docx_runs(value: &str) -> String {
+    value
+        .lines()
+        .map(|line| docx_run(line, false, false, false, false, true))
+        .collect::<Vec<_>>()
+        .join("<w:r><w:br/></w:r>")
 }
 
 pub(crate) fn markdown_list_item(line: &str) -> Option<(u32, usize, &str)> {
@@ -146,6 +195,7 @@ pub(crate) fn markdown_from_docx_run(
     italic: bool,
     strikethrough: bool,
     underline: bool,
+    code: bool,
     page_reference: Option<&str>,
 ) -> String {
     let mut rendered = text.to_string();
@@ -160,6 +210,9 @@ pub(crate) fn markdown_from_docx_run(
     }
     if underline {
         rendered = format!("<u>{rendered}</u>");
+    }
+    if code {
+        rendered = format!("`{rendered}`");
     }
     if let Some(target) = page_reference {
         rendered = format!("[{rendered}](#{target})");
