@@ -86,6 +86,7 @@ pub(crate) fn convert_data_to_xlsx(
     input: &Path,
     output: &Path,
     format: Format,
+    delimiter: u8,
 ) -> Result<(), MarkoffError> {
     let source = std::fs::read_to_string(input)?;
     let rows = match format {
@@ -100,7 +101,9 @@ pub(crate) fn convert_data_to_xlsx(
             rows_from_json(&value)?
         }
         Format::Csv => {
-            let mut reader = csv::Reader::from_reader(source.as_bytes());
+            let mut reader = csv::ReaderBuilder::new()
+                .delimiter(delimiter)
+                .from_reader(source.as_bytes());
             let headers: Vec<String> = reader
                 .headers()
                 .map_err(invalid_data)?
@@ -131,6 +134,7 @@ pub(crate) fn convert_xlsx_to_data(
     input: &Path,
     output: &Path,
     format: Format,
+    delimiter: u8,
 ) -> Result<(), MarkoffError> {
     let sheets = read_xlsx_value_sheets(input)?;
     let value = if sheets.len() == 1 {
@@ -170,7 +174,9 @@ pub(crate) fn convert_xlsx_to_data(
                 .ok_or_else(|| MarkoffError::InvalidInput {
                     path: input.to_string_lossy().to_string(),
                 })?;
-            let mut writer = csv::Writer::from_writer(Vec::new());
+            let mut writer = csv::WriterBuilder::new()
+                .delimiter(delimiter)
+                .from_writer(Vec::new());
             for row in rows {
                 writer
                     .write_record(row.iter().map(CellValue::as_text))

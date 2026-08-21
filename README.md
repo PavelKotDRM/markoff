@@ -29,14 +29,16 @@ The project has moved beyond the initial stub stage:
 - `DOCX <-> Markdown` for headings, paragraphs, tables, nested bulleted/numbered lists, bold/italic/strikethrough/underline text, inline and fenced code, blockquotes, horizontal rules, footnotes, bookmarks, and `PAGEREF` links
 - `DOCX tables -> CSV / XLSX / JSON / YAML / TOML`, plus `CSV / XLSX -> DOCX`
 - `PDF -> Markdown` for documents with an embedded text layer
+- `PPTX <-> Markdown` for slide titles and body text/bullets
+- `HTML <-> Markdown` for headings, emphasis, links, images, lists, blockquotes, code blocks, and tables
 - CLI `convert` with text stdin/stdout and `batch` with glob patterns and progress bars
-- GUI conversion queue with file picker, drag-and-drop, selectable target format, themes, and dual-pane text preview
+- GUI conversion queue with file picker, drag-and-drop, selectable target format, themes, and a format-aware preview (rendered Markdown, collapsible JSON/YAML/TOML tree, or plain text)
 - Unit, integration, and property-based core tests covering DOCX and XLSX round-trips
 
 ### Still pending
 
 - DOCX tables, links, images, and footnotes
-- PPTX conversion support
+- PPTX shape layout, embedded images/charts, and speaker notes are not preserved (only slide titles and body text/bullets)
 
 ## Getting started
 
@@ -123,9 +125,17 @@ cargo run -p markoff_cli -- convert .\people.xlsx -o .\people.json
 
 # Overwrite an existing output file
 cargo run -p markoff_cli -- convert .\report.csv --to md --overwrite
+
+# CSV with a semicolon delimiter
+cargo run -p markoff_cli -- convert .\report.csv --to md --delimiter ';'
+
+# Tab-separated values
+cargo run -p markoff_cli -- convert .\report.csv --to md --delimiter tab
 ```
 
-Supported format identifiers are `docx`, `pdf`, `md`/`markdown`, `xlsx`/`xlsm`, `json`, `csv`, `yaml`/`yml`, and `toml`. PDF is supported only as an input to Markdown; scanned PDF files without an embedded text layer require OCR and are not currently supported. `pptx` is recognized as a file extension, but its conversion is not implemented.
+Supported format identifiers are `docx`, `pdf`, `md`/`markdown`, `xlsx`/`xlsm`, `json`, `csv`, `yaml`/`yml`, `toml`, `pptx`, and `html`/`htm`. PDF is supported only as an input to Markdown; scanned PDF files without an embedded text layer require OCR and are not currently supported. PPTX conversion covers slide titles and body text/bullets only (shape layout, images, charts, and speaker notes are not preserved).
+
+`--delimiter` sets the CSV field delimiter (a single character, or the word `tab`); it defaults to a comma and applies wherever CSV is read or written (`convert` and `batch`, including through XLSX/DOCX intermediates).
 
 ### Standard input and output
 
@@ -175,12 +185,12 @@ The toolbar also switches between dark and light themes and opens build informat
 ## Format behavior and limitations
 
 - DOCX and Markdown preserve headings, paragraphs, nested ordered and bulleted lists, tables, bold/italic/strikethrough/underline text, inline and fenced code blocks, blockquotes, horizontal rules, footnotes, bookmarks, and `PAGEREF` links. A fenced-code language identifier is not preserved.
-- PDF to Markdown extracts the document text layer. Page layout, images, tables, and scanned text are not preserved.
+- PDF to Markdown extracts the document text layer and embedded raster images (saved as files in an `image` folder next to the Markdown output, same convention as DOCX below). Page layout, vector graphics, tables, and scanned text are not preserved, and images are appended after the text rather than placed at their original position.
 - Markdown tables convert to and from XLSX. Each `## Sheet name` heading represents a workbook sheet; the first table row becomes the frozen header row in XLSX.
 - `DOCX`/`Markdown <-> JSON/YAML/TOML` preserve the whole document structure (headings, paragraphs, list items, tables, code blocks, blockquotes, horizontal rules), not just tables, as an ordered `blocks` array; each block keeps inline Markdown formatting as raw text, and literal list numbers are not preserved. This round-trips in both directions: DOCX/Markdown can be converted to JSON/YAML/TOML and back.
-- Images embedded in a DOCX are extracted and saved as files in an `image` folder next to the Markdown output, referenced with standard `![alt](image/file.ext)` syntax. Converting to JSON/YAML/TOML instead embeds each image inline as base64 (self-contained, no external files). Converting Markdown/JSON/YAML/TOML back to Markdown restores the image files from base64. Converting back to DOCX does not yet re-embed images as OOXML pictures; an image reference degrades to literal escaped text in that direction.
+- Images embedded in a DOCX or PDF are extracted and saved as files in an `image` folder next to the Markdown output, referenced with standard `![alt](image/file.ext)` syntax. Converting to JSON/YAML/TOML instead embeds each image inline as base64 (self-contained, no external files). Converting Markdown/JSON/YAML/TOML back to Markdown restores the image files from base64. Converting back to DOCX does not yet re-embed images as OOXML pictures; an image reference degrades to literal escaped text in that direction.
 - JSON, CSV, YAML, and TOML convert to XLSX as tabular data. JSON/YAML/TOML input for this route must be an array of objects; this is a separate, table-only convention from the whole-document `blocks` schema above.
-- Ordinary hyperlinks, advanced Word table layout, Excel formulas/styles/charts, PDF output, and PPTX conversion are not yet semantically preserved.
+- Ordinary hyperlinks, advanced Word table layout, Excel formulas/styles/charts, and PDF output are not yet semantically preserved. PPTX conversion is limited to slide titles and body text/bullets (no shape layout, images, charts, or speaker notes).
 
 ### Run benchmark
 

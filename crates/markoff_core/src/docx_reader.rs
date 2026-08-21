@@ -964,9 +964,13 @@ fn markdown_table_from_docx_rows(rows: &[Vec<String>]) -> String {
     let format_row = |row: &[String]| {
         let cells = (0..column_count)
             .map(|index| {
+                // Cell text is already Markdown-escaped (backslashes included)
+                // by `markdown_from_docx_run`; only the table-specific pipe
+                // delimiter and embedded newlines need handling here.
                 row.get(index)
                     .map_or("", String::as_str)
-                    .replace('\\', "\\\\")
+                    .replace("  \n", "<br>")
+                    .replace('\n', "<br>")
                     .replace('|', "\\|")
             })
             .collect::<Vec<_>>();

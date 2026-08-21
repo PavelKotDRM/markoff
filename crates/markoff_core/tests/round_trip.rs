@@ -1,4 +1,4 @@
-use markoff_core::{Format, convert_file};
+use markoff_core::{ConversionRequest, Format, convert_document, convert_file};
 use proptest::prelude::*;
 use serde_json::json;
 use std::fs;
@@ -104,6 +104,38 @@ fn golden_document_round_trip_preserves_core_markdown_content() {
 }
 
 #[test]
+fn golden_pdf_extracts_embedded_images_alongside_markdown() {
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("golden/golden_test_document.pdf");
+    let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let directory = std::env::temp_dir().join(format!(
+        "markoff_golden_pdf_images_{}_{}",
+        std::process::id(),
+        sequence
+    ));
+    fs::create_dir_all(&directory).unwrap();
+    let markdown = directory.join("golden.md");
+
+    convert_file(&source, &markdown, Format::Pdf, Format::Markdown).unwrap();
+
+    let rendered = fs::read_to_string(&markdown).unwrap();
+    assert!(
+        rendered.contains("![](image/image1.png)"),
+        "missing extracted image reference in {rendered:?}"
+    );
+
+    let image_bytes = fs::read(directory.join("image").join("image1.png")).unwrap();
+    assert_eq!(
+        &image_bytes[..8],
+        &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A],
+        "extracted file is not a valid PNG"
+    );
+
+    fs::remove_dir_all(directory).ok();
+}
+
+#[test]
 fn markdown_docx_round_trip_preserves_supported_elements() {
     let markdown = temporary_path("docx_input", "md");
     let document = temporary_path("docx_document", "docx");
@@ -204,6 +236,95 @@ fn markdown_docx_round_trip_preserves_tables() {
     );
 
     remove_files(&[&markdown, &document, &restored]);
+}
+
+#[test]
+fn csv_round_trip_preserves_embedded_newlines_and_backslashes() {
+    let csv = temporary_path("csv_special_input", "csv");
+    let markdown = temporary_path("csv_special", "md");
+    let restored_csv = temporary_path("csv_special_restored", "csv");
+    let document = temporary_path("csv_special", "docx");
+    let restored_docx_csv = temporary_path("csv_special_docx_restored", "csv");
+    fs::write(
+        &csv,
+        "id,name,tags\n1,\"Multi\nline note\",\"a|b\\c\"\n",
+    )
+    .unwrap();
+    let expected = vec![vec![
+        "1".to_string(),
+        "Multi\nline note".to_string(),
+        "a|b\\c".to_string(),
+    ]];
+
+    convert_file(&csv, &markdown, Format::Csv, Format::Markdown).unwrap();
+    convert_file(&markdown, &restored_csv, Format::Markdown, Format::Csv).unwrap();
+    assert_eq!(
+        read_csv_records(&restored_csv),
+        expected,
+        "Markdown round trip should preserve embedded newlines and backslashes"
+    );
+
+    convert_file(&csv, &document, Format::Csv, Format::Docx).unwrap();
+    convert_file(&document, &restored_docx_csv, Format::Docx, Format::Csv).unwrap();
+    assert_eq!(
+        read_csv_records(&restored_docx_csv),
+        expected,
+        "DOCX round trip should preserve embedded newlines and backslashes"
+    );
+
+    remove_files(&[
+        &csv,
+        &markdown,
+        &restored_csv,
+        &document,
+        &restored_docx_csv,
+    ]);
+}
+
+#[test]
+fn csv_supports_a_custom_delimiter() {
+    let csv = temporary_path("csv_semicolon_input", "csv");
+    let markdown = temporary_path("csv_semicolon", "md");
+    let restored_csv = temporary_path("csv_semicolon_restored", "csv");
+    fs::write(&csv, "id;name;amount\n1;Ada;42\n2;Grace;99\n").unwrap();
+
+    convert_document(&ConversionRequest {
+        input: csv.clone(),
+        output: markdown.clone(),
+        from: Format::Csv,
+        to: Format::Markdown,
+        overwrite: true,
+        csv_delimiter: b';',
+    })
+    .unwrap();
+    assert_eq!(
+        fs::read_to_string(&markdown).unwrap(),
+        "| id | name | amount |\n| --- | --- | --- |\n| 1 | Ada | 42 |\n| 2 | Grace | 99 |"
+    );
+
+    convert_document(&ConversionRequest {
+        input: markdown.clone(),
+        output: restored_csv.clone(),
+        from: Format::Markdown,
+        to: Format::Csv,
+        overwrite: true,
+        csv_delimiter: b';',
+    })
+    .unwrap();
+    assert_eq!(
+        fs::read_to_string(&restored_csv).unwrap(),
+        fs::read_to_string(&csv).unwrap()
+    );
+
+    remove_files(&[&csv, &markdown, &restored_csv]);
+}
+
+fn read_csv_records(path: &PathBuf) -> Vec<Vec<String>> {
+    let mut reader = csv::Reader::from_path(path).unwrap();
+    reader
+        .records()
+        .map(|record| record.unwrap().iter().map(str::to_string).collect())
+        .collect()
 }
 
 #[test]
@@ -584,6 +705,68 @@ fn markdown_csv_conversion_escapes_delimited_fields() {
     assert_eq!(records[0].get(1), Some("Hello, world"));
 
     remove_files(&[&markdown, &csv]);
+}
+
+#[test]
+fn html_round_trip_preserves_headings_lists_and_links() {
+    let markdown = temporary_path("html_roundtrip_input", "md");
+    let html = temporary_path("html_roundtrip", "html");
+    let restored = temporary_path("html_roundtrip_output", "md");
+    fs::write(
+        &markdown,
+        "# Report\n\nA **bold** claim with a [link](https://example.com).\n\n- Alpha\n- Beta\n",
+    )
+    .unwrap();
+
+    convert_file(&markdown, &html, Format::Markdown, Format::Html).unwrap();
+    convert_file(&html, &restored, Format::Html, Format::Markdown).unwrap();
+
+    let rendered = fs::read_to_string(&restored).unwrap();
+    for expected in [
+        "# Report",
+        "**bold**",
+        "[link](https://example.com)",
+        "- Alpha",
+        "- Beta",
+    ] {
+        assert!(
+            rendered.contains(expected),
+            "missing {expected:?} in {rendered:?}"
+        );
+    }
+
+    remove_files(&[&markdown, &html, &restored]);
+}
+
+#[test]
+fn pptx_round_trip_preserves_slide_titles_and_bullets() {
+    let markdown = temporary_path("pptx_roundtrip_input", "md");
+    let pptx = temporary_path("pptx_roundtrip", "pptx");
+    let restored = temporary_path("pptx_roundtrip_output", "md");
+    fs::write(
+        &markdown,
+        "# Introduction\n\nWelcome note.\n\n## Agenda\n\n- Topic one\n- Topic two\n",
+    )
+    .unwrap();
+
+    convert_file(&markdown, &pptx, Format::Markdown, Format::Pptx).unwrap();
+    convert_file(&pptx, &restored, Format::Pptx, Format::Markdown).unwrap();
+
+    let rendered = fs::read_to_string(&restored).unwrap();
+    for expected in [
+        "## Introduction",
+        "Welcome note.",
+        "## Agenda",
+        "- Topic one",
+        "- Topic two",
+    ] {
+        assert!(
+            rendered.contains(expected),
+            "missing {expected:?} in {rendered:?}"
+        );
+    }
+
+    remove_files(&[&markdown, &pptx, &restored]);
 }
 
 proptest! {

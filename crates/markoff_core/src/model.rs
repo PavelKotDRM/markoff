@@ -24,6 +24,8 @@ pub enum Format {
     Toml,
     /// Microsoft PowerPoint presentation format.
     Pptx,
+    /// HyperText Markup Language.
+    Html,
 }
 
 impl fmt::Display for Format {
@@ -38,6 +40,7 @@ impl fmt::Display for Format {
             Self::Yaml => "yaml",
             Self::Toml => "toml",
             Self::Pptx => "pptx",
+            Self::Html => "html",
         };
         f.write_str(value)
     }
@@ -60,6 +63,7 @@ impl Format {
             "yaml" | "yml" => Ok(Self::Yaml),
             "toml" => Ok(Self::Toml),
             "pptx" => Ok(Self::Pptx),
+            "html" | "htm" => Ok(Self::Html),
             other => Err(MarkoffError::UnsupportedFormat {
                 format: other.to_string(),
             }),
@@ -71,7 +75,7 @@ impl Format {
     pub const fn is_text(self) -> bool {
         matches!(
             self,
-            Self::Markdown | Self::Json | Self::Csv | Self::Yaml | Self::Toml
+            Self::Markdown | Self::Json | Self::Csv | Self::Yaml | Self::Toml | Self::Html
         )
     }
 }
@@ -89,6 +93,16 @@ pub struct ConversionRequest {
     pub to: Format,
     /// Whether an existing file at `output` may be overwritten.
     pub overwrite: bool,
+    /// Field delimiter byte used when reading or writing CSV. Defaults to a
+    /// comma (`,`); common alternatives include `;` and tab (`\t`).
+    #[serde(default = "default_csv_delimiter")]
+    pub csv_delimiter: u8,
+}
+
+/// The default CSV field delimiter (`,`).
+#[must_use]
+pub const fn default_csv_delimiter() -> u8 {
+    b','
 }
 
 /// Error type returned by the conversion engine.

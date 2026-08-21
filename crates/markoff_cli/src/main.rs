@@ -25,7 +25,7 @@ const BUILD_INFO: &str = concat!(
     long_version = BUILD_INFO,
     about = "Bi-directional Office <-> Markdown converter",
     long_about = "Convert Office documents, Markdown, and structured data files.",
-    after_help = "FORMATS:\n  docx, pdf, md/markdown, xlsx/xlsm, json, csv, yaml/yml, toml\n  PDF conversion supports PDF -> Markdown for documents with a text layer.\n  PPTX is recognized but conversion is not implemented yet.\n\nSTREAMING:\n  Use '-' as INPUT or --output to read/write stdin/stdout. Streaming supports\n  text formats only: Markdown, JSON, CSV, YAML, and TOML.\n\nEXAMPLES:\n  markoff convert report.csv --to md\n  markoff convert report.pdf --to md\n  markoff convert report.md -o report.docx\n  markoff convert - --from json --to yaml -o -\n  markoff batch documents --pattern '*.docx' --to md -o converted"
+    after_help = "FORMATS:\n  docx, pdf, md/markdown, xlsx/xlsm, json, csv, yaml/yml, toml, pptx,\n  html/htm\n  PDF conversion supports PDF -> Markdown for documents with a text layer.\n  PPTX (presentations) converts slide titles and body text/bullets to and\n  from Markdown headings/lists; shape layout, images, and speaker notes are\n  not preserved.\n  HTML converts to and from Markdown (headings, emphasis, links, images,\n  lists, blockquotes, code blocks, and tables); page layout/CSS and scripts\n  are not preserved.\n  JSON/YAML/TOML preserve the full document structure (headings, lists,\n  tables, footnotes, images as base64), not just tables.\n  DOCX/PDF images are extracted into an 'image/' folder next to Markdown\n  output, or embedded as base64 in JSON/YAML/TOML output.\n\nOPTIONS (convert/batch):\n  --overwrite         Overwrite the output file(s) if they already exist;\n                      otherwise an error is raised when the destination\n                      exists.\n  --delimiter <CHAR>  CSV field delimiter: a single character, or 'tab'.\n                      Defaults to ','.\n\nSTREAMING:\n  Use '-' as INPUT or --output to read/write stdin/stdout. Streaming supports\n  text formats only: Markdown, JSON, CSV, YAML, TOML, and HTML.\n\nEXAMPLES:\n  markoff convert report.csv --to md\n  markoff convert report.pdf --to md\n  markoff convert report.md -o report.docx\n  markoff convert report.md -o report.docx --overwrite\n  markoff convert report.tsv --to md --delimiter tab\n  markoff convert slides.pptx --to md\n  markoff convert report.md -o page.html\n  markoff convert - --from json --to yaml -o -\n  markoff batch documents --pattern '*.docx' --to md -o converted\n  markoff batch documents --pattern '*.docx' --to md -o converted --overwrite"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -51,6 +51,9 @@ enum Commands {
         /// Overwrite the output file if it already exists.
         #[arg(long)]
         overwrite: bool,
+        /// CSV field delimiter (single character, or 'tab'). Defaults to ','.
+        #[arg(long, value_name = "CHAR")]
+        delimiter: Option<String>,
     },
     /// Convert all matching files in a directory.
     Batch {
@@ -69,6 +72,9 @@ enum Commands {
         /// Overwrite output files that already exist.
         #[arg(long)]
         overwrite: bool,
+        /// CSV field delimiter (single character, or 'tab'). Defaults to ','.
+        #[arg(long, value_name = "CHAR")]
+        delimiter: Option<String>,
     },
     /// Run the graphical application.
     Gui,
@@ -76,6 +82,25 @@ enum Commands {
 
 fn parse_format_spec(spec: &str) -> Result<Format, MarkoffError> {
     Format::from_extension(spec)
+}
+
+/// Parses a CSV delimiter option: a single character, or the word `tab`.
+fn parse_delimiter(spec: Option<&str>) -> anyhow::Result<u8> {
+    let Some(spec) = spec else {
+        return Ok(b',');
+    };
+    if spec.eq_ignore_ascii_case("tab") {
+        return Ok(b'\t');
+    }
+    let mut characters = spec.chars();
+    let (Some(character), None) = (characters.next(), characters.next()) else {
+        return Err(anyhow::anyhow!(
+            "--delimiter must be a single ASCII character or 'tab', got {spec:?}"
+        ));
+    };
+    u8::try_from(character).map_err(|_| {
+        anyhow::anyhow!("--delimiter must be a single ASCII character, got {spec:?}")
+    })
 }
 
 fn temporary_path(format: Format) -> PathBuf {
@@ -108,6 +133,7 @@ fn convert_one(
     from: Option<&str>,
     to: Option<&str>,
     overwrite: bool,
+    delimiter: u8,
 ) -> anyhow::Result<()> {
     let from = match from {
         Some(value) => parse_format_spec(value)?,
@@ -150,6 +176,7 @@ fn convert_one(
         from,
         to,
         overwrite: overwrite || writes_stdout,
+        csv_delimiter: delimiter,
     })?;
     if writes_stdout {
         let rendered = std::fs::read_to_string(&destination)?;
@@ -170,6 +197,7 @@ fn run_batch(
     output: &Path,
     to: Format,
     overwrite: bool,
+    delimiter: u8,
 ) -> anyhow::Result<()> {
     let pattern = directory.join(pattern).to_string_lossy().to_string();
     let inputs = glob::glob(&pattern)?
@@ -194,6 +222,7 @@ fn run_batch(
             from,
             to,
             overwrite,
+            csv_delimiter: delimiter,
         })?;
         progress.inc(1);
     }
@@ -215,6 +244,7 @@ fn main() -> anyhow::Result<()> {
             from,
             to,
             overwrite,
+            delimiter,
         }) => {
             convert_one(
                 &input,
@@ -222,6 +252,7 @@ fn main() -> anyhow::Result<()> {
                 from.as_deref(),
                 to.as_deref(),
                 overwrite,
+                parse_delimiter(delimiter.as_deref())?,
             )?;
         }
         Some(Commands::Batch {
@@ -230,6 +261,7 @@ fn main() -> anyhow::Result<()> {
             to,
             output,
             overwrite,
+            delimiter,
         }) => {
             run_batch(
                 &directory,
@@ -237,6 +269,7 @@ fn main() -> anyhow::Result<()> {
                 &output,
                 parse_format_spec(&to)?,
                 overwrite,
+                parse_delimiter(delimiter.as_deref())?,
             )?;
         }
         Some(Commands::Gui) => {

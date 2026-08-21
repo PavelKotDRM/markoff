@@ -3,9 +3,15 @@ use std::path::Path;
 use crate::tables::{markdown_table_from_rows, parse_markdown_table};
 use crate::{Format, MarkoffError};
 
-pub(crate) fn convert_csv_to_markdown(input: &Path, output: &Path) -> Result<(), MarkoffError> {
+pub(crate) fn convert_csv_to_markdown(
+    input: &Path,
+    output: &Path,
+    delimiter: u8,
+) -> Result<(), MarkoffError> {
     let source = std::fs::read_to_string(input)?;
-    let mut reader = csv::Reader::from_reader(source.as_bytes());
+    let mut reader = csv::ReaderBuilder::new()
+        .delimiter(delimiter)
+        .from_reader(source.as_bytes());
 
     let headers = reader
         .headers()
@@ -25,7 +31,11 @@ pub(crate) fn convert_csv_to_markdown(input: &Path, output: &Path) -> Result<(),
     Ok(())
 }
 
-pub(crate) fn convert_markdown_to_csv(input: &Path, output: &Path) -> Result<(), MarkoffError> {
+pub(crate) fn convert_markdown_to_csv(
+    input: &Path,
+    output: &Path,
+    delimiter: u8,
+) -> Result<(), MarkoffError> {
     let source = std::fs::read_to_string(input)?;
     let rows = parse_markdown_table(&source);
 
@@ -36,7 +46,9 @@ pub(crate) fn convert_markdown_to_csv(input: &Path, output: &Path) -> Result<(),
         });
     }
 
-    let mut writer = csv::Writer::from_writer(Vec::new());
+    let mut writer = csv::WriterBuilder::new()
+        .delimiter(delimiter)
+        .from_writer(Vec::new());
     for row in rows {
         writer
             .write_record(row)

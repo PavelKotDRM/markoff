@@ -1,7 +1,8 @@
 use eframe::egui;
+use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 use egui_extras::{Column, TableBuilder};
 use markoff_core::{ConversionRequest, Format, convert_document, convert_file, detect_format};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const BUILD_INFO: &str = concat!(
     "Version: ",
@@ -60,10 +61,20 @@ impl JobStatus {
     }
 }
 
+/// How a source file's preview should be displayed, chosen by its format.
+enum SourcePreview {
+    /// Rendered as formatted Markdown (headings, bold, lists, ...).
+    Markdown(String),
+    /// Rendered as a collapsible tree (JSON/YAML/TOML).
+    Tree(serde_json::Value),
+    /// Shown as plain text (unsupported/unreadable formats).
+    Text(String),
+}
+
 struct ConversionJob {
     input: PathBuf,
     output: PathBuf,
-    source_preview: String,
+    source_preview: SourcePreview,
     status: JobStatus,
     message: String,
 }
@@ -75,6 +86,8 @@ struct MarkoffApp {
     dark_mode: bool,
     show_about: bool,
     overwrite: bool,
+    csv_delimiter: String,
+    markdown_cache: CommonMarkCache,
 }
 
 impl Default for MarkoffApp {
@@ -86,6 +99,8 @@ impl Default for MarkoffApp {
             dark_mode: true,
             show_about: false,
             overwrite: false,
+            csv_delimiter: ",".to_string(),
+            markdown_cache: CommonMarkCache::default(),
         }
     }
 }
@@ -119,6 +134,7 @@ impl MarkoffApp {
         let Some(index) = self.selected else {
             return;
         };
+        let delimiter = self.csv_delimiter.bytes().next().unwrap_or(b',');
         let job = &mut self.jobs[index];
         let result = detect_format(&job.input).and_then(|from| {
             convert_document(&ConversionRequest {
@@ -127,6 +143,7 @@ impl MarkoffApp {
                 from,
                 to: self.target,
                 overwrite: self.overwrite,
+                csv_delimiter: delimiter,
             })
         });
         match result {
@@ -139,14 +156,6 @@ impl MarkoffApp {
                 job.message = error.to_string();
             }
         }
-    }
-
-    fn source_preview(&self) -> &str {
-        self.selected
-            .and_then(|index| self.jobs.get(index))
-            .map_or("Select a file to preview its source.", |job| {
-                &job.source_preview
-            })
     }
 
     fn result_preview(&self) -> String {
@@ -172,20 +181,130 @@ fn preview_path() -> PathBuf {
     ))
 }
 
-fn load_source_preview(input: &PathBuf) -> String {
-    match std::fs::read_to_string(input) {
-        Ok(content) => content,
-        Err(read_error) => match detect_format(input) {
-            Ok(format @ (Format::Docx | Format::Pdf | Format::Xlsx)) => {
-                let preview = preview_path();
-                let rendered = convert_file(input, &preview, format, Format::Markdown)
-                    .and_then(|()| std::fs::read_to_string(&preview).map_err(Into::into));
-                std::fs::remove_file(preview).ok();
-                rendered
-                    .unwrap_or_else(|error| format!("Unable to create Markdown preview: {error}"))
+fn load_source_preview(input: &Path) -> SourcePreview {
+    match detect_format(input) {
+        Ok(Format::Markdown) => SourcePreview::Markdown(read_text_or_error(input)),
+        Ok(Format::Json) => {
+            structured_tree_preview(input, |source| serde_json::from_str(source).map_err(|error| error.to_string()))
+        }
+        Ok(Format::Yaml) => structured_tree_preview(input, |source| {
+            serde_yaml::from_str::<serde_json::Value>(source).map_err(|error| error.to_string())
+        }),
+        Ok(Format::Toml) => structured_tree_preview(input, |source| {
+            source
+                .parse::<toml::Value>()
+                .map_err(|error| error.to_string())
+                .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
+        }),
+        Ok(format @ (Format::Docx | Format::Pdf | Format::Xlsx | Format::Pptx)) => {
+            let preview = preview_path();
+            let rendered = convert_file(input, &preview, format, Format::Markdown)
+                .map_err(|error| error.to_string())
+                .and_then(|()| std::fs::read_to_string(&preview).map_err(|error| error.to_string()));
+            std::fs::remove_file(&preview).ok();
+            match rendered {
+                Ok(markdown) => SourcePreview::Markdown(markdown),
+                Err(error) => {
+                    SourcePreview::Text(format!("Unable to create Markdown preview: {error}"))
+                }
             }
-            Ok(_) | Err(_) => format!("Unable to preview {}: {read_error}", input.display()),
+        }
+        Ok(Format::Html) => {
+            let preview = preview_path();
+            let rendered = convert_file(input, &preview, Format::Html, Format::Markdown)
+                .map_err(|error| error.to_string())
+                .and_then(|()| std::fs::read_to_string(&preview).map_err(|error| error.to_string()));
+            std::fs::remove_file(&preview).ok();
+            match rendered {
+                Ok(markdown) => SourcePreview::Markdown(markdown),
+                Err(error) => {
+                    SourcePreview::Text(format!("Unable to create Markdown preview: {error}"))
+                }
+            }
+        }
+        Ok(_) => SourcePreview::Text(read_text_or_error(input)),
+        Err(_) => SourcePreview::Text(format!(
+            "Unable to preview {}: unrecognized format",
+            input.display()
+        )),
+    }
+}
+
+fn read_text_or_error(input: &Path) -> String {
+    std::fs::read_to_string(input)
+        .unwrap_or_else(|error| format!("Unable to read {}: {error}", input.display()))
+}
+
+fn structured_tree_preview(
+    input: &Path,
+    parse: impl FnOnce(&str) -> Result<serde_json::Value, String>,
+) -> SourcePreview {
+    match std::fs::read_to_string(input) {
+        Ok(source) => match parse(&source) {
+            Ok(value) => SourcePreview::Tree(value),
+            Err(error) => {
+                SourcePreview::Text(format!("Unable to parse {}: {error}", input.display()))
+            }
         },
+        Err(error) => SourcePreview::Text(format!("Unable to read {}: {error}", input.display())),
+    }
+}
+
+/// Renders a JSON value as a collapsible tree; scalars at the root are shown
+/// as a single label since there is nothing to expand.
+fn render_json_tree(ui: &mut egui::Ui, value: &serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map {
+                render_json_node(ui, key, child);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for (index, child) in items.iter().enumerate() {
+                render_json_node(ui, &index.to_string(), child);
+            }
+        }
+        scalar => {
+            ui.label(json_scalar_to_string(scalar));
+        }
+    }
+}
+
+fn render_json_node(ui: &mut egui::Ui, key: &str, value: &serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            egui::CollapsingHeader::new(key)
+                .id_salt(key)
+                .default_open(false)
+                .show(ui, |ui| {
+                    for (child_key, child) in map {
+                        render_json_node(ui, child_key, child);
+                    }
+                });
+        }
+        serde_json::Value::Array(items) => {
+            egui::CollapsingHeader::new(format!("{key} [{}]", items.len()))
+                .id_salt(key)
+                .default_open(false)
+                .show(ui, |ui| {
+                    for (index, child) in items.iter().enumerate() {
+                        render_json_node(ui, &index.to_string(), child);
+                    }
+                });
+        }
+        scalar => {
+            ui.label(format!("{key}: {}", json_scalar_to_string(scalar)));
+        }
+    }
+}
+
+fn json_scalar_to_string(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Null => "null".to_string(),
+        serde_json::Value::Bool(value) => value.to_string(),
+        serde_json::Value::Number(value) => value.to_string(),
+        serde_json::Value::String(value) => value.clone(),
+        other => other.to_string(),
     }
 }
 
@@ -217,6 +336,8 @@ impl eframe::App for MarkoffApp {
                             Format::Yaml,
                             Format::Toml,
                             Format::Xlsx,
+                            Format::Html,
+                            Format::Pptx,
                         ] {
                             ui.selectable_value(&mut self.target, format, format.to_string());
                         }
@@ -225,6 +346,12 @@ impl eframe::App for MarkoffApp {
                     self.update_outputs();
                 }
                 ui.checkbox(&mut self.overwrite, "Overwrite existing files");
+                ui.label("CSV delimiter:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.csv_delimiter)
+                        .desired_width(20.0)
+                        .char_limit(1),
+                );
                 if ui.button("Convert selected").clicked() {
                     self.convert_selected();
                 }
@@ -292,15 +419,34 @@ impl eframe::App for MarkoffApp {
         });
 
         egui::CentralPanel::default().show(ui, |ui| {
+            let selected_preview = self
+                .selected
+                .and_then(|index| self.jobs.get(index))
+                .map(|job| &job.source_preview);
+            let result_preview = self.result_preview();
+            let markdown_cache = &mut self.markdown_cache;
             ui.columns(2, |columns| {
                 columns[0].heading("Source");
-                egui::ScrollArea::vertical().show(&mut columns[0], |ui| {
-                    ui.monospace(self.source_preview());
-                });
+                egui::ScrollArea::vertical()
+                    .id_salt("source_scroll")
+                    .show(&mut columns[0], |ui| match selected_preview {
+                        Some(SourcePreview::Markdown(markdown)) => {
+                            CommonMarkViewer::new().show(ui, markdown_cache, markdown);
+                        }
+                        Some(SourcePreview::Tree(value)) => render_json_tree(ui, value),
+                        Some(SourcePreview::Text(text)) => {
+                            ui.monospace(text);
+                        }
+                        None => {
+                            ui.monospace("Select a file to preview its source.");
+                        }
+                    });
                 columns[1].heading("Result");
-                egui::ScrollArea::vertical().show(&mut columns[1], |ui| {
-                    ui.monospace(self.result_preview());
-                });
+                egui::ScrollArea::vertical()
+                    .id_salt("result_scroll")
+                    .show(&mut columns[1], |ui| {
+                        ui.monospace(&result_preview);
+                    });
             });
         });
 
@@ -326,7 +472,7 @@ fn main() -> eframe::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::load_source_preview;
+    use super::{SourcePreview, load_source_preview};
     use markoff_core::{Format, convert_file};
     use std::fs;
     use std::path::PathBuf;
@@ -348,8 +494,11 @@ mod tests {
         convert_file(&markdown, &document, Format::Markdown, Format::Docx).unwrap();
 
         let preview = load_source_preview(&document);
-        assert!(preview.contains("# Project"));
-        assert!(preview.contains("**bold**"));
+        let SourcePreview::Markdown(markdown) = preview else {
+            panic!("expected a Markdown preview for a converted DOCX file");
+        };
+        assert!(markdown.contains("# Project"));
+        assert!(markdown.contains("**bold**"));
 
         fs::remove_file(markdown).ok();
         fs::remove_file(document).ok();

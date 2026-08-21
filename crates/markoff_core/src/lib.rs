@@ -22,8 +22,10 @@ mod docx_reader;
 mod docx_writer;
 mod document;
 mod error;
+mod html;
 mod model;
 mod pdf;
+mod pptx;
 mod tables;
 mod xlsx;
 
@@ -34,7 +36,9 @@ use data::{convert_data_to_xlsx, convert_xlsx_to_data};
 use docx_reader::convert_docx_to_markdown;
 use docx_writer::convert_markdown_to_docx;
 use document::{convert_document_to_markdown, convert_markdown_to_document};
+use html::{convert_html_to_markdown, convert_markdown_to_html};
 use pdf::convert_pdf_to_markdown;
+use pptx::{convert_markdown_to_pptx, convert_pptx_to_markdown};
 use xlsx::{convert_markdown_to_xlsx, convert_xlsx_to_markdown};
 
 static INTERMEDIATE_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -77,15 +81,21 @@ pub fn convert_document(request: &ConversionRequest) -> Result<(), MarkoffError>
         (Format::Markdown, Format::Docx) => {
             convert_markdown_to_docx(&request.input, &request.output)
         }
-        (Format::Docx, Format::Csv | Format::Xlsx) => {
-            convert_docx_via_markdown(&request.input, &request.output, request.to)
-        }
+        (Format::Docx, Format::Csv | Format::Xlsx) => convert_docx_via_markdown(
+            &request.input,
+            &request.output,
+            request.to,
+            request.csv_delimiter,
+        ),
         (Format::Docx, Format::Json | Format::Yaml | Format::Toml) => {
             convert_docx_to_document_format(&request.input, &request.output, request.to)
         }
-        (Format::Csv | Format::Xlsx, Format::Docx) => {
-            convert_to_docx_via_markdown(&request.input, &request.output, request.from)
-        }
+        (Format::Csv | Format::Xlsx, Format::Docx) => convert_to_docx_via_markdown(
+            &request.input,
+            &request.output,
+            request.from,
+            request.csv_delimiter,
+        ),
         (Format::Json | Format::Yaml | Format::Toml, Format::Docx) => {
             convert_document_format_to_docx(&request.input, &request.output, request.from)
         }
@@ -96,8 +106,12 @@ pub fn convert_document(request: &ConversionRequest) -> Result<(), MarkoffError>
         (Format::Markdown, Format::Json | Format::Yaml | Format::Toml) => {
             convert_markdown_to_document(&request.input, &request.output, request.to)
         }
-        (Format::Csv, Format::Markdown) => convert_csv_to_markdown(&request.input, &request.output),
-        (Format::Markdown, Format::Csv) => convert_markdown_to_csv(&request.input, &request.output),
+        (Format::Csv, Format::Markdown) => {
+            convert_csv_to_markdown(&request.input, &request.output, request.csv_delimiter)
+        }
+        (Format::Markdown, Format::Csv) => {
+            convert_markdown_to_csv(&request.input, &request.output, request.csv_delimiter)
+        }
         (Format::Xlsx, Format::Markdown) => {
             convert_xlsx_to_markdown(&request.input, &request.output)
         }
@@ -105,10 +119,32 @@ pub fn convert_document(request: &ConversionRequest) -> Result<(), MarkoffError>
             convert_markdown_to_xlsx(&request.input, &request.output)
         }
         (Format::Json | Format::Csv | Format::Yaml | Format::Toml, Format::Xlsx) => {
-            convert_data_to_xlsx(&request.input, &request.output, request.from)
+            convert_data_to_xlsx(
+                &request.input,
+                &request.output,
+                request.from,
+                request.csv_delimiter,
+            )
         }
         (Format::Xlsx, Format::Json | Format::Csv | Format::Yaml | Format::Toml) => {
-            convert_xlsx_to_data(&request.input, &request.output, request.to)
+            convert_xlsx_to_data(
+                &request.input,
+                &request.output,
+                request.to,
+                request.csv_delimiter,
+            )
+        }
+        (Format::Pptx, Format::Markdown) => {
+            convert_pptx_to_markdown(&request.input, &request.output)
+        }
+        (Format::Markdown, Format::Pptx) => {
+            convert_markdown_to_pptx(&request.input, &request.output)
+        }
+        (Format::Html, Format::Markdown) => {
+            convert_html_to_markdown(&request.input, &request.output)
+        }
+        (Format::Markdown, Format::Html) => {
+            convert_markdown_to_html(&request.input, &request.output)
         }
         _ => Err(MarkoffError::NotImplemented {
             from: request.from,
@@ -121,10 +157,11 @@ fn convert_docx_via_markdown(
     input: &Path,
     output: &Path,
     format: Format,
+    delimiter: u8,
 ) -> Result<(), MarkoffError> {
     let markdown = intermediate_path("md");
     let result = convert_docx_to_markdown(input, &markdown).and_then(|()| match format {
-        Format::Csv => convert_markdown_to_csv(&markdown, output),
+        Format::Csv => convert_markdown_to_csv(&markdown, output, delimiter),
         Format::Xlsx => convert_markdown_to_xlsx(&markdown, output),
         _ => unreachable!("only CSV and XLSX use this helper"),
     });
@@ -160,10 +197,11 @@ fn convert_to_docx_via_markdown(
     input: &Path,
     output: &Path,
     format: Format,
+    delimiter: u8,
 ) -> Result<(), MarkoffError> {
     let markdown = intermediate_path("md");
     let result = match format {
-        Format::Csv => convert_csv_to_markdown(input, &markdown),
+        Format::Csv => convert_csv_to_markdown(input, &markdown, delimiter),
         Format::Xlsx => convert_xlsx_to_markdown(input, &markdown),
         _ => unreachable!("only CSV and XLSX use this helper"),
     }
@@ -214,6 +252,7 @@ where
         from,
         to,
         overwrite: true,
+        csv_delimiter: b',',
     };
 
     convert_document(&request)
@@ -262,6 +301,7 @@ mod tests {
             from: Format::Json,
             to: Format::Markdown,
             overwrite: false,
+            csv_delimiter: b',',
         };
 
         assert!(matches!(
@@ -287,6 +327,7 @@ mod tests {
             from: Format::Json,
             to: Format::Markdown,
             overwrite: true,
+            csv_delimiter: b',',
         };
 
         convert_document(&request).unwrap();

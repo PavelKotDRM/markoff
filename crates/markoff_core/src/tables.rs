@@ -38,14 +38,17 @@ fn parse_markdown_table_row(row: &str) -> Vec<String> {
         if character == '\\' && characters.peek() == Some(&'|') {
             cell.push('|');
             characters.next();
+        } else if character == '\\' && characters.peek() == Some(&'\\') {
+            cell.push('\\');
+            characters.next();
         } else if character == '|' {
-            cells.push(cell.trim().to_string());
+            cells.push(cell.trim().replace("<br>", "\n"));
             cell.clear();
         } else {
             cell.push(character);
         }
     }
-    cells.push(cell.trim().to_string());
+    cells.push(cell.trim().replace("<br>", "\n"));
     cells
 }
 
@@ -87,7 +90,10 @@ pub(crate) fn markdown_table_from_rows(rows: &[Vec<String>]) -> String {
         format!(
             "| {} |",
             row.iter()
-                .map(|cell| cell.replace('\\', "\\\\").replace('|', "\\|"))
+                .map(|cell| cell
+                    .replace('\\', "\\\\")
+                    .replace('|', "\\|")
+                    .replace('\n', "<br>"))
                 .collect::<Vec<_>>()
                 .join(" | ")
         )

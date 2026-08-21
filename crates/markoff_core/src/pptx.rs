@@ -1,0 +1,542 @@
+//! Bidirectional PowerPoint (PPTX) <-> Markdown conversion.
+//!
+//! Scope is intentionally limited to slide titles and body text (plain
+//! paragraphs and bulleted items), mirroring the pragmatic subset already
+//! supported for DOCX/PDF: shape positioning, images, charts, speaker notes,
+//! and slide layouts/themes are not preserved.
+
+use crate::MarkoffError;
+use crate::error::invalid_data;
+use std::collections::BTreeMap;
+use std::path::Path;
+
+pub(crate) fn convert_pptx_to_markdown(input: &Path, output: &Path) -> Result<(), MarkoffError> {
+    use std::io::Read;
+
+    let file = std::fs::File::open(input)?;
+    let mut archive = zip::ZipArchive::new(file).map_err(invalid_data)?;
+
+    let mut presentation_xml = String::new();
+    archive
+        .by_name("ppt/presentation.xml")
+        .map_err(invalid_data)?
+        .read_to_string(&mut presentation_xml)?;
+    let mut rels_xml = String::new();
+    archive
+        .by_name("ppt/_rels/presentation.xml.rels")
+        .map_err(invalid_data)?
+        .read_to_string(&mut rels_xml)?;
+
+    let relationship_targets = read_relationship_targets(&rels_xml);
+    let slide_relationship_ids = read_slide_relationship_order(&presentation_xml);
+
+    let mut sections = Vec::new();
+    for (index, relationship_id) in slide_relationship_ids.iter().enumerate() {
+        let Some(target) = relationship_targets.get(relationship_id) else {
+            continue;
+        };
+        let part_path = resolve_part_path("ppt", target);
+        let mut slide_xml = String::new();
+        let Ok(mut part) = archive.by_name(&part_path) else {
+            continue;
+        };
+        if part.read_to_string(&mut slide_xml).is_err() {
+            continue;
+        }
+        sections.push(slide_to_markdown(&slide_xml, index + 1));
+    }
+
+    let markdown = sections.join("\n---\n\n");
+    std::fs::write(output, markdown)?;
+    Ok(())
+}
+
+fn resolve_part_path(base_dir: &str, target: &str) -> String {
+    if let Some(stripped) = target.strip_prefix('/') {
+        return stripped.to_string();
+    }
+    let mut segments: Vec<&str> = base_dir.split('/').filter(|part| !part.is_empty()).collect();
+    for part in target.split('/') {
+        match part {
+            "." => {}
+            ".." => {
+                segments.pop();
+            }
+            other => segments.push(other),
+        }
+    }
+    segments.join("/")
+}
+
+fn read_relationship_targets(xml: &str) -> BTreeMap<String, String> {
+    use quick_xml::Reader;
+    use quick_xml::events::Event;
+
+    let mut reader = Reader::from_str(xml);
+    let mut targets = BTreeMap::new();
+    loop {
+        match reader.read_event() {
+            Ok(Event::Eof) | Err(_) => break,
+            Ok(Event::Start(tag) | Event::Empty(tag))
+                if tag.local_name().as_ref() == b"Relationship" =>
+            {
+                let id = attribute_value(&tag, b"Id", reader.decoder());
+                let target = attribute_value(&tag, b"Target", reader.decoder());
+                if let (Some(id), Some(target)) = (id, target) {
+                    targets.insert(id, target);
+                }
+            }
+            _ => {}
+        }
+    }
+    targets
+}
+
+fn read_slide_relationship_order(xml: &str) -> Vec<String> {
+    use quick_xml::Reader;
+    use quick_xml::events::Event;
+
+    let mut reader = Reader::from_str(xml);
+    let mut ids = Vec::new();
+    let mut in_slide_id_list = false;
+    loop {
+        match reader.read_event() {
+            Ok(Event::Eof) | Err(_) => break,
+            Ok(Event::Start(tag)) if tag.local_name().as_ref() == b"sldIdLst" => {
+                in_slide_id_list = true;
+            }
+            Ok(Event::End(tag)) if tag.local_name().as_ref() == b"sldIdLst" => {
+                in_slide_id_list = false;
+            }
+            Ok(Event::Start(tag) | Event::Empty(tag))
+                if in_slide_id_list && tag.local_name().as_ref() == b"sldId" =>
+            {
+                if let Some(id) = tag
+                    .attributes()
+                    .flatten()
+                    .find(|attribute| attribute.key.as_ref() == b"r:id")
+                    .and_then(|attribute| {
+                        attribute
+                            .decode_and_unescape_value(reader.decoder())
+                            .ok()
+                            .map(|value| value.into_owned())
+                    })
+                {
+                    ids.push(id);
+                }
+            }
+            _ => {}
+        }
+    }
+    ids
+}
+
+fn attribute_value(
+    tag: &quick_xml::events::BytesStart<'_>,
+    name: &[u8],
+    decoder: quick_xml::encoding::Decoder,
+) -> Option<String> {
+    tag.attributes()
+        .flatten()
+        .find(|attribute| attribute.key.local_name().as_ref() == name)
+        .and_then(|attribute| {
+            attribute
+                .decode_and_unescape_value(decoder)
+                .ok()
+                .map(|value| value.into_owned())
+        })
+}
+
+fn slide_to_markdown(xml: &str, slide_number: usize) -> String {
+    use quick_xml::Reader;
+    use quick_xml::events::Event;
+
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(false);
+
+    let mut title = String::new();
+    let mut body_paragraphs: Vec<(String, bool)> = Vec::new();
+
+    let mut in_shape = false;
+    let mut is_title_shape = false;
+    let mut in_paragraph = false;
+    let mut in_run_text = false;
+    let mut paragraph_text = String::new();
+    let mut paragraph_bulleted = false;
+
+    loop {
+        let event = match reader.read_event() {
+            Ok(Event::Eof) | Err(_) => break,
+            Ok(event) => event,
+        };
+        match event {
+            Event::Start(tag) | Event::Empty(tag) => match tag.local_name().as_ref() {
+                b"sp" => {
+                    in_shape = true;
+                    is_title_shape = false;
+                }
+                b"ph" if in_shape => {
+                    let is_title = tag.attributes().flatten().any(|attribute| {
+                        attribute.key.local_name().as_ref() == b"type"
+                            && matches!(attribute.value.as_ref(), b"title" | b"ctrTitle")
+                    });
+                    if is_title {
+                        is_title_shape = true;
+                    }
+                }
+                b"p" if in_shape => {
+                    in_paragraph = true;
+                    paragraph_text.clear();
+                    paragraph_bulleted = false;
+                }
+                b"buChar" | b"buAutoNum" if in_paragraph => paragraph_bulleted = true,
+                b"t" if in_paragraph => in_run_text = true,
+                _ => {}
+            },
+            Event::Text(text) if in_run_text => {
+                if let Ok(decoded) = text.decode()
+                    && let Ok(unescaped) = quick_xml::escape::unescape(&decoded)
+                {
+                    paragraph_text.push_str(&unescaped);
+                }
+            }
+            Event::End(tag) => match tag.local_name().as_ref() {
+                b"t" => in_run_text = false,
+                b"p" if in_shape => {
+                    in_paragraph = false;
+                    let text = markdown_escape(paragraph_text.trim());
+                    if !text.is_empty() {
+                        if is_title_shape && title.is_empty() {
+                            title = text;
+                        } else {
+                            body_paragraphs.push((text, paragraph_bulleted));
+                        }
+                    }
+                }
+                b"sp" => in_shape = false,
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+
+    let heading = if title.is_empty() {
+        format!("Slide {slide_number}")
+    } else {
+        title
+    };
+    let mut section = format!("## {heading}\n\n");
+    for (text, bulleted) in body_paragraphs {
+        if bulleted {
+            section.push_str("- ");
+        }
+        section.push_str(&text);
+        section.push_str("\n\n");
+    }
+    section
+}
+
+fn markdown_escape(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('*', "\\*")
+        .replace('`', "\\`")
+        .replace('[', "\\[")
+        .replace(']', "\\]")
+}
+
+struct Slide {
+    title: String,
+    items: Vec<(String, bool)>,
+}
+
+pub(crate) fn convert_markdown_to_pptx(input: &Path, output: &Path) -> Result<(), MarkoffError> {
+    let source = std::fs::read_to_string(input)?;
+    let slides = parse_markdown_into_slides(&source);
+    write_pptx(&slides, output)
+}
+
+fn parse_markdown_into_slides(source: &str) -> Vec<Slide> {
+    let mut slides = Vec::new();
+    let mut current: Option<Slide> = None;
+    for raw_line in source.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line == "---" {
+            continue;
+        }
+        if let Some(text) = line.strip_prefix("# ").or_else(|| line.strip_prefix("## ")) {
+            if let Some(slide) = current.take() {
+                slides.push(slide);
+            }
+            current = Some(Slide {
+                title: text.trim().to_string(),
+                items: Vec::new(),
+            });
+            continue;
+        }
+        let (text, bulleted) = if let Some(rest) =
+            line.strip_prefix("- ").or_else(|| line.strip_prefix("* "))
+        {
+            (rest.to_string(), true)
+        } else if let Some(rest) = strip_ordered_marker(line) {
+            (rest, true)
+        } else {
+            (line.to_string(), false)
+        };
+        let slide = current.get_or_insert_with(|| Slide {
+            title: String::new(),
+            items: Vec::new(),
+        });
+        slide.items.push((text, bulleted));
+    }
+    if let Some(slide) = current.take() {
+        slides.push(slide);
+    }
+    if slides.is_empty() {
+        slides.push(Slide {
+            title: String::new(),
+            items: Vec::new(),
+        });
+    }
+    slides
+}
+
+fn strip_ordered_marker(line: &str) -> Option<String> {
+    let digits_end = line.find(|character: char| !character.is_ascii_digit())?;
+    if digits_end == 0 {
+        return None;
+    }
+    line.get(digits_end..)?
+        .strip_prefix(". ")
+        .map(str::to_string)
+}
+
+fn write_pptx(slides: &[Slide], output: &Path) -> Result<(), MarkoffError> {
+    use zip::write::SimpleFileOptions;
+
+    let slide_count = slides.len();
+    let file = std::fs::File::create(output)?;
+    let mut archive = zip::ZipWriter::new(file);
+    let options = SimpleFileOptions::default();
+
+    write_part(
+        &mut archive,
+        options,
+        "[Content_Types].xml",
+        &build_content_types(slide_count),
+    )?;
+    write_part(&mut archive, options, "_rels/.rels", PACKAGE_RELS)?;
+    write_part(&mut archive, options, "docProps/core.xml", CORE_PROPERTIES)?;
+    write_part(
+        &mut archive,
+        options,
+        "docProps/app.xml",
+        &build_app_properties(slide_count),
+    )?;
+    write_part(
+        &mut archive,
+        options,
+        "ppt/presentation.xml",
+        &build_presentation_xml(slide_count),
+    )?;
+    write_part(
+        &mut archive,
+        options,
+        "ppt/_rels/presentation.xml.rels",
+        &build_presentation_rels(slide_count),
+    )?;
+    write_part(&mut archive, options, "ppt/theme/theme1.xml", THEME_XML)?;
+    write_part(
+        &mut archive,
+        options,
+        "ppt/slideMasters/slideMaster1.xml",
+        SLIDE_MASTER_XML,
+    )?;
+    write_part(
+        &mut archive,
+        options,
+        "ppt/slideMasters/_rels/slideMaster1.xml.rels",
+        SLIDE_MASTER_RELS,
+    )?;
+    write_part(
+        &mut archive,
+        options,
+        "ppt/slideLayouts/slideLayout1.xml",
+        SLIDE_LAYOUT_XML,
+    )?;
+    write_part(
+        &mut archive,
+        options,
+        "ppt/slideLayouts/_rels/slideLayout1.xml.rels",
+        SLIDE_LAYOUT_RELS,
+    )?;
+
+    for (index, slide) in slides.iter().enumerate() {
+        write_part(
+            &mut archive,
+            options,
+            &format!("ppt/slides/slide{}.xml", index + 1),
+            &build_slide_xml(slide),
+        )?;
+        write_part(
+            &mut archive,
+            options,
+            &format!("ppt/slides/_rels/slide{}.xml.rels", index + 1),
+            SLIDE_RELS,
+        )?;
+    }
+
+    archive.finish().map_err(invalid_data)?;
+    Ok(())
+}
+
+fn write_part(
+    archive: &mut zip::ZipWriter<std::fs::File>,
+    options: zip::write::SimpleFileOptions,
+    name: &str,
+    content: &str,
+) -> Result<(), MarkoffError> {
+    use std::io::Write as _;
+    archive.start_file(name, options).map_err(invalid_data)?;
+    archive.write_all(content.as_bytes())?;
+    Ok(())
+}
+
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+fn build_content_types(slide_count: usize) -> String {
+    let mut overrides = String::new();
+    for index in 1..=slide_count {
+        overrides.push_str(&format!(
+            "<Override PartName=\"/ppt/slides/slide{index}.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.presentationml.slide+xml\"/>"
+        ));
+    }
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/><Override PartName=\"/ppt/presentation.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml\"/><Override PartName=\"/ppt/slideMasters/slideMaster1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml\"/><Override PartName=\"/ppt/slideLayouts/slideLayout1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml\"/><Override PartName=\"/ppt/theme/theme1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.theme+xml\"/>{overrides}<Override PartName=\"/docProps/core.xml\" ContentType=\"application/vnd.openxmlformats-package.core-properties+xml\"/><Override PartName=\"/docProps/app.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.extended-properties+xml\"/></Types>"
+    )
+}
+
+fn build_presentation_rels(slide_count: usize) -> String {
+    let mut relationships = String::from(
+        "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster\" Target=\"slideMasters/slideMaster1.xml\"/>"
+    );
+    for index in 1..=slide_count {
+        relationships.push_str(&format!(
+            "<Relationship Id=\"rId{}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide\" Target=\"slides/slide{index}.xml\"/>",
+            index + 1
+        ));
+    }
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">{relationships}</Relationships>"
+    )
+}
+
+fn build_presentation_xml(slide_count: usize) -> String {
+    let mut slide_ids = String::new();
+    for index in 0..slide_count {
+        slide_ids.push_str(&format!(
+            "<p:sldId id=\"{}\" r:id=\"rId{}\"/>",
+            256 + index,
+            index + 2
+        ));
+    }
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><p:presentation xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\"><p:sldMasterIdLst><p:sldMasterId id=\"2147483648\" r:id=\"rId1\"/></p:sldMasterIdLst><p:sldIdLst>{slide_ids}</p:sldIdLst><p:sldSz cx=\"9144000\" cy=\"6858000\"/><p:notesSz cx=\"6858000\" cy=\"9144000\"/></p:presentation>"
+    )
+}
+
+fn build_app_properties(slide_count: usize) -> String {
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><Properties xmlns=\"http://schemas.openxmlformats.org/officeDocument/2006/extended-properties\"><Application>markoff</Application><Slides>{slide_count}</Slides></Properties>"
+    )
+}
+
+fn build_slide_xml(slide: &Slide) -> String {
+    let title = xml_escape(&slide.title);
+    let mut body = String::new();
+    if slide.items.is_empty() {
+        body.push_str("<a:p><a:endParaRPr lang=\"en-US\"/></a:p>");
+    }
+    for (text, bulleted) in &slide.items {
+        let paragraph_properties = if *bulleted {
+            "<a:pPr><a:buChar char=\"\u{2022}\"/></a:pPr>"
+        } else {
+            "<a:pPr><a:buNone/></a:pPr>"
+        };
+        body.push_str(&format!(
+            "<a:p>{paragraph_properties}<a:r><a:t>{}</a:t></a:r></a:p>",
+            xml_escape(text)
+        ));
+    }
+    let title_paragraph = if title.is_empty() {
+        "<a:p><a:endParaRPr lang=\"en-US\"/></a:p>".to_string()
+    } else {
+        format!("<a:p><a:r><a:t>{title}</a:t></a:r></a:p>")
+    };
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><p:sld xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\"><p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id=\"1\" name=\"\"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/><p:sp><p:nvSpPr><p:cNvPr id=\"2\" name=\"Title\"/><p:cNvSpPr><a:spLocks noGrp=\"1\"/></p:cNvSpPr><p:nvPr><p:ph type=\"title\"/></p:nvPr></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:lstStyle/>{title_paragraph}</p:txBody></p:sp><p:sp><p:nvSpPr><p:cNvPr id=\"3\" name=\"Content\"/><p:cNvSpPr><a:spLocks noGrp=\"1\"/></p:cNvSpPr><p:nvPr><p:ph type=\"body\" idx=\"1\"/></p:nvPr></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:lstStyle/>{body}</p:txBody></p:sp></p:spTree></p:cSld></p:sld>"
+    )
+}
+
+const PACKAGE_RELS: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"ppt/presentation.xml\"/><Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties\" Target=\"docProps/core.xml\"/><Relationship Id=\"rId3\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties\" Target=\"docProps/app.xml\"/></Relationships>";
+
+const CORE_PROPERTIES: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><cp:coreProperties xmlns:cp=\"http://schemas.openxmlformats.org/package/2006/metadata/core-properties\" xmlns:dc=\"http://purl.org/dc/elements/1.1/\" xmlns:dcterms=\"http://purl.org/dc/terms/\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"><dc:title>Presentation</dc:title><dc:creator>markoff</dc:creator></cp:coreProperties>";
+
+const THEME_XML: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><a:theme xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" name=\"Markoff Theme\"><a:themeElements><a:clrScheme name=\"Markoff\"><a:dk1><a:sysClr val=\"windowText\" lastClr=\"000000\"/></a:dk1><a:lt1><a:sysClr val=\"window\" lastClr=\"FFFFFF\"/></a:lt1><a:dk2><a:srgbClr val=\"1F497D\"/></a:dk2><a:lt2><a:srgbClr val=\"EEECE1\"/></a:lt2><a:accent1><a:srgbClr val=\"4F81BD\"/></a:accent1><a:accent2><a:srgbClr val=\"C0504D\"/></a:accent2><a:accent3><a:srgbClr val=\"9BBB59\"/></a:accent3><a:accent4><a:srgbClr val=\"8064A2\"/></a:accent4><a:accent5><a:srgbClr val=\"4BACC6\"/></a:accent5><a:accent6><a:srgbClr val=\"F79646\"/></a:accent6><a:hlink><a:srgbClr val=\"0000FF\"/></a:hlink><a:folHlink><a:srgbClr val=\"800080\"/></a:folHlink></a:clrScheme><a:fontScheme name=\"Markoff\"><a:majorFont><a:latin typeface=\"Calibri\"/><a:ea typeface=\"\"/><a:cs typeface=\"\"/></a:majorFont><a:minorFont><a:latin typeface=\"Calibri\"/><a:ea typeface=\"\"/><a:cs typeface=\"\"/></a:minorFont></a:fontScheme><a:fmtScheme name=\"Markoff\"><a:fillStyleLst><a:solidFill><a:schemeClr val=\"phClr\"/></a:solidFill><a:solidFill><a:schemeClr val=\"phClr\"/></a:solidFill><a:solidFill><a:schemeClr val=\"phClr\"/></a:solidFill></a:fillStyleLst><a:lnStyleLst><a:ln w=\"9525\"><a:solidFill><a:schemeClr val=\"phClr\"/></a:solidFill></a:ln><a:ln w=\"25400\"><a:solidFill><a:schemeClr val=\"phClr\"/></a:solidFill></a:ln><a:ln w=\"38100\"><a:solidFill><a:schemeClr val=\"phClr\"/></a:solidFill></a:ln></a:lnStyleLst><a:effectStyleLst><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle></a:effectStyleLst><a:bgFillStyleLst><a:solidFill><a:schemeClr val=\"phClr\"/></a:solidFill><a:solidFill><a:schemeClr val=\"phClr\"/></a:solidFill><a:solidFill><a:schemeClr val=\"phClr\"/></a:solidFill></a:bgFillStyleLst></a:fmtScheme></a:themeElements></a:theme>";
+
+const SLIDE_MASTER_XML: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><p:sldMaster xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\"><p:cSld><p:bg><p:bgRef idx=\"1001\"><a:schemeClr val=\"bg1\"/></p:bgRef></p:bg><p:spTree><p:nvGrpSpPr><p:cNvPr id=\"1\" name=\"\"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/><p:sp><p:nvSpPr><p:cNvPr id=\"2\" name=\"Title Placeholder\"/><p:cNvSpPr><a:spLocks noGrp=\"1\"/></p:cNvSpPr><p:nvPr><p:ph type=\"title\"/></p:nvPr></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:endParaRPr lang=\"en-US\"/></a:p></p:txBody></p:sp><p:sp><p:nvSpPr><p:cNvPr id=\"3\" name=\"Body Placeholder\"/><p:cNvSpPr><a:spLocks noGrp=\"1\"/></p:cNvSpPr><p:nvPr><p:ph type=\"body\" idx=\"1\"/></p:nvPr></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:endParaRPr lang=\"en-US\"/></a:p></p:txBody></p:sp></p:spTree></p:cSld><p:clrMap bg1=\"lt1\" tx1=\"dk1\" bg2=\"lt2\" tx2=\"dk2\" accent1=\"accent1\" accent2=\"accent2\" accent3=\"accent3\" accent4=\"accent4\" accent5=\"accent5\" accent6=\"accent6\" hlink=\"hlink\" folHlink=\"folHlink\"/><p:sldLayoutIdLst><p:sldLayoutId id=\"2147483649\" r:id=\"rId1\"/></p:sldLayoutIdLst></p:sldMaster>";
+
+const SLIDE_MASTER_RELS: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout\" Target=\"../slideLayouts/slideLayout1.xml\"/><Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme\" Target=\"../theme/theme1.xml\"/></Relationships>";
+
+const SLIDE_LAYOUT_XML: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><p:sldLayout xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\" type=\"title\" preserve=\"1\"><p:cSld name=\"Title and Content\"><p:spTree><p:nvGrpSpPr><p:cNvPr id=\"1\" name=\"\"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/><p:sp><p:nvSpPr><p:cNvPr id=\"2\" name=\"Title\"/><p:cNvSpPr><a:spLocks noGrp=\"1\"/></p:cNvSpPr><p:nvPr><p:ph type=\"title\"/></p:nvPr></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:endParaRPr lang=\"en-US\"/></a:p></p:txBody></p:sp><p:sp><p:nvSpPr><p:cNvPr id=\"3\" name=\"Content\"/><p:cNvSpPr><a:spLocks noGrp=\"1\"/></p:cNvSpPr><p:nvPr><p:ph type=\"body\" idx=\"1\"/></p:nvPr></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:endParaRPr lang=\"en-US\"/></a:p></p:txBody></p:sp></p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sldLayout>";
+
+const SLIDE_LAYOUT_RELS: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster\" Target=\"../slideMasters/slideMaster1.xml\"/></Relationships>";
+
+const SLIDE_RELS: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout\" Target=\"../slideLayouts/slideLayout1.xml\"/></Relationships>";
+
+#[cfg(test)]
+mod tests {
+    use super::{convert_markdown_to_pptx, convert_pptx_to_markdown};
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_path(name: &str, extension: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("markoff_pptx_{name}_{nanos}.{extension}"))
+    }
+
+    #[test]
+    fn round_trips_titles_and_bullets_through_pptx() {
+        let markdown_in = unique_temp_path("input", "md");
+        let pptx = unique_temp_path("presentation", "pptx");
+        let markdown_out = unique_temp_path("output", "md");
+        fs::write(
+            &markdown_in,
+            "# Welcome\n\nIntro paragraph.\n\n## Agenda\n\n- First topic\n- Second topic\n",
+        )
+        .unwrap();
+
+        convert_markdown_to_pptx(&markdown_in, &pptx).unwrap();
+        convert_pptx_to_markdown(&pptx, &markdown_out).unwrap();
+
+        let rendered = fs::read_to_string(&markdown_out).unwrap();
+        assert!(rendered.contains("## Welcome"));
+        assert!(rendered.contains("Intro paragraph."));
+        assert!(rendered.contains("## Agenda"));
+        assert!(rendered.contains("- First topic"));
+        assert!(rendered.contains("- Second topic"));
+
+        fs::remove_file(markdown_in).ok();
+        fs::remove_file(pptx).ok();
+        fs::remove_file(markdown_out).ok();
+    }
+}
