@@ -12,21 +12,12 @@ pub(crate) fn parse_markdown_table(markdown: &str) -> Vec<Vec<String>> {
         return Vec::new();
     }
 
-    let header = rows[0]
-        .trim_matches('|')
-        .split('|')
-        .map(|cell| cell.trim().to_string())
-        .collect::<Vec<_>>();
+    let header = parse_markdown_table_row(rows[0]);
 
     let body = rows[1..]
         .iter()
         .skip_while(|row| row.contains("---"))
-        .map(|row| {
-            row.trim_matches('|')
-                .split('|')
-                .map(|cell| cell.trim().to_string())
-                .collect::<Vec<_>>()
-        })
+        .map(|row| parse_markdown_table_row(row))
         .filter(|row| !row.is_empty() && row.len() == header.len())
         .collect::<Vec<_>>();
 
@@ -36,6 +27,26 @@ pub(crate) fn parse_markdown_table(markdown: &str) -> Vec<Vec<String>> {
     }
     result.extend(body);
     result
+}
+
+fn parse_markdown_table_row(row: &str) -> Vec<String> {
+    let mut cells = Vec::new();
+    let mut cell = String::new();
+    let mut characters = row.trim().trim_matches('|').chars().peekable();
+
+    while let Some(character) = characters.next() {
+        if character == '\\' && characters.peek() == Some(&'|') {
+            cell.push('|');
+            characters.next();
+        } else if character == '|' {
+            cells.push(cell.trim().to_string());
+            cell.clear();
+        } else {
+            cell.push(character);
+        }
+    }
+    cells.push(cell.trim().to_string());
+    cells
 }
 
 pub(crate) fn parse_markdown_tables(markdown: &str) -> BTreeMap<String, Vec<Vec<String>>> {
@@ -72,7 +83,15 @@ pub(crate) fn markdown_table_from_rows(rows: &[Vec<String>]) -> String {
         return String::new();
     }
 
-    let format_row = |row: &[String]| format!("| {} |", row.join(" | "));
+    let format_row = |row: &[String]| {
+        format!(
+            "| {} |",
+            row.iter()
+                .map(|cell| cell.replace('\\', "\\\\").replace('|', "\\|"))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        )
+    };
     let separator = (0..rows[0].len())
         .map(|_| "---")
         .collect::<Vec<_>>()
@@ -87,4 +106,21 @@ pub(crate) fn markdown_table_from_rows(rows: &[Vec<String>]) -> String {
     }
 
     output.join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{markdown_table_from_rows, parse_markdown_table};
+
+    #[test]
+    fn parses_and_writes_escaped_pipes() {
+        let rows = vec![
+            vec!["Quarter | Sales".to_string(), "Profit".to_string()],
+            vec!["Q1".to_string(), "40".to_string()],
+        ];
+        let markdown = markdown_table_from_rows(&rows);
+
+        assert!(markdown.contains("Quarter \\| Sales"));
+        assert_eq!(parse_markdown_table(&markdown), rows);
+    }
 }

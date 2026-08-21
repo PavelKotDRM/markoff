@@ -1,10 +1,19 @@
 use crate::MarkoffError;
-use crate::docx_inline::{markdown_from_docx_run, pageref_target};
+use crate::docx_inline::{VerticalAlign, markdown_from_docx_run, pageref_target};
 use crate::error::invalid_data;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-type PendingRun = (String, bool, bool, bool, bool, bool, Option<String>);
+type PendingRun = (
+    String,
+    bool,
+    bool,
+    bool,
+    bool,
+    bool,
+    VerticalAlign,
+    Option<String>,
+);
 
 #[derive(Clone, Copy)]
 enum ListKind {
@@ -26,11 +35,15 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
         .read_to_string(&mut document)?;
     let numbering = read_numbering(&mut archive)?;
     let footnotes = read_footnotes(&mut archive)?;
+    let relationships = read_relationships(&mut archive)?;
+    let image_dir = output.parent().map_or_else(|| PathBuf::from("image"), |parent| parent.join("image"));
+    let mut image_counter = 0usize;
 
     let mut reader = Reader::from_str(&document);
     reader.config_mut().trim_text(false);
     let mut markdown = Vec::new();
     let mut paragraph = String::new();
+    let mut raw_paragraph = String::new();
     let mut run = String::new();
     let mut pending_run: Option<PendingRun> = None;
     let mut heading_level = None;
@@ -49,6 +62,9 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
     let mut strikethrough = false;
     let mut underline = false;
     let mut code = false;
+    let mut vert_align = VerticalAlign::Baseline;
+    let mut paragraph_has_code = false;
+    let mut paragraph_has_plain_text = false;
     let mut in_paragraph = false;
     let mut referenced_footnotes = BTreeSet::new();
     let mut table_rows = Vec::new();
@@ -57,6 +73,8 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
     let mut in_table = false;
     let mut in_table_cell = false;
     let mut list_counters = BTreeMap::new();
+    let mut image_rel_id = None;
+    let mut image_alt = String::new();
 
     loop {
         match reader.read_event().map_err(invalid_data)? {
@@ -73,6 +91,7 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                 b"p" => {
                     in_paragraph = true;
                     paragraph.clear();
+                    raw_paragraph.clear();
                     heading_level = None;
                     code_block = false;
                     quote = false;
@@ -84,33 +103,90 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                     field_instruction.clear();
                     page_reference = None;
                     in_field_result = false;
+                    paragraph_has_code = false;
+                    paragraph_has_plain_text = false;
                 }
-                b"r" => run.clear(),
-                b"b" => bold = true,
-                b"i" => italic = true,
-                b"strike" => strikethrough = true,
-                b"u" => underline = true,
+                b"r" => {
+                    run.clear();
+                    code = false;
+                    vert_align = VerticalAlign::Baseline;
+                }
+                b"b" => bold = word_property_enabled(&event, reader.decoder()),
+                b"i" => italic = word_property_enabled(&event, reader.decoder()),
+                b"strike" => strikethrough = word_property_enabled(&event, reader.decoder()),
+                b"u" => underline = word_property_enabled(&event, reader.decoder()),
+                b"vertAlign" => {
+                    vert_align = attribute_value(&event, b"val", reader.decoder())?
+                        .map(|value| match value.as_str() {
+                            "superscript" => VerticalAlign::Superscript,
+                            "subscript" => VerticalAlign::Subscript,
+                            _ => VerticalAlign::Baseline,
+                        })
+                        .unwrap_or(VerticalAlign::Baseline);
+                }
+                b"drawing" => {
+                    image_rel_id = None;
+                    image_alt.clear();
+                }
+                b"docPr" => {
+                    if let Some(description) = attribute_value(&event, b"descr", reader.decoder())?
+                        .filter(|value| !value.is_empty())
+                        .or(attribute_value(&event, b"name", reader.decoder())?)
+                    {
+                        image_alt = description;
+                    }
+                }
+                b"blip" => {
+                    image_rel_id = attribute_value(&event, b"embed", reader.decoder())?;
+                }
                 b"rFonts" => {
                     code = event.attributes().flatten().any(|attribute| {
                         attribute.key.local_name().as_ref() == b"ascii"
                             && attribute
                                 .decode_and_unescape_value(reader.decoder())
-                                .is_ok_and(|value| value.eq_ignore_ascii_case("Consolas"))
+                                .is_ok_and(|value| {
+                                    value.eq_ignore_ascii_case("Consolas")
+                                        || value.eq_ignore_ascii_case("Courier New")
+                                })
                     });
                 }
                 b"tab" if in_paragraph => {
-                    flush_pending_run(&mut paragraph, &mut pending_run);
-                    if paragraph
+                    let trailing_is_whitespace = run
                         .chars()
                         .last()
-                        .is_some_and(|character| !character.is_whitespace())
-                    {
-                        paragraph.push(' ');
+                        .or_else(|| {
+                            pending_run
+                                .as_ref()
+                                .and_then(|(text, ..)| text.chars().last())
+                        })
+                        .or_else(|| paragraph.chars().last())
+                        .is_some_and(char::is_whitespace);
+                    if !trailing_is_whitespace {
+                        run.push(' ');
                     }
                 }
                 b"br" if in_paragraph => {
+                    if !run.is_empty() {
+                        raw_paragraph.push_str(&run);
+                        paragraph_has_code |= code;
+                        paragraph_has_plain_text |= !code;
+                        queue_docx_run(
+                            &mut paragraph,
+                            &mut pending_run,
+                            &run,
+                            bold,
+                            italic,
+                            strikethrough,
+                            underline,
+                            code && !code_block,
+                            vert_align,
+                            in_field_result.then(|| page_reference.clone()).flatten(),
+                        );
+                        run.clear();
+                    }
                     flush_pending_run(&mut paragraph, &mut pending_run);
-                    paragraph.push('\n');
+                    paragraph.push_str("  \n");
+                    raw_paragraph.push('\n');
                 }
                 b"instrText" => in_instruction_text = true,
                 b"bookmarkStart" => {
@@ -188,7 +264,17 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                         }
                     }
                 }
-                b"bottom" if in_paragraph => horizontal_rule = true,
+                b"bottom" if in_paragraph => {
+                    horizontal_rule = event.attributes().flatten().any(|attribute| {
+                        attribute.key.local_name().as_ref() == b"val"
+                            && attribute
+                                .decode_and_unescape_value(reader.decoder())
+                                .is_ok_and(|value| {
+                                    !value.eq_ignore_ascii_case("nil")
+                                        && !value.eq_ignore_ascii_case("none")
+                                })
+                    });
+                }
                 b"numId" => {
                     for attribute in event.attributes().flatten() {
                         if attribute.key.local_name().as_ref() == b"val" {
@@ -215,7 +301,16 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                 _ => {}
             },
             Event::Text(event) if in_paragraph => {
-                let text = event.decode().map_err(invalid_data)?;
+                let decoded = event.decode().map_err(invalid_data)?;
+                let text = quick_xml::escape::unescape(&decoded).map_err(invalid_data)?;
+                if in_instruction_text {
+                    field_instruction.push_str(&text);
+                } else {
+                    run.push_str(&text);
+                }
+            }
+            Event::GeneralRef(event) if in_paragraph => {
+                let text = resolve_general_ref(&event, reader.decoder())?;
                 if in_instruction_text {
                     field_instruction.push_str(&text);
                 } else {
@@ -225,48 +320,45 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
             Event::End(event) => match event.local_name().as_ref() {
                 b"instrText" => in_instruction_text = false,
                 b"fldSimple" => in_field_result = false,
-                b"r" => {
-                    if !run.is_empty() {
-                        let link_target = in_field_result.then(|| page_reference.clone()).flatten();
-                        let run_code = code && !code_block;
-                        if let Some((
-                            previous_text,
-                            previous_bold,
-                            previous_italic,
-                            previous_strikethrough,
-                            previous_underline,
-                            previous_code,
-                            previous_target,
-                        )) = pending_run.as_mut()
-                            && (
-                                *previous_bold,
-                                *previous_italic,
-                                *previous_strikethrough,
-                                *previous_underline,
-                                *previous_code,
-                                previous_target.as_deref(),
-                            ) == (
-                                bold,
-                                italic,
-                                strikethrough,
-                                underline,
-                                run_code,
-                                link_target.as_deref(),
-                            )
+                b"drawing" if in_paragraph => {
+                    if let Some(rel_id) = image_rel_id.take()
+                        && let Some(target) = relationships.get(&rel_id)
+                        && let Some(bytes) = read_media_part(&mut archive, target)
+                    {
+                        let extension = Path::new(target)
+                            .extension()
+                            .and_then(std::ffi::OsStr::to_str)
+                            .unwrap_or("png");
+                        image_counter += 1;
+                        let file_name = format!("image{image_counter}.{extension}");
+                        if std::fs::create_dir_all(&image_dir).is_ok()
+                            && std::fs::write(image_dir.join(&file_name), bytes).is_ok()
                         {
-                            previous_text.push_str(&run);
-                        } else {
                             flush_pending_run(&mut paragraph, &mut pending_run);
-                            pending_run = Some((
-                                run.clone(),
-                                bold,
-                                italic,
-                                strikethrough,
-                                underline,
-                                run_code,
-                                link_target,
+                            paragraph.push_str(&format!(
+                                "![{image_alt}](image/{file_name})"
                             ));
                         }
+                    }
+                    image_alt.clear();
+                }
+                b"r" => {
+                    if !run.is_empty() {
+                        raw_paragraph.push_str(&run);
+                        paragraph_has_code |= code;
+                        paragraph_has_plain_text |= !code;
+                        queue_docx_run(
+                            &mut paragraph,
+                            &mut pending_run,
+                            &run,
+                            bold,
+                            italic,
+                            strikethrough,
+                            underline,
+                            code && !code_block,
+                            vert_align,
+                            in_field_result.then(|| page_reference.clone()).flatten(),
+                        );
                     }
                     bold = false;
                     italic = false;
@@ -281,8 +373,13 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                             table_cell_paragraphs.push(paragraph.clone());
                         } else if horizontal_rule {
                             markdown.push("---".to_string());
-                        } else if code_block {
-                            markdown.push(format!("```\n{paragraph}\n```"));
+                        } else if code_block
+                            || (paragraph_has_code
+                                && !paragraph_has_plain_text
+                                && paragraph.starts_with('`')
+                                && paragraph.ends_with('`'))
+                        {
+                            markdown.push(format!("```\n{raw_paragraph}\n```"));
                         } else {
                             let anchors = bookmarks
                                 .iter()
@@ -364,8 +461,249 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
             }
         }
     }
+    convert_textual_footnotes(&mut markdown);
+    convert_formula_section(&mut markdown);
     std::fs::write(output, markdown.join("\n\n") + "\n")?;
     Ok(())
+}
+
+/// Some documents simulate footnotes with plain text (e.g. `text.[1]` and a
+/// separate `[1] Note text.` paragraph) instead of real Word footnotes. When
+/// a bracketed marker is both referenced and defined this way, rewrite it as
+/// Markdown footnote syntax (`[^1]` / `[^1]: Note text.`).
+fn convert_textual_footnotes(markdown: &mut Vec<String>) {
+    let definitions = markdown
+        .iter()
+        .filter_map(|paragraph| textual_footnote_definition(paragraph))
+        .collect::<Vec<_>>();
+
+    let mut footnotes = Vec::new();
+    for (label, content) in definitions {
+        let marker = format!("\\[{label}\\]");
+        let is_referenced = markdown
+            .iter()
+            .any(|paragraph| !textual_footnote_definition(paragraph).is_some_and(|(other, _)| other == label)
+                && paragraph.contains(&marker));
+        if !is_referenced {
+            continue;
+        }
+        for paragraph in markdown.iter_mut() {
+            if textual_footnote_definition(paragraph).is_none() {
+                *paragraph = paragraph.replace(&marker, &format!("[^{label}]"));
+            }
+        }
+        footnotes.push((label, content));
+    }
+
+    markdown.retain(|paragraph| textual_footnote_definition(paragraph).is_none());
+    for (label, content) in footnotes {
+        markdown.push(format!("[^{label}]: {content}"));
+    }
+}
+
+/// Parses a paragraph of the form `\[label\] content` where `label` is a
+/// plain footnote-style marker (digits or lowercase Roman numerals), as
+/// produced by escaping a literal `[label] content` paragraph.
+fn textual_footnote_definition(paragraph: &str) -> Option<(String, String)> {
+    let remainder = paragraph.trim_start().strip_prefix("\\[")?;
+    let (label, rest) = remainder.split_once("\\]")?;
+    let content = rest.strip_prefix(' ')?;
+    let is_valid_label = !label.is_empty()
+        && (label.bytes().all(|byte| byte.is_ascii_digit())
+            || label.chars().all(|character| "ivxlcdm".contains(character)));
+    is_valid_label.then(|| (label.to_string(), content.to_string()))
+}
+
+/// Rewrites plain-text formulas, fractions, and matrices under a "Formulas"
+/// heading (e.g. `# 10. Формулы`) as LaTeX math, since these documents type
+/// math notation as plain Unicode text rather than an OOXML math object.
+fn convert_formula_section(markdown: &mut [String]) {
+    let mut in_formula_section = false;
+    for paragraph in markdown.iter_mut() {
+        if let Some(heading) = heading_text(paragraph) {
+            let heading = heading.to_lowercase();
+            in_formula_section = heading.contains("формул") || heading.contains("formula");
+            continue;
+        }
+        if in_formula_section {
+            *paragraph = convert_formula_paragraph(paragraph);
+        }
+    }
+}
+
+fn heading_text(paragraph: &str) -> Option<&str> {
+    let hashes = paragraph.chars().take_while(|character| *character == '#').count();
+    ((1..=6).contains(&hashes) && paragraph.as_bytes().get(hashes) == Some(&b' '))
+        .then(|| paragraph[hashes + 1..].trim())
+}
+
+fn convert_formula_paragraph(paragraph: &str) -> String {
+    if let Some((label, rest)) = paragraph.split_once("  \n")
+        && label.trim_end().ends_with(':')
+    {
+        if rest.trim_start().starts_with('$') {
+            // Already converted on a previous pass; Markdown's own escaping
+            // of the literal backslash doubles it after a DOCX round trip.
+            return format!("{label}  \n{}", unescape_math_backslashes(rest));
+        }
+        let body_lines = rest.split("  \n").collect::<Vec<_>>();
+        if body_lines.len() > 1
+            && let Some(rows) = body_lines
+                .iter()
+                .map(|line| matrix_row_to_latex(line))
+                .collect::<Option<Vec<_>>>()
+        {
+            return format!(
+                "{label}  \n$$\\begin{{matrix}} {} \\end{{matrix}}$$",
+                rows.join(" \\\\ ")
+            );
+        }
+        let latex = latex_math_from_plain_text(&body_lines.join(" "));
+        return format!("{label}  \n$${latex}$$");
+    }
+    if let Some((label, formula)) = paragraph.split_once(": ") {
+        if formula.trim_start().starts_with('$') {
+            return format!("{label}: {}", unescape_math_backslashes(formula));
+        }
+        if looks_like_formula(formula) {
+            return format!("{label}: ${}$", latex_math_from_plain_text(formula));
+        }
+    }
+    paragraph.to_string()
+}
+
+fn looks_like_formula(text: &str) -> bool {
+    text.chars().any(|character| character.is_ascii_digit())
+        && text
+            .chars()
+            .all(|character| !character.is_alphabetic() || character.is_ascii())
+}
+
+/// Parses an escaped bracketed row like `\[ 1  2 \]` into a LaTeX matrix row
+/// (`1 & 2`); returns `None` when the line is not a simple numeric row.
+fn matrix_row_to_latex(line: &str) -> Option<String> {
+    let inner = line
+        .trim()
+        .strip_prefix("\\[")?
+        .strip_suffix("\\]")?
+        .trim();
+    (!inner.is_empty()).then(|| inner.split_whitespace().collect::<Vec<_>>().join(" & "))
+}
+
+/// Converts common plain-text math notation into LaTeX, without guessing at
+/// ambiguous structure (e.g. whether a trailing digit is meant as a power).
+fn latex_math_from_plain_text(text: &str) -> String {
+    let text = strip_embedded_math_delimiters(text);
+    let text = text.replace("\\[", "[").replace("\\]", "]");
+    let text = sqrt_to_latex(&text);
+    // Whole-expression fraction "(a + b) / (c + d)" is unambiguous enough to
+    // convert to \frac; anything less regular is left as translated symbols.
+    let text = if let Some((numerator, denominator)) = fraction_parts(&text) {
+        format!("\\frac{{{numerator}}}{{{denominator}}}")
+    } else {
+        text
+    };
+    [
+        ("±", "\\pm"),
+        ("≤", "\\le"),
+        ("≥", "\\ge"),
+        ("≠", "\\neq"),
+        ("≈", "\\approx"),
+        ("∞", "\\infty"),
+        ("∑", "\\sum"),
+        ("∏", "\\prod"),
+        ("∫", "\\int"),
+        ("×", "\\times"),
+        ("÷", "\\div"),
+        ("⇒", "\\Rightarrow"),
+        ("⇔", "\\Leftrightarrow"),
+        ("→", "\\rightarrow"),
+        ("←", "\\leftarrow"),
+        ("↔", "\\leftrightarrow"),
+    ]
+    .into_iter()
+    .fold(text, |text, (symbol, latex)| text.replace(symbol, latex))
+}
+
+fn sqrt_to_latex(text: &str) -> String {
+    let mut result = String::new();
+    let mut remaining = text;
+    while let Some(index) = remaining.find('√') {
+        result.push_str(&remaining[..index]);
+        let after = &remaining[index + '√'.len_utf8()..];
+        if let Some(inner_end) = matching_paren_end(after) {
+            result.push_str("\\sqrt{");
+            result.push_str(&after[1..inner_end]);
+            result.push('}');
+            remaining = &after[inner_end + 1..];
+        } else {
+            result.push_str("\\sqrt");
+            remaining = after;
+        }
+    }
+    result.push_str(remaining);
+    result
+}
+
+/// Given text starting with `(`, returns the index of its matching `)`.
+fn matching_paren_end(text: &str) -> Option<usize> {
+    let mut depth = 0i32;
+    for (index, character) in text.char_indices() {
+        match character {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ if depth == 0 => return None,
+            _ => {}
+        }
+    }
+    None
+}
+
+fn fraction_parts(text: &str) -> Option<(String, String)> {
+    let text = text.trim();
+    if !text.starts_with('(') {
+        return None;
+    }
+    let numerator_end = matching_paren_end(text)?;
+    let numerator = &text[1..numerator_end];
+    let rest = text[numerator_end + 1..]
+        .trim_start()
+        .strip_prefix('/')?
+        .trim_start();
+    let denominator = rest.strip_prefix('(')?.strip_suffix(')')?;
+    (!denominator.contains('(')).then(|| (numerator.to_string(), denominator.to_string()))
+}
+
+/// Merges runs already rendered as `$^{...}$`/`$_{...}$` LaTeX spans into a
+/// single surrounding math expression, dropping their own `$` delimiters.
+fn strip_embedded_math_delimiters(text: &str) -> String {
+    let mut result = String::new();
+    let mut remaining = text;
+    while let Some(start) = remaining.find("$^{").or_else(|| remaining.find("$_{")) {
+        result.push_str(&remaining[..start]);
+        let after_dollar = &remaining[start + 1..];
+        if let Some(end) = after_dollar.find("}$") {
+            result.push_str(&after_dollar[..end + 1]);
+            remaining = &after_dollar[end + 2..];
+        } else {
+            result.push('$');
+            remaining = after_dollar;
+        }
+    }
+    result.push_str(remaining);
+    result
+}
+
+/// Reverses Markdown's own backslash escaping for LaTeX text produced on a
+/// previous conversion pass: a raw DOCX run text keeps a single `\`, but
+/// reading it back through `markdown_escape` doubles it to `\\`.
+fn unescape_math_backslashes(text: &str) -> String {
+    text.replace("\\\\", "\\")
 }
 
 fn markdown_textual_list_item(paragraph: &str) -> Option<(String, String)> {
@@ -391,7 +729,10 @@ fn markdown_textual_list_item(paragraph: &str) -> Option<(String, String)> {
         .collect::<Result<Vec<_>, _>>()
         .ok()?;
     let (&number, parents) = levels.split_last()?;
-    (parenthesized || !parents.is_empty()).then(|| {
+    // Plain flat "N." text already reads as a Markdown list unmodified; only
+    // extract the number when it is wrapped in formatting (which would
+    // otherwise hide it from Markdown's list syntax) or nested/parenthesized.
+    (!marker.is_empty() || parenthesized || !parents.is_empty()).then(|| {
         (
             format!("{}{}. ", "    ".repeat(parents.len()), number),
             format!("{marker}{}{marker}", value[separator..].trim_start()),
@@ -428,6 +769,52 @@ fn list_prefix(
             format!("{indentation}{number}. ")
         }
     }
+}
+
+fn read_relationships(
+    archive: &mut zip::ZipArchive<std::fs::File>,
+) -> Result<BTreeMap<String, String>, MarkoffError> {
+    use quick_xml::Reader;
+    use quick_xml::events::Event;
+    use std::io::Read;
+
+    let Ok(mut file) = archive.by_name("word/_rels/document.xml.rels") else {
+        return Ok(BTreeMap::new());
+    };
+    let mut document = String::new();
+    file.read_to_string(&mut document)?;
+
+    let mut reader = Reader::from_str(&document);
+    let mut relationships = BTreeMap::new();
+    loop {
+        match reader.read_event().map_err(invalid_data)? {
+            Event::Start(event) | Event::Empty(event) if event.local_name().as_ref() == b"Relationship" => {
+                let id = attribute_value(&event, b"Id", reader.decoder())?;
+                let target = attribute_value(&event, b"Target", reader.decoder())?;
+                if let (Some(id), Some(target)) = (id, target) {
+                    relationships.insert(id, target);
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    Ok(relationships)
+}
+
+/// Resolves a `word/_rels/document.xml.rels` relationship target (relative to
+/// the `word/` package part) and reads the referenced media bytes.
+fn read_media_part(archive: &mut zip::ZipArchive<std::fs::File>, target: &str) -> Option<Vec<u8>> {
+    use std::io::Read;
+
+    let path = target
+        .strip_prefix("../")
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("word/{target}"));
+    let mut file = archive.by_name(&path).ok()?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).ok()?;
+    Some(bytes)
 }
 
 fn read_numbering(
@@ -540,6 +927,34 @@ fn attribute_value(
         .transpose()?)
 }
 
+/// quick-xml reports character/general entity references (e.g. `&amp;`) as a
+/// separate `Event::GeneralRef` rather than folding them into `Event::Text`;
+/// resolve the reference back into its literal character(s).
+fn resolve_general_ref(
+    event: &quick_xml::events::BytesRef<'_>,
+    decoder: quick_xml::encoding::Decoder,
+) -> Result<String, MarkoffError> {
+    let name = decoder.decode(event).map_err(invalid_data)?;
+    let escaped = format!("&{name};");
+    Ok(quick_xml::escape::unescape(&escaped)
+        .map_err(invalid_data)?
+        .into_owned())
+}
+
+fn word_property_enabled(
+    event: &quick_xml::events::BytesStart<'_>,
+    decoder: quick_xml::encoding::Decoder,
+) -> bool {
+    event
+        .attributes()
+        .flatten()
+        .find(|attribute| attribute.key.local_name().as_ref() == b"val")
+        .and_then(|attribute| attribute.decode_and_unescape_value(decoder).ok())
+        .is_none_or(|value| {
+            !matches!(value.as_ref(), "0" | "false" | "off" | "none" | "nil")
+        })
+}
+
 fn markdown_table_from_docx_rows(rows: &[Vec<String>]) -> String {
     let column_count = rows.iter().map(Vec::len).max().unwrap_or(0);
     if column_count == 0 {
@@ -590,6 +1005,7 @@ fn read_footnotes(
     let mut strikethrough = false;
     let mut underline = false;
     let mut code = false;
+    let mut vert_align = VerticalAlign::Baseline;
 
     loop {
         match reader.read_event().map_err(invalid_data)? {
@@ -613,15 +1029,39 @@ fn read_footnotes(
                     paragraph.clear();
                     pending_run = None;
                 }
-                b"r" if footnote_id.is_some() => run.clear(),
-                b"b" if footnote_id.is_some() => bold = true,
-                b"i" if footnote_id.is_some() => italic = true,
-                b"strike" if footnote_id.is_some() => strikethrough = true,
-                b"u" if footnote_id.is_some() => underline = true,
+                b"r" if footnote_id.is_some() => {
+                    run.clear();
+                    vert_align = VerticalAlign::Baseline;
+                }
+                b"b" if footnote_id.is_some() => {
+                    bold = word_property_enabled(&event, reader.decoder())
+                }
+                b"i" if footnote_id.is_some() => {
+                    italic = word_property_enabled(&event, reader.decoder())
+                }
+                b"strike" if footnote_id.is_some() => {
+                    strikethrough = word_property_enabled(&event, reader.decoder())
+                }
+                b"u" if footnote_id.is_some() => {
+                    underline = word_property_enabled(&event, reader.decoder())
+                }
+                b"vertAlign" if footnote_id.is_some() => {
+                    vert_align = attribute_value(&event, b"val", reader.decoder())?
+                        .map(|value| match value.as_str() {
+                            "superscript" => VerticalAlign::Superscript,
+                            "subscript" => VerticalAlign::Subscript,
+                            _ => VerticalAlign::Baseline,
+                        })
+                        .unwrap_or(VerticalAlign::Baseline);
+                }
                 _ => {}
             },
             Event::Text(event) if footnote_id.is_some() => {
-                run.push_str(&event.decode().map_err(invalid_data)?)
+                let decoded = event.decode().map_err(invalid_data)?;
+                run.push_str(&quick_xml::escape::unescape(&decoded).map_err(invalid_data)?)
+            }
+            Event::GeneralRef(event) if footnote_id.is_some() => {
+                run.push_str(&resolve_general_ref(&event, reader.decoder())?)
             }
             Event::End(event) => match event.local_name().as_ref() {
                 b"r" if footnote_id.is_some() => {
@@ -633,6 +1073,7 @@ fn read_footnotes(
                             previous_strikethrough,
                             previous_underline,
                             previous_code,
+                            previous_vert_align,
                             target,
                         )) = pending_run.take()
                         {
@@ -643,6 +1084,7 @@ fn read_footnotes(
                                 previous_strikethrough,
                                 previous_underline,
                                 previous_code,
+                                previous_vert_align,
                                 target.as_deref(),
                             ));
                         }
@@ -653,6 +1095,7 @@ fn read_footnotes(
                             strikethrough,
                             underline,
                             code,
+                            vert_align,
                             None,
                         ));
                     }
@@ -685,7 +1128,9 @@ fn read_footnotes(
 }
 
 fn flush_pending_run(paragraph: &mut String, pending_run: &mut Option<PendingRun>) {
-    if let Some((text, bold, italic, strikethrough, underline, code, target)) = pending_run.take() {
+    if let Some((text, bold, italic, strikethrough, underline, code, vert_align, target)) =
+        pending_run.take()
+    {
         paragraph.push_str(&markdown_from_docx_run(
             &text,
             bold,
@@ -693,7 +1138,64 @@ fn flush_pending_run(paragraph: &mut String, pending_run: &mut Option<PendingRun
             strikethrough,
             underline,
             code,
+            vert_align,
             target.as_deref(),
+        ));
+    }
+}
+
+fn queue_docx_run(
+    paragraph: &mut String,
+    pending_run: &mut Option<PendingRun>,
+    text: &str,
+    bold: bool,
+    italic: bool,
+    strikethrough: bool,
+    underline: bool,
+    code: bool,
+    vert_align: VerticalAlign,
+    target: Option<String>,
+) {
+    if let Some((
+        previous_text,
+        previous_bold,
+        previous_italic,
+        previous_strikethrough,
+        previous_underline,
+        previous_code,
+        previous_vert_align,
+        previous_target,
+    )) = pending_run.as_mut()
+        && (
+            *previous_bold,
+            *previous_italic,
+            *previous_strikethrough,
+            *previous_underline,
+            *previous_code,
+            *previous_vert_align,
+            previous_target.as_deref(),
+        ) == (
+            bold,
+            italic,
+            strikethrough,
+            underline,
+            code,
+            vert_align,
+            target.as_deref(),
+        )
+    {
+        previous_text.push_str(text);
+    } else {
+        flush_pending_run(paragraph, pending_run);
+        *pending_run = Some((
+            text.to_string(),
+            bold,
+            italic,
+            strikethrough,
+            underline,
+            code,
+            vert_align,
+            target,
         ));
     }
 }

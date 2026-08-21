@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use indicatif::{ProgressBar, ProgressStyle};
-use markoff_core::{Format, MarkoffError, convert_file, detect_format};
+use markoff_core::{ConversionRequest, Format, MarkoffError, convert_document, detect_format};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
@@ -48,6 +48,9 @@ enum Commands {
         /// Target format; inferred from OUTPUT when --to is omitted.
         #[arg(long, value_name = "FORMAT")]
         to: Option<String>,
+        /// Overwrite the output file if it already exists.
+        #[arg(long)]
+        overwrite: bool,
     },
     /// Convert all matching files in a directory.
     Batch {
@@ -63,6 +66,9 @@ enum Commands {
         /// Directory where converted files are written.
         #[arg(short, long, value_name = "OUTPUT_DIRECTORY")]
         output: PathBuf,
+        /// Overwrite output files that already exist.
+        #[arg(long)]
+        overwrite: bool,
     },
     /// Run the graphical application.
     Gui,
@@ -101,6 +107,7 @@ fn convert_one(
     output: Option<&Path>,
     from: Option<&str>,
     to: Option<&str>,
+    overwrite: bool,
 ) -> anyhow::Result<()> {
     let from = match from {
         Some(value) => parse_format_spec(value)?,
@@ -137,7 +144,13 @@ fn convert_one(
     if source_path == destination {
         return Err(anyhow::anyhow!("input and output paths must differ"));
     }
-    convert_file(source_path, &destination, from, to)?;
+    convert_document(&ConversionRequest {
+        input: source_path.to_path_buf(),
+        output: destination.clone(),
+        from,
+        to,
+        overwrite: overwrite || writes_stdout,
+    })?;
     if writes_stdout {
         let rendered = std::fs::read_to_string(&destination)?;
         std::io::stdout().write_all(rendered.as_bytes())?;
@@ -151,7 +164,13 @@ fn convert_one(
     Ok(())
 }
 
-fn run_batch(directory: &Path, pattern: &str, output: &Path, to: Format) -> anyhow::Result<()> {
+fn run_batch(
+    directory: &Path,
+    pattern: &str,
+    output: &Path,
+    to: Format,
+    overwrite: bool,
+) -> anyhow::Result<()> {
     let pattern = directory.join(pattern).to_string_lossy().to_string();
     let inputs = glob::glob(&pattern)?
         .filter_map(Result::ok)
@@ -169,7 +188,13 @@ fn run_batch(directory: &Path, pattern: &str, output: &Path, to: Format) -> anyh
             .ok_or_else(|| anyhow::anyhow!("invalid input filename"))?;
         let destination = output.join(stem).with_extension(to.to_string());
         progress.set_message(input.display().to_string());
-        convert_file(&input, destination, from, to)?;
+        convert_document(&ConversionRequest {
+            input: input.clone(),
+            output: destination,
+            from,
+            to,
+            overwrite,
+        })?;
         progress.inc(1);
     }
     progress.finish_with_message("complete");
@@ -189,16 +214,30 @@ fn main() -> anyhow::Result<()> {
             output,
             from,
             to,
+            overwrite,
         }) => {
-            convert_one(&input, output.as_deref(), from.as_deref(), to.as_deref())?;
+            convert_one(
+                &input,
+                output.as_deref(),
+                from.as_deref(),
+                to.as_deref(),
+                overwrite,
+            )?;
         }
         Some(Commands::Batch {
             directory,
             pattern,
             to,
             output,
+            overwrite,
         }) => {
-            run_batch(&directory, &pattern, &output, parse_format_spec(&to)?)?;
+            run_batch(
+                &directory,
+                &pattern,
+                &output,
+                parse_format_spec(&to)?,
+                overwrite,
+            )?;
         }
         Some(Commands::Gui) => {
             markoff_gui::run().map_err(|error| anyhow::anyhow!(error.to_string()))?;

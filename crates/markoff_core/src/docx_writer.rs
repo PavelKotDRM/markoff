@@ -21,6 +21,7 @@ pub(crate) fn convert_markdown_to_docx(input: &Path, output: &Path) -> Result<()
     let lines = source.lines().collect::<Vec<_>>();
     let mut body = String::new();
     let mut index = 0;
+    let mut list_ids = ListIdAllocator::default();
     while index < lines.len() {
         let line = lines[index];
         if is_markdown_table_start(&lines, index) {
@@ -30,6 +31,7 @@ pub(crate) fn convert_markdown_to_docx(input: &Path, output: &Path) -> Result<()
             }
             let rows = parse_markdown_table(&lines[start..index].join("\n"));
             body.push_str(&docx_table(&rows, &footnote_ids));
+            list_ids.reset();
         } else if is_fenced_code_block_start(line) {
             let start = index + 1;
             index += 1;
@@ -40,9 +42,22 @@ pub(crate) fn convert_markdown_to_docx(input: &Path, output: &Path) -> Result<()
             if index < lines.len() {
                 index += 1;
             }
+            list_ids.reset();
         } else {
             if !line.trim().is_empty() {
-                body.push_str(&docx_paragraph(line, &footnote_ids));
+                let mut paragraph = line.to_string();
+                while paragraph.ends_with("  ")
+                    && lines
+                        .get(index + 1)
+                        .is_some_and(|next_line| !next_line.trim().is_empty())
+                {
+                    paragraph.truncate(paragraph.len() - 2);
+                    index += 1;
+                    paragraph.push('\n');
+                    paragraph.push_str(lines[index]);
+                }
+                let list_num_id = list_ids.resolve(&paragraph);
+                body.push_str(&docx_paragraph(&paragraph, &footnote_ids, list_num_id));
             }
             index += 1;
         }
@@ -75,8 +90,19 @@ pub(crate) fn convert_markdown_to_docx(input: &Path, output: &Path) -> Result<()
     let ordered_list_levels = (0..=8)
         .map(|level| format!("<w:lvl w:ilvl=\"{level}\"><w:start w:val=\"1\"/><w:numFmt w:val=\"decimal\"/><w:lvlText w:val=\"%{level_plus_one}.\"/></w:lvl>", level_plus_one = level + 1))
         .collect::<String>();
+    let num_entries = list_ids
+        .allocated()
+        .iter()
+        .map(|(num_id, kind)| {
+            let abstract_id = match kind {
+                ListKind::Bullet => 0,
+                ListKind::Decimal => 1,
+            };
+            format!("<w:num w:numId=\"{num_id}\"><w:abstractNumId w:val=\"{abstract_id}\"/></w:num>")
+        })
+        .collect::<String>();
     let numbering = format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><w:numbering xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:abstractNum w:abstractNumId=\"0\">{list_levels}</w:abstractNum><w:abstractNum w:abstractNumId=\"1\">{ordered_list_levels}</w:abstractNum><w:num w:numId=\"1\"><w:abstractNumId w:val=\"0\"/></w:num><w:num w:numId=\"2\"><w:abstractNumId w:val=\"1\"/></w:num></w:numbering>"
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><w:numbering xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:abstractNum w:abstractNumId=\"0\">{list_levels}</w:abstractNum><w:abstractNum w:abstractNumId=\"1\">{ordered_list_levels}</w:abstractNum>{num_entries}</w:numbering>"
     );
 
     let file = std::fs::File::create(output)?;
@@ -128,7 +154,57 @@ fn is_fenced_code_block_start(line: &str) -> bool {
     line.trim_start().starts_with("```")
 }
 
-fn docx_paragraph(line: &str, footnote_ids: &HashMap<&str, usize>) -> String {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ListKind {
+    Bullet,
+    Decimal,
+}
+
+/// Assigns each independent run of list-item lines its own DOCX `numId`, so
+/// separate Markdown lists do not share one continuously incrementing Word
+/// numbering counter.
+#[derive(Default)]
+struct ListIdAllocator {
+    next_id: u32,
+    active_bullet: Option<u32>,
+    active_decimal: Option<u32>,
+    allocated: Vec<(u32, ListKind)>,
+}
+
+impl ListIdAllocator {
+    fn resolve(&mut self, line: &str) -> Option<u32> {
+        let Some((kind, ..)) = markdown_list_item(line) else {
+            self.reset();
+            return None;
+        };
+        if self.next_id == 0 {
+            self.next_id = 1;
+        }
+        let (kind, active) = match kind {
+            1 => (ListKind::Bullet, &mut self.active_bullet),
+            _ => (ListKind::Decimal, &mut self.active_decimal),
+        };
+        if let Some(id) = active {
+            return Some(*id);
+        }
+        let id = self.next_id;
+        self.next_id += 1;
+        *active = Some(id);
+        self.allocated.push((id, kind));
+        Some(id)
+    }
+
+    fn reset(&mut self) {
+        self.active_bullet = None;
+        self.active_decimal = None;
+    }
+
+    fn allocated(&self) -> &[(u32, ListKind)] {
+        &self.allocated
+    }
+}
+
+fn docx_paragraph(line: &str, footnote_ids: &HashMap<&str, usize>, list_num_id: Option<u32>) -> String {
     let heading_level = line
         .chars()
         .take_while(|character| *character == '#')
@@ -148,7 +224,9 @@ fn docx_paragraph(line: &str, footnote_ids: &HashMap<&str, usize>) -> String {
             format!("<w:pPr><w:pStyle w:val=\"Heading{heading_level}\"/></w:pPr>"),
             &line[heading_level + 1..],
         )
-    } else if let Some((numbering_id, list_level, content)) = markdown_list_item(line) {
+    } else if let Some((_, list_level, content)) = markdown_list_item(line) {
+        let numbering_id =
+            list_num_id.expect("list item lines are resolved to a numId before rendering");
         (
             format!(
                 "<w:pPr><w:numPr><w:ilvl w:val=\"{list_level}\"/><w:numId w:val=\"{numbering_id}\"/></w:numPr></w:pPr>"
@@ -280,6 +358,17 @@ fn replace_inline_footnotes(
 }
 
 fn markdown_inline_to_docx_runs_with_footnotes(
+    value: &str,
+    footnote_ids: &HashMap<&str, usize>,
+) -> String {
+    value
+        .split('\n')
+        .map(|line| markdown_inline_to_docx_runs_without_breaks(line, footnote_ids))
+        .collect::<Vec<_>>()
+        .join("<w:r><w:br/></w:r>")
+}
+
+fn markdown_inline_to_docx_runs_without_breaks(
     value: &str,
     footnote_ids: &HashMap<&str, usize>,
 ) -> String {

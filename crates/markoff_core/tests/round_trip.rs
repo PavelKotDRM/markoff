@@ -24,6 +24,86 @@ fn remove_files(paths: &[&PathBuf]) {
 }
 
 #[test]
+fn golden_document_round_trip_preserves_core_markdown_content() {
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("golden/Golden_Word_Test_Document_v2.docx");
+    let markdown = temporary_path("golden_document", "md");
+    let restored_document = temporary_path("golden_document", "docx");
+    let restored_markdown = temporary_path("golden_document_restored", "md");
+
+    convert_file(&source, &markdown, Format::Docx, Format::Markdown).unwrap();
+    convert_file(
+        &markdown,
+        &restored_document,
+        Format::Markdown,
+        Format::Docx,
+    )
+    .unwrap();
+    convert_file(
+        &restored_document,
+        &restored_markdown,
+        Format::Docx,
+        Format::Markdown,
+    )
+    .unwrap();
+
+    let source_markdown = fs::read_to_string(&markdown).unwrap();
+    assert!(
+        source_markdown.contains("1. **Heading Level 1 / Заголовок уровня 1 3**"),
+        "tab between TOC title and page number should become a space, not merge digits: {source_markdown:?}"
+    );
+    for expected in [
+        "Текст со сноской номер 1.[^1]",
+        "Текст со второй сноской.[^2]",
+        "Текст с концевой сноской.[^i]",
+        "[^1]: Сноска 1: Это тестовая сноска.",
+        "[^2]: Сноска 2: Вторая тестовая сноска с ссылкой на https://example.com",
+        "[^i]: Концевая сноска 1: Это тестовая концевая сноска.",
+        "Встроенная формула: $E = mc^{2}$",
+        "Формула в отдельной строке:  \n$$x = (-b \\pm \\sqrt{b2 - 4ac}) / 2a$$",
+        "Матрица:  \n$$\\begin{matrix} 1 & 2 \\\\ 3 & 4 \\end{matrix}$$",
+        "Дробь:  \n$$\\frac{a + b}{c + d}$$",
+        "Интеграл:  \n$$\\int0\\infty e-x dx = 1$$",
+    ] {
+        assert!(
+            source_markdown.contains(expected),
+            "missing {expected:?} in golden docx-to-markdown output: {source_markdown:?}"
+        );
+    }
+
+    let rendered = fs::read_to_string(&restored_markdown).unwrap();
+    for expected in [
+        "# 1. Heading Level 1 / Заголовок уровня 1",
+        "1. **Heading Level 1 / Заголовок уровня 1 3**",
+        "**полужирный текст,** *курсив,* ***полужирный курсив,*** <u>подчеркнутый текст,</u> ~~зачеркнутый текст,~~ верхний индекс x$^{2}$, нижний индекс H$_{2}$O",
+        "Встроенная формула: $E = mc^{2}$",
+        "$$\\begin{matrix} 1 & 2 \\\\ 3 & 4 \\end{matrix}$$",
+        "**Полужирный текст.**",
+        "***Полужирный курсивный текст.***",
+        "И пример имени файла: report_final_v2.docx",
+        "- Элемент 1",
+        "1. Первый",
+        "1. Шаг первый",
+        "2. Шаг второй",
+        "Inline code: `const answer = 42;`",
+        "```\nfunction greet(name) {\n    console.log(\"Hello, \" + name);",
+        "Строка с ручным разрывом строки.  \nСледующая строка после soft line break.",
+        "| ID | Name | Role | Active |",
+        "| Q4 | 160 | 110 | 50 |",
+        "Текст со сноской номер 1.[^1]",
+        "[^1]: Сноска 1: Это тестовая сноска.",
+    ] {
+        assert!(
+            rendered.contains(expected),
+            "missing {expected:?} in golden round trip"
+        );
+    }
+
+    remove_files(&[&markdown, &restored_document, &restored_markdown]);
+}
+
+#[test]
 fn markdown_docx_round_trip_preserves_supported_elements() {
     let markdown = temporary_path("docx_input", "md");
     let document = temporary_path("docx_document", "docx");
@@ -147,7 +227,14 @@ fn docx_tables_convert_to_all_tabular_formats() {
     assert!(fs::read_to_string(&csv).unwrap().contains("Ada,42"));
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&fs::read_to_string(&json).unwrap()).unwrap(),
-        json!([{"Name": "Ada", "Score": "42"}])
+        json!({
+            "blocks": [
+                {
+                    "type": "table",
+                    "rows": [["Name", "Score"], ["Ada", "42"]]
+                }
+            ]
+        })
     );
     for output in [&yaml, &toml] {
         let rendered = fs::read_to_string(output).unwrap();
@@ -189,7 +276,7 @@ fn markdown_docx_round_trip_preserves_emphasis_and_nested_lists() {
         "**bold**",
         "*italic*",
         "~~deleted~~",
-        "**_*italic*_**",
+        "***italic***",
         "- Parent",
         "    - Child",
         "1. First",

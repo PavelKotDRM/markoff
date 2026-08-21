@@ -1,6 +1,6 @@
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
-use markoff_core::{Format, convert_file, detect_format};
+use markoff_core::{ConversionRequest, Format, convert_document, convert_file, detect_format};
 use std::path::PathBuf;
 
 const BUILD_INFO: &str = concat!(
@@ -74,6 +74,7 @@ struct MarkoffApp {
     target: Format,
     dark_mode: bool,
     show_about: bool,
+    overwrite: bool,
 }
 
 impl Default for MarkoffApp {
@@ -84,6 +85,7 @@ impl Default for MarkoffApp {
             target: Format::Markdown,
             dark_mode: true,
             show_about: false,
+            overwrite: false,
         }
     }
 }
@@ -118,8 +120,15 @@ impl MarkoffApp {
             return;
         };
         let job = &mut self.jobs[index];
-        let result = detect_format(&job.input)
-            .and_then(|from| convert_file(&job.input, &job.output, from, self.target));
+        let result = detect_format(&job.input).and_then(|from| {
+            convert_document(&ConversionRequest {
+                input: job.input.clone(),
+                output: job.output.clone(),
+                from,
+                to: self.target,
+                overwrite: self.overwrite,
+            })
+        });
         match result {
             Ok(()) => {
                 job.status = JobStatus::Success;
@@ -215,6 +224,7 @@ impl eframe::App for MarkoffApp {
                 if ui.button("Apply format").clicked() {
                     self.update_outputs();
                 }
+                ui.checkbox(&mut self.overwrite, "Overwrite existing files");
                 if ui.button("Convert selected").clicked() {
                     self.convert_selected();
                 }

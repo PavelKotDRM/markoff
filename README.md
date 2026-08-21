@@ -97,7 +97,7 @@ The general command is:
 markoff convert INPUT [--from FORMAT] [--to FORMAT] [-o OUTPUT]
 ```
 
-The source format is detected from the input extension and the target format from `--to` or the output extension. Use `--from` when the source format cannot be inferred. When `-o` is omitted, the converted file is written next to the source file with the target extension.
+The source format is detected from the input extension and the target format from `--to` or the output extension. Use `--from` when the source format cannot be inferred. When `-o` is omitted, the converted file is written next to the source file with the target extension. If the destination file already exists, the command fails with an error unless `--overwrite` is given.
 
 ```powershell
 # CSV to a Markdown table; creates .\report.md
@@ -120,6 +120,9 @@ cargo run -p markoff_cli -- convert .\people.json --to xlsx
 
 # XLSX to JSON
 cargo run -p markoff_cli -- convert .\people.xlsx -o .\people.json
+
+# Overwrite an existing output file
+cargo run -p markoff_cli -- convert .\report.csv --to md --overwrite
 ```
 
 Supported format identifiers are `docx`, `pdf`, `md`/`markdown`, `xlsx`/`xlsm`, `json`, `csv`, `yaml`/`yml`, and `toml`. PDF is supported only as an input to Markdown; scanned PDF files without an embedded text layer require OCR and are not currently supported. `pptx` is recognized as a file extension, but its conversion is not implemented.
@@ -148,6 +151,8 @@ cargo run -p markoff_cli -- batch .\documents --pattern '*.docx' --to md -o .\co
 cargo run -p markoff_cli -- batch .\exports --pattern '*.csv' --to xlsx -o .\workbooks
 ```
 
+As with `convert`, pass `--overwrite` to replace output files that already exist; otherwise a matching existing destination file stops the batch with an error.
+
 The pattern is relative to the supplied directory. The progress bar counts matching files; conversion stops and returns an error when an individual input is unsupported or invalid.
 
 ## Graphical application
@@ -172,8 +177,10 @@ The toolbar also switches between dark and light themes and opens build informat
 - DOCX and Markdown preserve headings, paragraphs, nested ordered and bulleted lists, tables, bold/italic/strikethrough/underline text, inline and fenced code blocks, blockquotes, horizontal rules, footnotes, bookmarks, and `PAGEREF` links. A fenced-code language identifier is not preserved.
 - PDF to Markdown extracts the document text layer. Page layout, images, tables, and scanned text are not preserved.
 - Markdown tables convert to and from XLSX. Each `## Sheet name` heading represents a workbook sheet; the first table row becomes the frozen header row in XLSX.
-- JSON, CSV, YAML, and TOML convert to XLSX as tabular data. JSON/YAML/TOML input for this route must be an array of objects.
-- Ordinary hyperlinks, images, advanced Word table layout, Excel formulas/styles/charts, PDF output, and PPTX conversion are not yet semantically preserved.
+- `DOCX`/`Markdown <-> JSON/YAML/TOML` preserve the whole document structure (headings, paragraphs, list items, tables, code blocks, blockquotes, horizontal rules), not just tables, as an ordered `blocks` array; each block keeps inline Markdown formatting as raw text, and literal list numbers are not preserved. This round-trips in both directions: DOCX/Markdown can be converted to JSON/YAML/TOML and back.
+- Images embedded in a DOCX are extracted and saved as files in an `image` folder next to the Markdown output, referenced with standard `![alt](image/file.ext)` syntax. Converting to JSON/YAML/TOML instead embeds each image inline as base64 (self-contained, no external files). Converting Markdown/JSON/YAML/TOML back to Markdown restores the image files from base64. Converting back to DOCX does not yet re-embed images as OOXML pictures; an image reference degrades to literal escaped text in that direction.
+- JSON, CSV, YAML, and TOML convert to XLSX as tabular data. JSON/YAML/TOML input for this route must be an array of objects; this is a separate, table-only convention from the whole-document `blocks` schema above.
+- Ordinary hyperlinks, advanced Word table layout, Excel formulas/styles/charts, PDF output, and PPTX conversion are not yet semantically preserved.
 
 ### Run benchmark
 

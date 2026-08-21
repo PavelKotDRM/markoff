@@ -20,11 +20,11 @@ mod data;
 mod docx_inline;
 mod docx_reader;
 mod docx_writer;
+mod document;
 mod error;
 mod model;
 mod pdf;
 mod tables;
-mod text;
 mod xlsx;
 
 pub use model::{ConversionRequest, Format, MarkoffError, detect_format};
@@ -33,6 +33,7 @@ use csv_format::{convert_csv_to_markdown, convert_markdown_to_csv};
 use data::{convert_data_to_xlsx, convert_xlsx_to_data};
 use docx_reader::convert_docx_to_markdown;
 use docx_writer::convert_markdown_to_docx;
+use document::{convert_document_to_markdown, convert_markdown_to_document};
 use pdf::convert_pdf_to_markdown;
 use xlsx::{convert_markdown_to_xlsx, convert_xlsx_to_markdown};
 
@@ -51,6 +52,12 @@ pub fn convert_document(request: &ConversionRequest) -> Result<(), MarkoffError>
     if !request.input.exists() {
         return Err(MarkoffError::InvalidInput {
             path: request.input.to_string_lossy().to_string(),
+        });
+    }
+
+    if !request.overwrite && request.output.exists() {
+        return Err(MarkoffError::OutputExists {
+            path: request.output.to_string_lossy().to_string(),
         });
     }
 
@@ -74,26 +81,23 @@ pub fn convert_document(request: &ConversionRequest) -> Result<(), MarkoffError>
             convert_docx_via_markdown(&request.input, &request.output, request.to)
         }
         (Format::Docx, Format::Json | Format::Yaml | Format::Toml) => {
-            convert_docx_table_to_data(&request.input, &request.output, request.to)
+            convert_docx_to_document_format(&request.input, &request.output, request.to)
         }
         (Format::Csv | Format::Xlsx, Format::Docx) => {
             convert_to_docx_via_markdown(&request.input, &request.output, request.from)
         }
-        (Format::Pdf, Format::Markdown) => convert_pdf_to_markdown(&request.input, &request.output),
-        (Format::Json, Format::Markdown) => {
-            text::convert_json_to_markdown(&request.input, &request.output)
+        (Format::Json | Format::Yaml | Format::Toml, Format::Docx) => {
+            convert_document_format_to_docx(&request.input, &request.output, request.from)
         }
-        (Format::Markdown, Format::Json) => {
-            text::convert_markdown_to_json(&request.input, &request.output)
+        (Format::Pdf, Format::Markdown) => convert_pdf_to_markdown(&request.input, &request.output),
+        (Format::Json | Format::Yaml | Format::Toml, Format::Markdown) => {
+            convert_document_to_markdown(&request.input, &request.output, request.from)
+        }
+        (Format::Markdown, Format::Json | Format::Yaml | Format::Toml) => {
+            convert_markdown_to_document(&request.input, &request.output, request.to)
         }
         (Format::Csv, Format::Markdown) => convert_csv_to_markdown(&request.input, &request.output),
         (Format::Markdown, Format::Csv) => convert_markdown_to_csv(&request.input, &request.output),
-        (Format::Yaml, Format::Markdown) => {
-            text::convert_yaml_to_markdown(&request.input, &request.output)
-        }
-        (Format::Toml, Format::Markdown) => {
-            text::convert_toml_to_markdown(&request.input, &request.output)
-        }
         (Format::Xlsx, Format::Markdown) => {
             convert_xlsx_to_markdown(&request.input, &request.output)
         }
@@ -124,22 +128,31 @@ fn convert_docx_via_markdown(
         Format::Xlsx => convert_markdown_to_xlsx(&markdown, output),
         _ => unreachable!("only CSV and XLSX use this helper"),
     });
-    std::fs::remove_file(markdown).ok();
+    remove_intermediate_markdown(&markdown);
     result
 }
 
-fn convert_docx_table_to_data(
+fn convert_docx_to_document_format(
     input: &Path,
     output: &Path,
     format: Format,
 ) -> Result<(), MarkoffError> {
     let markdown = intermediate_path("md");
-    let workbook = intermediate_path("xlsx");
     let result = convert_docx_to_markdown(input, &markdown)
-        .and_then(|()| convert_markdown_to_xlsx(&markdown, &workbook))
-        .and_then(|()| convert_xlsx_to_data(&workbook, output, format));
-    std::fs::remove_file(markdown).ok();
-    std::fs::remove_file(workbook).ok();
+        .and_then(|()| convert_markdown_to_document(&markdown, output, format));
+    remove_intermediate_markdown(&markdown);
+    result
+}
+
+fn convert_document_format_to_docx(
+    input: &Path,
+    output: &Path,
+    format: Format,
+) -> Result<(), MarkoffError> {
+    let markdown = intermediate_path("md");
+    let result = convert_document_to_markdown(input, &markdown, format)
+        .and_then(|()| convert_markdown_to_docx(&markdown, output));
+    remove_intermediate_markdown(&markdown);
     result
 }
 
@@ -155,21 +168,41 @@ fn convert_to_docx_via_markdown(
         _ => unreachable!("only CSV and XLSX use this helper"),
     }
     .and_then(|()| convert_markdown_to_docx(&markdown, output));
-    std::fs::remove_file(markdown).ok();
+    remove_intermediate_markdown(&markdown);
     result
 }
 
 fn intermediate_path(extension: &str) -> PathBuf {
     let sequence = INTERMEDIATE_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!(
-        "markoff_intermediate_{}_{}.{}",
+    let directory = std::env::temp_dir().join(format!(
+        "markoff_intermediate_{}_{}",
         std::process::id(),
-        sequence,
-        extension
-    ))
+        sequence
+    ));
+    std::fs::create_dir_all(&directory).ok();
+    directory.join(format!("intermediate.{extension}"))
+}
+
+/// Removes an intermediate file's own temp directory, including any `image`
+/// folder that DOCX image extraction may have created beside it. Each
+/// intermediate path lives in its own directory (see `intermediate_path`), so
+/// this cannot affect unrelated concurrent conversions.
+fn remove_intermediate_markdown(markdown: &Path) {
+    match markdown.parent() {
+        Some(parent) => {
+            std::fs::remove_dir_all(parent).ok();
+        }
+        None => {
+            std::fs::remove_file(markdown).ok();
+        }
+    }
 }
 
 /// Convenience wrapper for converting a single file using the input and output paths.
+///
+/// Always overwrites an existing file at `output`; use `convert_document` with
+/// `ConversionRequest.overwrite` set to `false` to require the destination to
+/// be absent.
 pub fn convert_file<P, Q>(input: P, output: Q, from: Format, to: Format) -> Result<(), MarkoffError>
 where
     P: AsRef<Path>,
@@ -180,6 +213,7 @@ where
         output: output.as_ref().to_path_buf(),
         from,
         to,
+        overwrite: true,
     };
 
     convert_document(&request)
@@ -187,7 +221,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{Format, convert_file, detect_format};
+    use super::{ConversionRequest, Format, MarkoffError, convert_document, convert_file, detect_format};
     use crate::xlsx::{read_xlsx_sheets, write_xlsx_sheets};
     use std::collections::BTreeMap;
     use std::fs;
@@ -216,17 +250,67 @@ mod tests {
     }
 
     #[test]
+    fn rejects_existing_output_without_overwrite() {
+        let input = unique_temp_path("overwrite_input");
+        let output = unique_temp_path("overwrite_output");
+        fs::write(&input, r#"{"name":"Ada"}"#).unwrap();
+        fs::write(&output, "pre-existing content").unwrap();
+
+        let request = ConversionRequest {
+            input: input.clone(),
+            output: output.clone(),
+            from: Format::Json,
+            to: Format::Markdown,
+            overwrite: false,
+        };
+
+        assert!(matches!(
+            convert_document(&request),
+            Err(MarkoffError::OutputExists { .. })
+        ));
+        assert_eq!(fs::read_to_string(&output).unwrap(), "pre-existing content");
+
+        fs::remove_file(input).ok();
+        fs::remove_file(output).ok();
+    }
+
+    #[test]
+    fn overwrites_existing_output_when_requested() {
+        let input = unique_temp_path("overwrite_allowed_input");
+        let output = unique_temp_path("overwrite_allowed_output");
+        fs::write(&input, r#"{"blocks":[{"type":"paragraph","text":"Ada"}]}"#).unwrap();
+        fs::write(&output, "pre-existing content").unwrap();
+
+        let request = ConversionRequest {
+            input: input.clone(),
+            output: output.clone(),
+            from: Format::Json,
+            to: Format::Markdown,
+            overwrite: true,
+        };
+
+        convert_document(&request).unwrap();
+        assert!(fs::read_to_string(&output).unwrap().contains("Ada"));
+
+        fs::remove_file(input).ok();
+        fs::remove_file(output).ok();
+    }
+
+    #[test]
     fn converts_json_to_markdown() {
         let input = unique_temp_path("json_to_markdown_input");
         let output = unique_temp_path("json_to_markdown_output");
-        fs::write(&input, r#"{"name":"Ada","count":42}"#).unwrap();
+        fs::write(
+            &input,
+            r#"{"blocks":[{"type":"heading","level":1,"text":"Ada"},{"type":"paragraph","text":"count 42"}]}"#,
+        )
+        .unwrap();
 
         convert_file(&input, &output, Format::Json, Format::Markdown).unwrap();
 
         let rendered = fs::read_to_string(&output).unwrap();
-        assert!(rendered.contains("```json"));
-        assert!(rendered.contains("Ada"));
-        assert!(rendered.contains("42"));
+        assert!(rendered.contains("# Ada"));
+        assert!(rendered.contains("count 42"));
 
         fs::remove_file(input).ok();
         fs::remove_file(output).ok();
@@ -336,13 +420,12 @@ mod tests {
     fn converts_yaml_to_markdown() {
         let input = unique_temp_path("yaml_to_markdown_input");
         let output = unique_temp_path("yaml_to_markdown_output");
-        fs::write(&input, "name: Ada\ncount: 42\n").unwrap();
+        fs::write(&input, "blocks:\n  - type: paragraph\n    text: Ada count 42\n").unwrap();
 
         convert_file(&input, &output, Format::Yaml, Format::Markdown).unwrap();
 
         let rendered = fs::read_to_string(&output).unwrap();
-        assert!(rendered.contains("```yaml"));
-        assert!(rendered.contains("name: Ada"));
+        assert!(rendered.contains("Ada count 42"));
 
         fs::remove_file(input).ok();
         fs::remove_file(output).ok();
@@ -352,16 +435,83 @@ mod tests {
     fn converts_toml_to_markdown() {
         let input = unique_temp_path("toml_to_markdown_input");
         let output = unique_temp_path("toml_to_markdown_output");
-        fs::write(&input, "name = \"Ada\"\ncount = 42\n").unwrap();
+        fs::write(
+            &input,
+            "[[blocks]]\ntype = \"paragraph\"\ntext = \"Ada count 42\"\n",
+        )
+        .unwrap();
 
         convert_file(&input, &output, Format::Toml, Format::Markdown).unwrap();
 
         let rendered = fs::read_to_string(&output).unwrap();
-        assert!(rendered.contains("```toml"));
-        assert!(rendered.contains("name = \"Ada\""));
+        assert!(rendered.contains("Ada count 42"));
 
         fs::remove_file(input).ok();
         fs::remove_file(output).ok();
+    }
+
+    #[test]
+    fn round_trips_markdown_document_through_json_yaml_toml() {
+        for format in [Format::Json, Format::Yaml, Format::Toml] {
+            let markdown = unique_temp_path("document_round_trip_markdown");
+            let structured = unique_temp_path("document_round_trip_structured");
+            let restored = unique_temp_path("document_round_trip_restored");
+            fs::write(
+                &markdown,
+                "# Title\n\nA paragraph.\n\n- First\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n",
+            )
+            .unwrap();
+
+            convert_file(&markdown, &structured, Format::Markdown, format).unwrap();
+            convert_file(&structured, &restored, format, Format::Markdown).unwrap();
+
+            assert_eq!(
+                fs::read_to_string(&markdown).unwrap(),
+                fs::read_to_string(&restored).unwrap()
+            );
+
+            fs::remove_file(markdown).ok();
+            fs::remove_file(structured).ok();
+            fs::remove_file(restored).ok();
+        }
+    }
+
+    #[test]
+    fn round_trips_docx_document_through_json() {
+        let markdown = unique_temp_path("docx_document_json_markdown");
+        let document = unique_temp_path("docx_document_json_document");
+        let json = unique_temp_path("docx_document_json");
+        let restored_document = unique_temp_path("docx_document_json_restored_document");
+        let restored_markdown = unique_temp_path("docx_document_json_restored_markdown");
+        fs::write(
+            &markdown,
+            "# Title\n\n| Name | Score |\n| --- | --- |\n| Ada | 42 |\n",
+        )
+        .unwrap();
+
+        convert_file(&markdown, &document, Format::Markdown, Format::Docx).unwrap();
+        convert_file(&document, &json, Format::Docx, Format::Json).unwrap();
+        let rendered = fs::read_to_string(&json).unwrap();
+        assert!(rendered.contains("\"type\": \"heading\""));
+        assert!(rendered.contains("\"type\": \"table\""));
+
+        convert_file(&json, &restored_document, Format::Json, Format::Docx).unwrap();
+        convert_file(
+            &restored_document,
+            &restored_markdown,
+            Format::Docx,
+            Format::Markdown,
+        )
+        .unwrap();
+        let restored = fs::read_to_string(&restored_markdown).unwrap();
+        assert!(restored.contains("# Title"));
+        assert!(restored.contains("| Ada | 42 |"));
+
+        fs::remove_file(markdown).ok();
+        fs::remove_file(document).ok();
+        fs::remove_file(json).ok();
+        fs::remove_file(restored_document).ok();
+        fs::remove_file(restored_markdown).ok();
     }
 
     #[test]

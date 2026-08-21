@@ -87,6 +87,8 @@ pub struct ConversionRequest {
     pub from: Format,
     /// Target format.
     pub to: Format,
+    /// Whether an existing file at `output` may be overwritten.
+    pub overwrite: bool,
 }
 
 /// Error type returned by the conversion engine.
@@ -108,6 +110,12 @@ pub enum MarkoffError {
     #[error("failed to create output directory: {path}")]
     OutputDirectory {
         /// The output path whose parent directory could not be created.
+        path: String,
+    },
+    /// The destination file already exists and overwriting was not requested.
+    #[error("output file already exists: {path}")]
+    OutputExists {
+        /// The existing output path.
         path: String,
     },
     /// The requested conversion is not yet implemented in the scaffold.
