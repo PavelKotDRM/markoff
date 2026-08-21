@@ -7,7 +7,8 @@
 
 use crate::MarkoffError;
 use crate::error::invalid_data;
-use std::collections::BTreeMap;
+use crate::xml_utils::{MarkdownEscapeContext, markdown_escape, parse_relationships, xml_escape};
+use crate::zip_utils::write_zip_part;
 use std::path::Path;
 
 pub(crate) fn convert_pptx_to_markdown(input: &Path, output: &Path) -> Result<(), MarkoffError> {
@@ -27,7 +28,7 @@ pub(crate) fn convert_pptx_to_markdown(input: &Path, output: &Path) -> Result<()
         .map_err(invalid_data)?
         .read_to_string(&mut rels_xml)?;
 
-    let relationship_targets = read_relationship_targets(&rels_xml);
+    let relationship_targets = parse_relationships(&rels_xml)?;
     let slide_relationship_ids = read_slide_relationship_order(&presentation_xml);
 
     let mut sections = Vec::new();
@@ -55,7 +56,10 @@ fn resolve_part_path(base_dir: &str, target: &str) -> String {
     if let Some(stripped) = target.strip_prefix('/') {
         return stripped.to_string();
     }
-    let mut segments: Vec<&str> = base_dir.split('/').filter(|part| !part.is_empty()).collect();
+    let mut segments: Vec<&str> = base_dir
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect();
     for part in target.split('/') {
         match part {
             "." => {}
@@ -66,30 +70,6 @@ fn resolve_part_path(base_dir: &str, target: &str) -> String {
         }
     }
     segments.join("/")
-}
-
-fn read_relationship_targets(xml: &str) -> BTreeMap<String, String> {
-    use quick_xml::Reader;
-    use quick_xml::events::Event;
-
-    let mut reader = Reader::from_str(xml);
-    let mut targets = BTreeMap::new();
-    loop {
-        match reader.read_event() {
-            Ok(Event::Eof) | Err(_) => break,
-            Ok(Event::Start(tag) | Event::Empty(tag))
-                if tag.local_name().as_ref() == b"Relationship" =>
-            {
-                let id = attribute_value(&tag, b"Id", reader.decoder());
-                let target = attribute_value(&tag, b"Target", reader.decoder());
-                if let (Some(id), Some(target)) = (id, target) {
-                    targets.insert(id, target);
-                }
-            }
-            _ => {}
-        }
-    }
-    targets
 }
 
 fn read_slide_relationship_order(xml: &str) -> Vec<String> {
@@ -129,22 +109,6 @@ fn read_slide_relationship_order(xml: &str) -> Vec<String> {
         }
     }
     ids
-}
-
-fn attribute_value(
-    tag: &quick_xml::events::BytesStart<'_>,
-    name: &[u8],
-    decoder: quick_xml::encoding::Decoder,
-) -> Option<String> {
-    tag.attributes()
-        .flatten()
-        .find(|attribute| attribute.key.local_name().as_ref() == name)
-        .and_then(|attribute| {
-            attribute
-                .decode_and_unescape_value(decoder)
-                .ok()
-                .map(|value| value.into_owned())
-        })
 }
 
 fn slide_to_markdown(xml: &str, slide_number: usize) -> String {
@@ -204,7 +168,7 @@ fn slide_to_markdown(xml: &str, slide_number: usize) -> String {
                 b"t" => in_run_text = false,
                 b"p" if in_shape => {
                     in_paragraph = false;
-                    let text = markdown_escape(paragraph_text.trim());
+                    let text = markdown_escape(paragraph_text.trim(), MarkdownEscapeContext::Plain);
                     if !text.is_empty() {
                         if is_title_shape && title.is_empty() {
                             title = text;
@@ -236,15 +200,6 @@ fn slide_to_markdown(xml: &str, slide_number: usize) -> String {
     section
 }
 
-fn markdown_escape(value: &str) -> String {
-    value
-        .replace('\\', "\\\\")
-        .replace('*', "\\*")
-        .replace('`', "\\`")
-        .replace('[', "\\[")
-        .replace(']', "\\]")
-}
-
 struct Slide {
     title: String,
     items: Vec<(String, bool)>,
@@ -274,15 +229,14 @@ fn parse_markdown_into_slides(source: &str) -> Vec<Slide> {
             });
             continue;
         }
-        let (text, bulleted) = if let Some(rest) =
-            line.strip_prefix("- ").or_else(|| line.strip_prefix("* "))
-        {
-            (rest.to_string(), true)
-        } else if let Some(rest) = strip_ordered_marker(line) {
-            (rest, true)
-        } else {
-            (line.to_string(), false)
-        };
+        let (text, bulleted) =
+            if let Some(rest) = line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")) {
+                (rest.to_string(), true)
+            } else if let Some(rest) = strip_ordered_marker(line) {
+                (rest, true)
+            } else {
+                (line.to_string(), false)
+            };
         let slide = current.get_or_insert_with(|| Slide {
             title: String::new(),
             items: Vec::new(),
@@ -319,94 +273,56 @@ fn write_pptx(slides: &[Slide], output: &Path) -> Result<(), MarkoffError> {
     let mut archive = zip::ZipWriter::new(file);
     let options = SimpleFileOptions::default();
 
-    write_part(
-        &mut archive,
-        options,
-        "[Content_Types].xml",
-        &build_content_types(slide_count),
-    )?;
-    write_part(&mut archive, options, "_rels/.rels", PACKAGE_RELS)?;
-    write_part(&mut archive, options, "docProps/core.xml", CORE_PROPERTIES)?;
-    write_part(
-        &mut archive,
-        options,
-        "docProps/app.xml",
-        &build_app_properties(slide_count),
-    )?;
-    write_part(
-        &mut archive,
-        options,
-        "ppt/presentation.xml",
-        &build_presentation_xml(slide_count),
-    )?;
-    write_part(
-        &mut archive,
-        options,
-        "ppt/_rels/presentation.xml.rels",
-        &build_presentation_rels(slide_count),
-    )?;
-    write_part(&mut archive, options, "ppt/theme/theme1.xml", THEME_XML)?;
-    write_part(
-        &mut archive,
-        options,
-        "ppt/slideMasters/slideMaster1.xml",
-        SLIDE_MASTER_XML,
-    )?;
-    write_part(
-        &mut archive,
-        options,
-        "ppt/slideMasters/_rels/slideMaster1.xml.rels",
-        SLIDE_MASTER_RELS,
-    )?;
-    write_part(
-        &mut archive,
-        options,
-        "ppt/slideLayouts/slideLayout1.xml",
-        SLIDE_LAYOUT_XML,
-    )?;
-    write_part(
-        &mut archive,
-        options,
-        "ppt/slideLayouts/_rels/slideLayout1.xml.rels",
-        SLIDE_LAYOUT_RELS,
-    )?;
-
-    for (index, slide) in slides.iter().enumerate() {
-        write_part(
-            &mut archive,
-            options,
-            &format!("ppt/slides/slide{}.xml", index + 1),
-            &build_slide_xml(slide),
-        )?;
-        write_part(
-            &mut archive,
-            options,
-            &format!("ppt/slides/_rels/slide{}.xml.rels", index + 1),
+    let app_properties = build_app_properties(slide_count);
+    let presentation_xml = build_presentation_xml(slide_count);
+    let presentation_rels = build_presentation_rels(slide_count);
+    let content_types = build_content_types(slide_count);
+    let mut parts = vec![
+        ("[Content_Types].xml".to_string(), content_types.as_str()),
+        ("_rels/.rels".to_string(), PACKAGE_RELS),
+        ("docProps/core.xml".to_string(), CORE_PROPERTIES),
+        ("docProps/app.xml".to_string(), app_properties.as_str()),
+        (
+            "ppt/presentation.xml".to_string(),
+            presentation_xml.as_str(),
+        ),
+        (
+            "ppt/_rels/presentation.xml.rels".to_string(),
+            presentation_rels.as_str(),
+        ),
+        ("ppt/theme/theme1.xml".to_string(), THEME_XML),
+        (
+            "ppt/slideMasters/slideMaster1.xml".to_string(),
+            SLIDE_MASTER_XML,
+        ),
+        (
+            "ppt/slideMasters/_rels/slideMaster1.xml.rels".to_string(),
+            SLIDE_MASTER_RELS,
+        ),
+        (
+            "ppt/slideLayouts/slideLayout1.xml".to_string(),
+            SLIDE_LAYOUT_XML,
+        ),
+        (
+            "ppt/slideLayouts/_rels/slideLayout1.xml.rels".to_string(),
+            SLIDE_LAYOUT_RELS,
+        ),
+    ];
+    let slide_xml = slides.iter().map(build_slide_xml).collect::<Vec<_>>();
+    for (index, xml) in slide_xml.iter().enumerate() {
+        parts.push((format!("ppt/slides/slide{}.xml", index + 1), xml.as_str()));
+        parts.push((
+            format!("ppt/slides/_rels/slide{}.xml.rels", index + 1),
             SLIDE_RELS,
-        )?;
+        ));
+    }
+
+    for (name, content) in parts {
+        write_zip_part(&mut archive, options, &name, content)?;
     }
 
     archive.finish().map_err(invalid_data)?;
     Ok(())
-}
-
-fn write_part(
-    archive: &mut zip::ZipWriter<std::fs::File>,
-    options: zip::write::SimpleFileOptions,
-    name: &str,
-    content: &str,
-) -> Result<(), MarkoffError> {
-    use std::io::Write as _;
-    archive.start_file(name, options).map_err(invalid_data)?;
-    archive.write_all(content.as_bytes())?;
-    Ok(())
-}
-
-fn xml_escape(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
 }
 
 fn build_content_types(slide_count: usize) -> String {
@@ -423,7 +339,7 @@ fn build_content_types(slide_count: usize) -> String {
 
 fn build_presentation_rels(slide_count: usize) -> String {
     let mut relationships = String::from(
-        "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster\" Target=\"slideMasters/slideMaster1.xml\"/>"
+        "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster\" Target=\"slideMasters/slideMaster1.xml\"/>",
     );
     for index in 1..=slide_count {
         relationships.push_str(&format!(
@@ -502,23 +418,14 @@ const SLIDE_RELS: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"
 #[cfg(test)]
 mod tests {
     use super::{convert_markdown_to_pptx, convert_pptx_to_markdown};
+    use crate::test_support::unique_temp_path;
     use std::fs;
-    use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    fn unique_temp_path(name: &str, extension: &str) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        std::env::temp_dir().join(format!("markoff_pptx_{name}_{nanos}.{extension}"))
-    }
 
     #[test]
     fn round_trips_titles_and_bullets_through_pptx() {
-        let markdown_in = unique_temp_path("input", "md");
-        let pptx = unique_temp_path("presentation", "pptx");
-        let markdown_out = unique_temp_path("output", "md");
+        let markdown_in = unique_temp_path("pptx_input", "md");
+        let pptx = unique_temp_path("pptx_presentation", "pptx");
+        let markdown_out = unique_temp_path("pptx_output", "md");
         fs::write(
             &markdown_in,
             "# Welcome\n\nIntro paragraph.\n\n## Agenda\n\n- First topic\n- Second topic\n",

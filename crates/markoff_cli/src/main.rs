@@ -98,9 +98,8 @@ fn parse_delimiter(spec: Option<&str>) -> anyhow::Result<u8> {
             "--delimiter must be a single ASCII character or 'tab', got {spec:?}"
         ));
     };
-    u8::try_from(character).map_err(|_| {
-        anyhow::anyhow!("--delimiter must be a single ASCII character, got {spec:?}")
-    })
+    u8::try_from(character)
+        .map_err(|_| anyhow::anyhow!("--delimiter must be a single ASCII character, got {spec:?}"))
 }
 
 fn temporary_path(format: Format) -> PathBuf {

@@ -7,9 +7,9 @@ use crate::docx_inline::{
 };
 use crate::error::invalid_data;
 use crate::tables::parse_markdown_table;
+use crate::zip_utils::write_zip_part;
 
 pub(crate) fn convert_markdown_to_docx(input: &Path, output: &Path) -> Result<(), MarkoffError> {
-    use std::io::Write;
     use zip::write::SimpleFileOptions;
 
     let source = std::fs::read_to_string(input)?;
@@ -95,10 +95,12 @@ pub(crate) fn convert_markdown_to_docx(input: &Path, output: &Path) -> Result<()
         .iter()
         .map(|(num_id, kind)| {
             let abstract_id = match kind {
-                ListKind::Bullet => 0,
-                ListKind::Decimal => 1,
+                NumberingStyle::Bullet => 0,
+                NumberingStyle::Decimal => 1,
             };
-            format!("<w:num w:numId=\"{num_id}\"><w:abstractNumId w:val=\"{abstract_id}\"/></w:num>")
+            format!(
+                "<w:num w:numId=\"{num_id}\"><w:abstractNumId w:val=\"{abstract_id}\"/></w:num>"
+            )
         })
         .collect::<String>();
     let numbering = format!(
@@ -108,31 +110,22 @@ pub(crate) fn convert_markdown_to_docx(input: &Path, output: &Path) -> Result<()
     let file = std::fs::File::create(output)?;
     let mut archive = zip::ZipWriter::new(file);
     let options = SimpleFileOptions::default();
-    archive
-        .start_file("[Content_Types].xml", options)
-        .map_err(invalid_data)?;
-    archive.write_all(content_types.as_bytes())?;
-    archive
-        .start_file("_rels/.rels", options)
-        .map_err(invalid_data)?;
-    archive.write_all(relationships.as_bytes())?;
-    archive
-        .start_file("word/_rels/document.xml.rels", options)
-        .map_err(invalid_data)?;
-    archive.write_all(document_relationships.as_bytes())?;
-    archive
-        .start_file("word/document.xml", options)
-        .map_err(invalid_data)?;
-    archive.write_all(document.as_bytes())?;
-    archive
-        .start_file("word/numbering.xml", options)
-        .map_err(invalid_data)?;
-    archive.write_all(numbering.as_bytes())?;
-    if !footnotes.is_empty() {
-        archive
-            .start_file("word/footnotes.xml", options)
-            .map_err(invalid_data)?;
-        archive.write_all(render_footnotes(&footnotes).as_bytes())?;
+    let footnotes_xml = (!footnotes.is_empty()).then(|| render_footnotes(&footnotes));
+    let mut parts = vec![
+        ("[Content_Types].xml", content_types.as_str()),
+        ("_rels/.rels", relationships),
+        (
+            "word/_rels/document.xml.rels",
+            document_relationships.as_str(),
+        ),
+        ("word/document.xml", document.as_str()),
+        ("word/numbering.xml", numbering.as_str()),
+    ];
+    if let Some(footnotes_xml) = &footnotes_xml {
+        parts.push(("word/footnotes.xml", footnotes_xml.as_str()));
+    }
+    for (name, content) in parts {
+        write_zip_part(&mut archive, options, name, content)?;
     }
     archive.finish().map_err(invalid_data)?;
     Ok(())
@@ -155,7 +148,7 @@ fn is_fenced_code_block_start(line: &str) -> bool {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum ListKind {
+enum NumberingStyle {
     Bullet,
     Decimal,
 }
@@ -168,7 +161,7 @@ struct ListIdAllocator {
     next_id: u32,
     active_bullet: Option<u32>,
     active_decimal: Option<u32>,
-    allocated: Vec<(u32, ListKind)>,
+    allocated: Vec<(u32, NumberingStyle)>,
 }
 
 impl ListIdAllocator {
@@ -181,8 +174,8 @@ impl ListIdAllocator {
             self.next_id = 1;
         }
         let (kind, active) = match kind {
-            1 => (ListKind::Bullet, &mut self.active_bullet),
-            _ => (ListKind::Decimal, &mut self.active_decimal),
+            1 => (NumberingStyle::Bullet, &mut self.active_bullet),
+            _ => (NumberingStyle::Decimal, &mut self.active_decimal),
         };
         if let Some(id) = active {
             return Some(*id);
@@ -199,12 +192,16 @@ impl ListIdAllocator {
         self.active_decimal = None;
     }
 
-    fn allocated(&self) -> &[(u32, ListKind)] {
+    fn allocated(&self) -> &[(u32, NumberingStyle)] {
         &self.allocated
     }
 }
 
-fn docx_paragraph(line: &str, footnote_ids: &HashMap<&str, usize>, list_num_id: Option<u32>) -> String {
+fn docx_paragraph(
+    line: &str,
+    footnote_ids: &HashMap<&str, usize>,
+    list_num_id: Option<u32>,
+) -> String {
     let heading_level = line
         .chars()
         .take_while(|character| *character == '#')

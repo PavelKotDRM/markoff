@@ -184,9 +184,9 @@ fn preview_path() -> PathBuf {
 fn load_source_preview(input: &Path) -> SourcePreview {
     match detect_format(input) {
         Ok(Format::Markdown) => SourcePreview::Markdown(read_text_or_error(input)),
-        Ok(Format::Json) => {
-            structured_tree_preview(input, |source| serde_json::from_str(source).map_err(|error| error.to_string()))
-        }
+        Ok(Format::Json) => structured_tree_preview(input, |source| {
+            serde_json::from_str(source).map_err(|error| error.to_string())
+        }),
         Ok(Format::Yaml) => structured_tree_preview(input, |source| {
             serde_yaml::from_str::<serde_json::Value>(source).map_err(|error| error.to_string())
         }),
@@ -200,7 +200,9 @@ fn load_source_preview(input: &Path) -> SourcePreview {
             let preview = preview_path();
             let rendered = convert_file(input, &preview, format, Format::Markdown)
                 .map_err(|error| error.to_string())
-                .and_then(|()| std::fs::read_to_string(&preview).map_err(|error| error.to_string()));
+                .and_then(|()| {
+                    std::fs::read_to_string(&preview).map_err(|error| error.to_string())
+                });
             std::fs::remove_file(&preview).ok();
             match rendered {
                 Ok(markdown) => SourcePreview::Markdown(markdown),
@@ -213,7 +215,9 @@ fn load_source_preview(input: &Path) -> SourcePreview {
             let preview = preview_path();
             let rendered = convert_file(input, &preview, Format::Html, Format::Markdown)
                 .map_err(|error| error.to_string())
-                .and_then(|()| std::fs::read_to_string(&preview).map_err(|error| error.to_string()));
+                .and_then(|()| {
+                    std::fs::read_to_string(&preview).map_err(|error| error.to_string())
+                });
             std::fs::remove_file(&preview).ok();
             match rendered {
                 Ok(markdown) => SourcePreview::Markdown(markdown),

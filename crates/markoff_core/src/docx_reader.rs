@@ -1,6 +1,7 @@
 use crate::MarkoffError;
 use crate::docx_inline::{VerticalAlign, markdown_from_docx_run, pageref_target};
 use crate::error::invalid_data;
+use crate::xml_utils::{attribute_value, parse_relationships};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -36,7 +37,9 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
     let numbering = read_numbering(&mut archive)?;
     let footnotes = read_footnotes(&mut archive)?;
     let relationships = read_relationships(&mut archive)?;
-    let image_dir = output.parent().map_or_else(|| PathBuf::from("image"), |parent| parent.join("image"));
+    let image_dir = output
+        .parent()
+        .map_or_else(|| PathBuf::from("image"), |parent| parent.join("image"));
     let mut image_counter = 0usize;
 
     let mut reader = Reader::from_str(&document);
@@ -335,9 +338,7 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                             && std::fs::write(image_dir.join(&file_name), bytes).is_ok()
                         {
                             flush_pending_run(&mut paragraph, &mut pending_run);
-                            paragraph.push_str(&format!(
-                                "![{image_alt}](image/{file_name})"
-                            ));
+                            paragraph.push_str(&format!("![{image_alt}](image/{file_name})"));
                         }
                     }
                     image_alt.clear();
@@ -392,25 +393,22 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                             .flatten();
                             let is_list_item = heading_level.is_none()
                                 && (list_numbering_id.is_some() || textual_list_item.is_some());
-                            let (prefix, content) = textual_list_item.map_or_else(
-                                || {
-                                    (
-                                        heading_level.map_or_else(
-                                            || {
-                                                list_prefix(
-                                                    list_numbering_id.as_deref(),
-                                                    list_level,
-                                                    &numbering,
-                                                    &mut list_counters,
-                                                )
-                                            },
-                                            |level| "#".repeat(level) + " ",
-                                        ),
-                                        paragraph.clone(),
-                                    )
-                                },
-                                |(prefix, content)| (prefix, content),
-                            );
+                            let (prefix, content) = textual_list_item.unwrap_or_else(|| {
+                                (
+                                    heading_level.map_or_else(
+                                        || {
+                                            list_prefix(
+                                                list_numbering_id.as_deref(),
+                                                list_level,
+                                                &numbering,
+                                                &mut list_counters,
+                                            )
+                                        },
+                                        |level| "#".repeat(level) + " ",
+                                    ),
+                                    paragraph.clone(),
+                                )
+                            });
                             let rendered = if anchors.is_empty() {
                                 format!("{prefix}{content}")
                             } else if !is_list_item {
@@ -480,10 +478,10 @@ fn convert_textual_footnotes(markdown: &mut Vec<String>) {
     let mut footnotes = Vec::new();
     for (label, content) in definitions {
         let marker = format!("\\[{label}\\]");
-        let is_referenced = markdown
-            .iter()
-            .any(|paragraph| !textual_footnote_definition(paragraph).is_some_and(|(other, _)| other == label)
-                && paragraph.contains(&marker));
+        let is_referenced = markdown.iter().any(|paragraph| {
+            !textual_footnote_definition(paragraph).is_some_and(|(other, _)| other == label)
+                && paragraph.contains(&marker)
+        });
         if !is_referenced {
             continue;
         }
@@ -532,7 +530,10 @@ fn convert_formula_section(markdown: &mut [String]) {
 }
 
 fn heading_text(paragraph: &str) -> Option<&str> {
-    let hashes = paragraph.chars().take_while(|character| *character == '#').count();
+    let hashes = paragraph
+        .chars()
+        .take_while(|character| *character == '#')
+        .count();
     ((1..=6).contains(&hashes) && paragraph.as_bytes().get(hashes) == Some(&b' '))
         .then(|| paragraph[hashes + 1..].trim())
 }
@@ -582,11 +583,7 @@ fn looks_like_formula(text: &str) -> bool {
 /// Parses an escaped bracketed row like `\[ 1  2 \]` into a LaTeX matrix row
 /// (`1 & 2`); returns `None` when the line is not a simple numeric row.
 fn matrix_row_to_latex(line: &str) -> Option<String> {
-    let inner = line
-        .trim()
-        .strip_prefix("\\[")?
-        .strip_suffix("\\]")?
-        .trim();
+    let inner = line.trim().strip_prefix("\\[")?.strip_suffix("\\]")?.trim();
     (!inner.is_empty()).then(|| inner.split_whitespace().collect::<Vec<_>>().join(" & "))
 }
 
@@ -774,8 +771,6 @@ fn list_prefix(
 fn read_relationships(
     archive: &mut zip::ZipArchive<std::fs::File>,
 ) -> Result<BTreeMap<String, String>, MarkoffError> {
-    use quick_xml::Reader;
-    use quick_xml::events::Event;
     use std::io::Read;
 
     let Ok(mut file) = archive.by_name("word/_rels/document.xml.rels") else {
@@ -783,23 +778,7 @@ fn read_relationships(
     };
     let mut document = String::new();
     file.read_to_string(&mut document)?;
-
-    let mut reader = Reader::from_str(&document);
-    let mut relationships = BTreeMap::new();
-    loop {
-        match reader.read_event().map_err(invalid_data)? {
-            Event::Start(event) | Event::Empty(event) if event.local_name().as_ref() == b"Relationship" => {
-                let id = attribute_value(&event, b"Id", reader.decoder())?;
-                let target = attribute_value(&event, b"Target", reader.decoder())?;
-                if let (Some(id), Some(target)) = (id, target) {
-                    relationships.insert(id, target);
-                }
-            }
-            Event::Eof => break,
-            _ => {}
-        }
-    }
-    Ok(relationships)
+    parse_relationships(&document)
 }
 
 /// Resolves a `word/_rels/document.xml.rels` relationship target (relative to
@@ -909,24 +888,6 @@ fn read_numbering(
         .collect())
 }
 
-fn attribute_value(
-    event: &quick_xml::events::BytesStart<'_>,
-    name: &[u8],
-    decoder: quick_xml::encoding::Decoder,
-) -> Result<Option<String>, MarkoffError> {
-    Ok(event
-        .attributes()
-        .flatten()
-        .find(|attribute| attribute.key.local_name().as_ref() == name)
-        .map(|attribute| {
-            attribute
-                .decode_and_unescape_value(decoder)
-                .map(|value| value.into_owned())
-                .map_err(invalid_data)
-        })
-        .transpose()?)
-}
-
 /// quick-xml reports character/general entity references (e.g. `&amp;`) as a
 /// separate `Event::GeneralRef` rather than folding them into `Event::Text`;
 /// resolve the reference back into its literal character(s).
@@ -950,9 +911,7 @@ fn word_property_enabled(
         .flatten()
         .find(|attribute| attribute.key.local_name().as_ref() == b"val")
         .and_then(|attribute| attribute.decode_and_unescape_value(decoder).ok())
-        .is_none_or(|value| {
-            !matches!(value.as_ref(), "0" | "false" | "off" | "none" | "nil")
-        })
+        .is_none_or(|value| !matches!(value.as_ref(), "0" | "false" | "off" | "none" | "nil"))
 }
 
 fn markdown_table_from_docx_rows(rows: &[Vec<String>]) -> String {

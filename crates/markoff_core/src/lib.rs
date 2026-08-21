@@ -17,10 +17,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 mod csv_format;
 mod data;
+mod document;
 mod docx_inline;
 mod docx_reader;
 mod docx_writer;
-mod document;
 mod error;
 mod html;
 mod model;
@@ -28,14 +28,16 @@ mod pdf;
 mod pptx;
 mod tables;
 mod xlsx;
+mod xml_utils;
+mod zip_utils;
 
 pub use model::{ConversionRequest, Format, MarkoffError, detect_format};
 
 use csv_format::{convert_csv_to_markdown, convert_markdown_to_csv};
 use data::{convert_data_to_xlsx, convert_xlsx_to_data};
+use document::{convert_document_to_markdown, convert_markdown_to_document};
 use docx_reader::convert_docx_to_markdown;
 use docx_writer::convert_markdown_to_docx;
-use document::{convert_document_to_markdown, convert_markdown_to_document};
 use html::{convert_html_to_markdown, convert_markdown_to_html};
 use pdf::convert_pdf_to_markdown;
 use pptx::{convert_markdown_to_pptx, convert_pptx_to_markdown};
@@ -81,23 +83,37 @@ pub fn convert_document(request: &ConversionRequest) -> Result<(), MarkoffError>
         (Format::Markdown, Format::Docx) => {
             convert_markdown_to_docx(&request.input, &request.output)
         }
-        (Format::Docx, Format::Csv | Format::Xlsx) => convert_docx_via_markdown(
-            &request.input,
-            &request.output,
-            request.to,
-            request.csv_delimiter,
+        (Format::Docx, Format::Csv | Format::Xlsx) => convert_via_markdown_intermediate(
+            |markdown| convert_docx_to_markdown(&request.input, markdown),
+            |markdown| match request.to {
+                Format::Csv => {
+                    convert_markdown_to_csv(markdown, &request.output, request.csv_delimiter)
+                }
+                Format::Xlsx => convert_markdown_to_xlsx(markdown, &request.output),
+                _ => unreachable!("only CSV and XLSX reach this branch"),
+            },
         ),
         (Format::Docx, Format::Json | Format::Yaml | Format::Toml) => {
-            convert_docx_to_document_format(&request.input, &request.output, request.to)
+            convert_via_markdown_intermediate(
+                |markdown| convert_docx_to_markdown(&request.input, markdown),
+                |markdown| convert_markdown_to_document(markdown, &request.output, request.to),
+            )
         }
-        (Format::Csv | Format::Xlsx, Format::Docx) => convert_to_docx_via_markdown(
-            &request.input,
-            &request.output,
-            request.from,
-            request.csv_delimiter,
+        (Format::Csv | Format::Xlsx, Format::Docx) => convert_via_markdown_intermediate(
+            |markdown| match request.from {
+                Format::Csv => {
+                    convert_csv_to_markdown(&request.input, markdown, request.csv_delimiter)
+                }
+                Format::Xlsx => convert_xlsx_to_markdown(&request.input, markdown),
+                _ => unreachable!("only CSV and XLSX reach this branch"),
+            },
+            |markdown| convert_markdown_to_docx(markdown, &request.output),
         ),
         (Format::Json | Format::Yaml | Format::Toml, Format::Docx) => {
-            convert_document_format_to_docx(&request.input, &request.output, request.from)
+            convert_via_markdown_intermediate(
+                |markdown| convert_document_to_markdown(&request.input, markdown, request.from),
+                |markdown| convert_markdown_to_docx(markdown, &request.output),
+            )
         }
         (Format::Pdf, Format::Markdown) => convert_pdf_to_markdown(&request.input, &request.output),
         (Format::Json | Format::Yaml | Format::Toml, Format::Markdown) => {
@@ -153,59 +169,17 @@ pub fn convert_document(request: &ConversionRequest) -> Result<(), MarkoffError>
     }
 }
 
-fn convert_docx_via_markdown(
-    input: &Path,
-    output: &Path,
-    format: Format,
-    delimiter: u8,
+/// Runs a conversion that must pass through an intermediate Markdown file:
+/// `to_markdown` renders the source into a fresh temporary Markdown path,
+/// then `from_markdown` renders that same path into the final output. The
+/// temporary file (and any side files it created, such as an `image/`
+/// folder) is always cleaned up, even when either step fails.
+fn convert_via_markdown_intermediate(
+    to_markdown: impl FnOnce(&Path) -> Result<(), MarkoffError>,
+    from_markdown: impl FnOnce(&Path) -> Result<(), MarkoffError>,
 ) -> Result<(), MarkoffError> {
     let markdown = intermediate_path("md");
-    let result = convert_docx_to_markdown(input, &markdown).and_then(|()| match format {
-        Format::Csv => convert_markdown_to_csv(&markdown, output, delimiter),
-        Format::Xlsx => convert_markdown_to_xlsx(&markdown, output),
-        _ => unreachable!("only CSV and XLSX use this helper"),
-    });
-    remove_intermediate_markdown(&markdown);
-    result
-}
-
-fn convert_docx_to_document_format(
-    input: &Path,
-    output: &Path,
-    format: Format,
-) -> Result<(), MarkoffError> {
-    let markdown = intermediate_path("md");
-    let result = convert_docx_to_markdown(input, &markdown)
-        .and_then(|()| convert_markdown_to_document(&markdown, output, format));
-    remove_intermediate_markdown(&markdown);
-    result
-}
-
-fn convert_document_format_to_docx(
-    input: &Path,
-    output: &Path,
-    format: Format,
-) -> Result<(), MarkoffError> {
-    let markdown = intermediate_path("md");
-    let result = convert_document_to_markdown(input, &markdown, format)
-        .and_then(|()| convert_markdown_to_docx(&markdown, output));
-    remove_intermediate_markdown(&markdown);
-    result
-}
-
-fn convert_to_docx_via_markdown(
-    input: &Path,
-    output: &Path,
-    format: Format,
-    delimiter: u8,
-) -> Result<(), MarkoffError> {
-    let markdown = intermediate_path("md");
-    let result = match format {
-        Format::Csv => convert_csv_to_markdown(input, &markdown, delimiter),
-        Format::Xlsx => convert_xlsx_to_markdown(input, &markdown),
-        _ => unreachable!("only CSV and XLSX use this helper"),
-    }
-    .and_then(|()| convert_markdown_to_docx(&markdown, output));
+    let result = to_markdown(&markdown).and_then(|()| from_markdown(&markdown));
     remove_intermediate_markdown(&markdown);
     result
 }
@@ -258,9 +232,30 @@ where
     convert_document(&request)
 }
 
+/// Test-only helper shared by unit tests across modules, avoiding duplicate
+/// `unique_temp_path`-style helpers in every file that needs one.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    pub(crate) fn unique_temp_path(name: &str, extension: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time is after the Unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "markoff_{name}_{}_{nanos}.{extension}",
+            std::process::id()
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ConversionRequest, Format, MarkoffError, convert_document, convert_file, detect_format};
+    use super::{
+        ConversionRequest, Format, MarkoffError, convert_document, convert_file, detect_format,
+    };
     use crate::xlsx::{read_xlsx_sheets, write_xlsx_sheets};
     use std::collections::BTreeMap;
     use std::fs;
@@ -461,7 +456,11 @@ mod tests {
     fn converts_yaml_to_markdown() {
         let input = unique_temp_path("yaml_to_markdown_input");
         let output = unique_temp_path("yaml_to_markdown_output");
-        fs::write(&input, "blocks:\n  - type: paragraph\n    text: Ada count 42\n").unwrap();
+        fs::write(
+            &input,
+            "blocks:\n  - type: paragraph\n    text: Ada count 42\n",
+        )
+        .unwrap();
 
         convert_file(&input, &output, Format::Yaml, Format::Markdown).unwrap();
 

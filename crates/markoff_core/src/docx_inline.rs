@@ -1,19 +1,4 @@
-fn xml_escape(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-}
-
-fn markdown_escape(value: &str) -> String {
-    value.replace('\\', "\\\\")
-        .replace('*', "\\*")
-        .replace('`', "\\`")
-        .replace('~', "\\~")
-        .replace('<', "\\<")
-        .replace('[', "\\[")
-        .replace(']', "\\]")
-}
+use crate::xml_utils::{MarkdownEscapeContext, markdown_escape, xml_escape};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum VerticalAlign {
@@ -23,7 +8,8 @@ pub(crate) enum VerticalAlign {
 }
 
 fn latex_escape(value: &str) -> String {
-    value.replace('\\', "\\\\")
+    value
+        .replace('\\', "\\\\")
         .replace('{', "\\{")
         .replace('}', "\\}")
 }
@@ -127,7 +113,13 @@ fn docx_run(
     vertical_align: VerticalAlign,
 ) -> String {
     let mut properties = String::new();
-    if bold || italic || strikethrough || underline || code || vertical_align != VerticalAlign::Baseline {
+    if bold
+        || italic
+        || strikethrough
+        || underline
+        || code
+        || vertical_align != VerticalAlign::Baseline
+    {
         properties.push_str("<w:rPr>");
         if bold {
             properties.push_str("<w:b/>");
@@ -150,9 +142,7 @@ fn docx_run(
             VerticalAlign::Superscript => {
                 properties.push_str("<w:vertAlign w:val=\"superscript\"/>")
             }
-            VerticalAlign::Subscript => {
-                properties.push_str("<w:vertAlign w:val=\"subscript\"/>")
-            }
+            VerticalAlign::Subscript => properties.push_str("<w:vertAlign w:val=\"subscript\"/>"),
             VerticalAlign::Baseline => {}
         }
         properties.push_str("</w:rPr>");
@@ -329,14 +319,7 @@ pub(crate) fn markdown_inline_to_docx_runs(value: &str) -> String {
                         VerticalAlign::Baseline,
                     ));
                 }
-                pending = Some((
-                    bold,
-                    italic,
-                    strikethrough,
-                    underline,
-                    code,
-                    text,
-                ));
+                pending = Some((bold, italic, strikethrough, underline, code, text));
             }
         }
         remaining = rest;
@@ -358,7 +341,17 @@ pub(crate) fn markdown_inline_to_docx_runs(value: &str) -> String {
 pub(crate) fn markdown_code_block_to_docx_runs(value: &str) -> String {
     value
         .lines()
-        .map(|line| docx_run(line, false, false, false, false, true, VerticalAlign::Baseline))
+        .map(|line| {
+            docx_run(
+                line,
+                false,
+                false,
+                false,
+                false,
+                true,
+                VerticalAlign::Baseline,
+            )
+        })
         .collect::<Vec<_>>()
         .join("<w:r><w:br/></w:r>")
 }
@@ -415,7 +408,7 @@ pub(crate) fn markdown_from_docx_run(
         VerticalAlign::Superscript => format!("$^{{{}}}$", latex_escape(core)),
         VerticalAlign::Subscript => format!("$_{{{}}}$", latex_escape(core)),
         VerticalAlign::Baseline => {
-            let mut rendered = markdown_escape(core);
+            let mut rendered = markdown_escape(core, MarkdownEscapeContext::Docx);
             match (bold, italic) {
                 (true, true) => rendered = format!("***{rendered}***"),
                 (true, false) => rendered = format!("**{rendered}**"),

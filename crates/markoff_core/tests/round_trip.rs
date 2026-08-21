@@ -245,11 +245,7 @@ fn csv_round_trip_preserves_embedded_newlines_and_backslashes() {
     let restored_csv = temporary_path("csv_special_restored", "csv");
     let document = temporary_path("csv_special", "docx");
     let restored_docx_csv = temporary_path("csv_special_docx_restored", "csv");
-    fs::write(
-        &csv,
-        "id,name,tags\n1,\"Multi\nline note\",\"a|b\\c\"\n",
-    )
-    .unwrap();
+    fs::write(&csv, "id,name,tags\n1,\"Multi\nline note\",\"a|b\\c\"\n").unwrap();
     let expected = vec![vec![
         "1".to_string(),
         "Multi\nline note".to_string(),

@@ -153,9 +153,7 @@ fn split_into_raw_blocks(markdown: &str) -> Vec<String> {
         let first_line = paragraph.lines().next().unwrap_or("");
         let is_continuation =
             first_line.starts_with("    ") && markdown_list_item(first_line).is_none();
-        if is_continuation
-            && let Some(previous) = blocks.last_mut()
-        {
+        if is_continuation && let Some(previous) = blocks.last_mut() {
             previous.push_str("\n\n");
             previous.push_str(paragraph);
         } else {
@@ -172,8 +170,7 @@ fn classify_block(text: String, base_dir: Option<&Path>) -> Block {
         .chars()
         .take_while(|character| *character == '#')
         .count();
-    if (1..=6).contains(&heading_level) && first_line.as_bytes().get(heading_level) == Some(&b' ')
-    {
+    if (1..=6).contains(&heading_level) && first_line.as_bytes().get(heading_level) == Some(&b' ') {
         return Block::Heading {
             level: heading_level as u8,
             text: first_line[heading_level + 1..].to_string(),
@@ -269,9 +266,10 @@ fn render_block(
     image_index: &mut usize,
 ) -> Result<String, MarkoffError> {
     match block {
-        Block::Heading { level, text } => {
-            Ok(format!("{} {text}", "#".repeat((*level).clamp(1, 6) as usize)))
-        }
+        Block::Heading { level, text } => Ok(format!(
+            "{} {text}",
+            "#".repeat((*level).clamp(1, 6) as usize)
+        )),
         Block::ListItem {
             ordered,
             level,

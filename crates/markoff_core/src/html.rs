@@ -9,6 +9,7 @@
 
 use crate::MarkoffError;
 use crate::tables::markdown_table_from_rows;
+use crate::xml_utils::{MarkdownEscapeContext, markdown_escape, xml_escape};
 use std::path::Path;
 
 pub(crate) fn convert_markdown_to_html(input: &Path, output: &Path) -> Result<(), MarkoffError> {
@@ -42,26 +43,9 @@ pub(crate) fn convert_html_to_markdown(input: &Path, output: &Path) -> Result<()
     Ok(())
 }
 
-fn xml_escape(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-}
-
-fn markdown_escape(value: &str) -> String {
-    value
-        .replace('\\', "\\\\")
-        .replace('*', "\\*")
-        .replace('_', "\\_")
-        .replace('`', "\\`")
-        .replace('[', "\\[")
-        .replace(']', "\\]")
-}
-
 const VOID_ELEMENTS: &[&str] = &[
-    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param",
-    "source", "track", "wbr",
+    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source",
+    "track", "wbr",
 ];
 
 enum Token {
@@ -240,14 +224,30 @@ fn decode_entities(text: &str) -> String {
 }
 
 fn decode_one_entity(entity: &str) -> Option<String> {
-    if let Some(hex) = entity.strip_prefix('x').or_else(|| entity.strip_prefix('X')) {
-        return u32::from_str_radix(hex, 16).ok().and_then(char::from_u32).map(String::from);
+    if let Some(hex) = entity
+        .strip_prefix('x')
+        .or_else(|| entity.strip_prefix('X'))
+    {
+        return u32::from_str_radix(hex, 16)
+            .ok()
+            .and_then(char::from_u32)
+            .map(String::from);
     }
     if let Some(decimal) = entity.strip_prefix('#') {
-        if let Some(hex) = decimal.strip_prefix('x').or_else(|| decimal.strip_prefix('X')) {
-            return u32::from_str_radix(hex, 16).ok().and_then(char::from_u32).map(String::from);
+        if let Some(hex) = decimal
+            .strip_prefix('x')
+            .or_else(|| decimal.strip_prefix('X'))
+        {
+            return u32::from_str_radix(hex, 16)
+                .ok()
+                .and_then(char::from_u32)
+                .map(String::from);
         }
-        return decimal.parse::<u32>().ok().and_then(char::from_u32).map(String::from);
+        return decimal
+            .parse::<u32>()
+            .ok()
+            .and_then(char::from_u32)
+            .map(String::from);
     }
     Some(
         match entity {
@@ -531,7 +531,7 @@ fn html_to_markdown(html: &str) -> String {
                         buffer.push_str(&if is_cell {
                             collapsed
                         } else {
-                            markdown_escape(&collapsed)
+                            markdown_escape(&collapsed, MarkdownEscapeContext::Html)
                         });
                     }
                 }
@@ -550,23 +550,14 @@ fn html_to_markdown(html: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{convert_html_to_markdown, convert_markdown_to_html};
+    use crate::test_support::unique_temp_path;
     use std::fs;
-    use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    fn unique_temp_path(name: &str, extension: &str) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        std::env::temp_dir().join(format!("markoff_html_{name}_{nanos}.{extension}"))
-    }
 
     #[test]
     fn converts_markdown_to_html_and_back() {
-        let markdown_in = unique_temp_path("input", "md");
-        let html = unique_temp_path("page", "html");
-        let markdown_out = unique_temp_path("output", "md");
+        let markdown_in = unique_temp_path("html_roundtrip_input", "md");
+        let html = unique_temp_path("html_roundtrip_page", "html");
+        let markdown_out = unique_temp_path("html_roundtrip_output", "md");
         fs::write(
             &markdown_in,
             "# Title\n\nA **bold** and *italic* [link](https://example.com) paragraph.\n\n- First\n- Second\n",
@@ -594,8 +585,8 @@ mod tests {
 
     #[test]
     fn parses_hand_written_html_with_void_elements_and_table() {
-        let html = unique_temp_path("handwritten", "html");
-        let markdown_out = unique_temp_path("output", "md");
+        let html = unique_temp_path("html_handwritten", "html");
+        let markdown_out = unique_temp_path("html_handwritten_output", "md");
         fs::write(
             &html,
             "<html><head><title>Ignore</title></head><body>\n<h2>Report</h2>\n<p>Line one<br>Line two</p>\n<table><tr><th>Name</th><th>Score</th></tr><tr><td>Ada</td><td>42</td></tr></table>\n<hr>\n</body></html>",
