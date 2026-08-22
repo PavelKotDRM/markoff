@@ -3,7 +3,16 @@ use crate::error::invalid_data;
 use std::path::Path;
 
 pub(crate) fn convert_pdf_to_markdown(input: &Path, output: &Path) -> Result<(), MarkoffError> {
-    let text = pdf_extract::extract_text(input).map_err(invalid_data)?;
+    let pdfium = pdfium_bundled::bind_bundled().map_err(invalid_data)?;
+    let document = pdfium
+        .load_pdf_from_file(input, None)
+        .map_err(invalid_data)?;
+    let mut pages = Vec::with_capacity(usize::try_from(document.pages().len()).unwrap_or_default());
+    for index in document.pages().as_range() {
+        let page = document.pages().get(index).map_err(invalid_data)?;
+        pages.push(page.text().map_err(invalid_data)?.all());
+    }
+    let text = pages.join("\n");
     let mut markdown = text.trim_end().to_string();
 
     let image_dir = output

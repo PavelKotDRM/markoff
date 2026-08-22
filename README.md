@@ -56,6 +56,8 @@ cargo test --workspace
 
 The commands below use `cargo run` during development. A release build is created with `cargo build --release`; its executable is available at `target/release/markoff_cli` (or `markoff_cli.exe` on Windows).
 
+PDF text extraction uses `pdfium-render`. The matching Pdfium native library is downloaded and embedded at build time, adding roughly 30 MB to each application binary. On first PDF conversion it is extracted to the user's cache; no network access or separately installed Pdfium library is required at runtime.
+
 ### Use the executable file
 
 To use the application without `cargo run`, build the release binary once:
@@ -185,7 +187,7 @@ The toolbar also switches between dark and light themes and opens build informat
 ## Format behavior and limitations
 
 - DOCX and Markdown preserve headings, paragraphs, nested ordered and bulleted lists, tables, bold/italic/strikethrough/underline text, inline and fenced code blocks, blockquotes, horizontal rules, footnotes, bookmarks, and `PAGEREF` links. A fenced-code language identifier is not preserved.
-- PDF to Markdown extracts the document text layer and embedded raster images (saved as files in an `image` folder next to the Markdown output, same convention as DOCX below). Page layout, vector graphics, tables, and scanned text are not preserved, and images are appended after the text rather than placed at their original position.
+- PDF to Markdown extracts the document text layer with Pdfium and embedded raster images with `lopdf` (saved as files in an `image` folder next to the Markdown output, same convention as DOCX below). Page layout, vector graphics, tables, and scanned text are not preserved, and images are appended after the text rather than placed at their original position.
 - Markdown tables convert to and from XLSX. Each `## Sheet name` heading represents a workbook sheet; the first table row becomes the frozen header row in XLSX.
 - `DOCX`/`Markdown <-> JSON/YAML/TOML` preserve the whole document structure (headings, paragraphs, list items, tables, code blocks, blockquotes, horizontal rules), not just tables, as an ordered `blocks` array; each block keeps inline Markdown formatting as raw text, and literal list numbers are not preserved. This round-trips in both directions: DOCX/Markdown can be converted to JSON/YAML/TOML and back.
 - Images embedded in a DOCX or PDF are extracted and saved as files in an `image` folder next to the Markdown output, referenced with standard `![alt](image/file.ext)` syntax. Converting to JSON/YAML/TOML instead embeds each image inline as base64 (self-contained, no external files). Converting Markdown/JSON/YAML/TOML back to Markdown restores the image files from base64. Converting back to DOCX does not yet re-embed images as OOXML pictures; an image reference degrades to literal escaped text in that direction.
@@ -236,7 +238,7 @@ Optional third-party tools can check dependency vulnerabilities, outdated packag
 
 ```powershell
 cargo install cargo-audit cargo-outdated cargo-machete
-cargo audit
+cargo audit --deny warnings
 cargo outdated --workspace
 cargo machete
 ```
