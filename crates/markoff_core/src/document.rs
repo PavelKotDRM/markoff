@@ -1,80 +1,11 @@
 use crate::Format;
 use crate::MarkoffError;
+use crate::document_model::{Block, Document};
 use crate::docx_inline::markdown_list_item;
 use crate::error::invalid_data;
 use crate::tables::{markdown_table_from_rows, parse_markdown_table};
 use base64::Engine as _;
-use serde::{Deserialize, Serialize};
 use std::path::Path;
-
-/// A single block-level element of a document. This is the schema used to
-/// represent a whole Markdown/DOCX document (not just its tables) in JSON,
-/// YAML, and TOML.
-///
-/// Inline formatting (bold, italic, links, footnote references, ...) is kept
-/// as raw Markdown text inside a block's `text` field rather than modeled
-/// separately, and literal list numbers are not preserved (only order and
-/// nesting), consistent with the existing Markdown/DOCX conversion behavior.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub(crate) enum Block {
-    /// A heading, e.g. `# Title`.
-    Heading {
-        /// Heading level from 1 (`#`) to 6 (`######`).
-        level: u8,
-        /// Heading text; may include inline Markdown formatting.
-        text: String,
-    },
-    /// A single bulleted or numbered list item.
-    ListItem {
-        /// `true` for a numbered item, `false` for a bulleted item.
-        ordered: bool,
-        /// Nesting depth, starting at 0 for a top-level item.
-        level: usize,
-        /// Item text; may include inline Markdown formatting.
-        text: String,
-    },
-    /// A table; the first row is the header row.
-    Table {
-        /// Table rows, including the header row.
-        rows: Vec<Vec<String>>,
-    },
-    /// A fenced code block.
-    #[serde(rename = "code_block")]
-    Code {
-        /// Raw code block content.
-        code: String,
-    },
-    /// A blockquote.
-    Quote {
-        /// Quote text; may include inline Markdown formatting.
-        text: String,
-    },
-    /// A horizontal rule (`---`).
-    HorizontalRule,
-    /// An embedded image, stored inline as base64 rather than a file
-    /// reference so JSON/YAML/TOML documents are self-contained.
-    Image {
-        /// Alt text; may be empty.
-        alt: String,
-        /// Lowercase file extension without a dot, e.g. `png`.
-        format: String,
-        /// Standard base64-encoded image bytes.
-        data: String,
-    },
-    /// Any other paragraph, including footnote definitions and text that
-    /// does not match a more specific block type.
-    Paragraph {
-        /// Paragraph text; may include inline Markdown formatting.
-        text: String,
-    },
-}
-
-/// A whole document represented as an ordered sequence of blocks.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Document {
-    blocks: Vec<Block>,
-}
 
 pub(crate) fn convert_markdown_to_document(
     input: &Path,

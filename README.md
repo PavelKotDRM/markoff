@@ -40,6 +40,12 @@ The project has moved beyond the initial stub stage:
 - DOCX tables, links, images, and footnotes
 - PPTX shape layout, embedded images/charts, and speaker notes are not preserved (only slide titles and body text/bullets)
 
+## Architecture
+
+![markoff workspace architecture](docs/architecture/markoff-architecture.drawio.svg)
+
+Open the [embedded SVG diagram](docs/architecture/markoff-architecture.drawio.svg) directly in the Draw.io Integration extension or [diagrams.net](https://app.diagrams.net/). The SVG retains the editable draw.io data for both pages: **Architecture** shows crate and module dependencies, while **Repository layout** maps the complete workspace structure, build assets, tests, and documentation.
+
 ## Getting started
 
 Install the current stable [Rust toolchain](https://www.rust-lang.org/tools/install), clone the repository, and build the workspace from its root:
