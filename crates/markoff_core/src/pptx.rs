@@ -9,6 +9,7 @@ use crate::MarkoffError;
 use crate::error::invalid_data;
 use crate::xml_utils::{MarkdownEscapeContext, markdown_escape, parse_relationships, xml_escape};
 use crate::zip_utils::write_zip_part;
+use quick_xml::XmlVersion;
 use std::path::Path;
 
 pub(crate) fn convert_pptx_to_markdown(input: &Path, output: &Path) -> Result<(), MarkoffError> {
@@ -97,7 +98,7 @@ fn read_slide_relationship_order(xml: &str) -> Vec<String> {
                     .find(|attribute| attribute.key.as_ref() == b"r:id")
                     .and_then(|attribute| {
                         attribute
-                            .decode_and_unescape_value(reader.decoder())
+                            .decoded_and_normalized_value(XmlVersion::Implicit1_0, reader.decoder())
                             .ok()
                             .map(|value| value.into_owned())
                     })

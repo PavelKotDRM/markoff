@@ -192,6 +192,63 @@ The toolbar also switches between dark and light themes and opens build informat
 - JSON, CSV, YAML, and TOML convert to XLSX as tabular data. JSON/YAML/TOML input for this route must be an array of objects; this is a separate, table-only convention from the whole-document `blocks` schema above.
 - Ordinary hyperlinks, advanced Word table layout, Excel formulas/styles/charts, and PDF output are not yet semantically preserved. PPTX conversion is limited to slide titles and body text/bullets (no shape layout, images, charts, or speaker notes).
 
+## Rust code quality
+
+Install the standard formatting and linting components once:
+
+```powershell
+rustup component add rustfmt clippy
+```
+
+Use these commands from the workspace root for the usual development checks:
+
+```powershell
+# Fast compile check without producing binaries
+cargo check --workspace --all-targets --all-features
+
+# Format the workspace, or only verify formatting in CI
+cargo fmt --all
+cargo fmt --all -- --check
+
+# Run all Clippy lints used by this workspace
+cargo clippy --workspace --all-targets --all-features
+
+# Treat every Clippy warning as an error (recommended before a commit)
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+# Run all tests, including documentation tests
+cargo test --workspace --all-targets --all-features
+cargo test --workspace --doc
+
+# Verify that API documentation builds without dependency documentation
+cargo doc --workspace --all-features --no-deps
+```
+
+Cargo and Clippy can apply some suggestions automatically. Review the diff afterward; `--allow-dirty` permits changes when the working tree already contains edits:
+
+```powershell
+cargo fix --workspace --all-targets --all-features --allow-dirty
+cargo clippy --fix --workspace --all-targets --all-features --allow-dirty
+git diff
+```
+
+Optional third-party tools can check dependency vulnerabilities, outdated packages, and unused dependencies:
+
+```powershell
+cargo install cargo-audit cargo-outdated cargo-machete
+cargo audit
+cargo outdated --workspace
+cargo machete
+```
+
+Update the installed Rust toolchain and inspect project dependencies with:
+
+```powershell
+rustup update
+cargo tree --workspace
+cargo update --dry-run
+```
+
 ### Run benchmark
 
 ```powershell

@@ -3,6 +3,7 @@
 
 use crate::MarkoffError;
 use crate::error::invalid_data;
+use quick_xml::XmlVersion;
 
 /// Escapes the three characters that are unsafe to place inside XML text
 /// content (`&`, `<`, `>`); attribute values are never built with this
@@ -53,7 +54,7 @@ pub(crate) fn attribute_value(
         .find(|attribute| attribute.key.local_name().as_ref() == name)
         .map(|attribute| {
             attribute
-                .decode_and_unescape_value(decoder)
+                .decoded_and_normalized_value(XmlVersion::Implicit1_0, decoder)
                 .map(|value| value.into_owned())
                 .map_err(invalid_data)
         })

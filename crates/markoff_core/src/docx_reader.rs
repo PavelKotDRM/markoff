@@ -1,20 +1,16 @@
 use crate::MarkoffError;
-use crate::docx_inline::{VerticalAlign, markdown_from_docx_run, pageref_target};
+use crate::docx_inline::{DocxRunStyle, VerticalAlign, markdown_from_docx_run, pageref_target};
 use crate::error::invalid_data;
 use crate::xml_utils::{attribute_value, parse_relationships};
+use quick_xml::XmlVersion;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-type PendingRun = (
-    String,
-    bool,
-    bool,
-    bool,
-    bool,
-    bool,
-    VerticalAlign,
-    Option<String>,
-);
+struct PendingRun {
+    text: String,
+    style: DocxRunStyle,
+    target: Option<String>,
+}
 
 #[derive(Clone, Copy)]
 enum ListKind {
@@ -146,7 +142,10 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                     code = event.attributes().flatten().any(|attribute| {
                         attribute.key.local_name().as_ref() == b"ascii"
                             && attribute
-                                .decode_and_unescape_value(reader.decoder())
+                                .decoded_and_normalized_value(
+                                    XmlVersion::Implicit1_0,
+                                    reader.decoder(),
+                                )
                                 .is_ok_and(|value| {
                                     value.eq_ignore_ascii_case("Consolas")
                                         || value.eq_ignore_ascii_case("Courier New")
@@ -160,7 +159,7 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                         .or_else(|| {
                             pending_run
                                 .as_ref()
-                                .and_then(|(text, ..)| text.chars().last())
+                                .and_then(|pending| pending.text.chars().last())
                         })
                         .or_else(|| paragraph.chars().last())
                         .is_some_and(char::is_whitespace);
@@ -177,12 +176,14 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                             &mut paragraph,
                             &mut pending_run,
                             &run,
-                            bold,
-                            italic,
-                            strikethrough,
-                            underline,
-                            code && !code_block,
-                            vert_align,
+                            DocxRunStyle {
+                                bold,
+                                italic,
+                                strikethrough,
+                                underline,
+                                code: code && !code_block,
+                                vertical_align: vert_align,
+                            },
                             in_field_result.then(|| page_reference.clone()).flatten(),
                         );
                         run.clear();
@@ -197,7 +198,10 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                         if attribute.key.local_name().as_ref() == b"name" {
                             bookmarks.push(
                                 attribute
-                                    .decode_and_unescape_value(reader.decoder())
+                                    .decoded_and_normalized_value(
+                                        XmlVersion::Implicit1_0,
+                                        reader.decoder(),
+                                    )
                                     .map_err(invalid_data)?
                                     .into_owned(),
                             );
@@ -208,7 +212,10 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                     for attribute in event.attributes().flatten() {
                         if attribute.key.local_name().as_ref() == b"fldCharType" {
                             let field_type = attribute
-                                .decode_and_unescape_value(reader.decoder())
+                                .decoded_and_normalized_value(
+                                    XmlVersion::Implicit1_0,
+                                    reader.decoder(),
+                                )
                                 .map_err(invalid_data)?;
                             match field_type.as_ref() {
                                 "begin" => {
@@ -230,7 +237,10 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                     for attribute in event.attributes().flatten() {
                         if attribute.key.local_name().as_ref() == b"instr" {
                             let instruction = attribute
-                                .decode_and_unescape_value(reader.decoder())
+                                .decoded_and_normalized_value(
+                                    XmlVersion::Implicit1_0,
+                                    reader.decoder(),
+                                )
                                 .map_err(invalid_data)?;
                             page_reference = pageref_target(&instruction);
                             in_field_result = true;
@@ -241,7 +251,10 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                     for attribute in event.attributes().flatten() {
                         if attribute.key.local_name().as_ref() == b"id"
                             && let Ok(id) = attribute
-                                .decode_and_unescape_value(reader.decoder())
+                                .decoded_and_normalized_value(
+                                    XmlVersion::Implicit1_0,
+                                    reader.decoder(),
+                                )
                                 .map_err(invalid_data)?
                                 .parse::<i64>()
                         {
@@ -255,7 +268,10 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                     for attribute in event.attributes().flatten() {
                         if attribute.key.local_name().as_ref() == b"val" {
                             let value = attribute
-                                .decode_and_unescape_value(reader.decoder())
+                                .decoded_and_normalized_value(
+                                    XmlVersion::Implicit1_0,
+                                    reader.decoder(),
+                                )
                                 .map_err(invalid_data)?
                                 .into_owned();
                             heading_level = value
@@ -271,7 +287,10 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                     horizontal_rule = event.attributes().flatten().any(|attribute| {
                         attribute.key.local_name().as_ref() == b"val"
                             && attribute
-                                .decode_and_unescape_value(reader.decoder())
+                                .decoded_and_normalized_value(
+                                    XmlVersion::Implicit1_0,
+                                    reader.decoder(),
+                                )
                                 .is_ok_and(|value| {
                                     !value.eq_ignore_ascii_case("nil")
                                         && !value.eq_ignore_ascii_case("none")
@@ -283,7 +302,10 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                         if attribute.key.local_name().as_ref() == b"val" {
                             list_numbering_id = Some(
                                 attribute
-                                    .decode_and_unescape_value(reader.decoder())
+                                    .decoded_and_normalized_value(
+                                        XmlVersion::Implicit1_0,
+                                        reader.decoder(),
+                                    )
                                     .map_err(invalid_data)?
                                     .into_owned(),
                             );
@@ -294,7 +316,10 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                     for attribute in event.attributes().flatten() {
                         if attribute.key.local_name().as_ref() == b"val" {
                             list_level = attribute
-                                .decode_and_unescape_value(reader.decoder())
+                                .decoded_and_normalized_value(
+                                    XmlVersion::Implicit1_0,
+                                    reader.decoder(),
+                                )
                                 .map_err(invalid_data)?
                                 .parse()
                                 .unwrap_or(0);
@@ -352,12 +377,14 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                             &mut paragraph,
                             &mut pending_run,
                             &run,
-                            bold,
-                            italic,
-                            strikethrough,
-                            underline,
-                            code && !code_block,
-                            vert_align,
+                            DocxRunStyle {
+                                bold,
+                                italic,
+                                strikethrough,
+                                underline,
+                                code: code && !code_block,
+                                vertical_align: vert_align,
+                            },
                             in_field_result.then(|| page_reference.clone()).flatten(),
                         );
                     }
@@ -910,7 +937,11 @@ fn word_property_enabled(
         .attributes()
         .flatten()
         .find(|attribute| attribute.key.local_name().as_ref() == b"val")
-        .and_then(|attribute| attribute.decode_and_unescape_value(decoder).ok())
+        .and_then(|attribute| {
+            attribute
+                .decoded_and_normalized_value(XmlVersion::Implicit1_0, decoder)
+                .ok()
+        })
         .is_none_or(|value| !matches!(value.as_ref(), "0" | "false" | "off" | "none" | "nil"))
 }
 
@@ -980,7 +1011,10 @@ fn read_footnotes(
                         .find(|attribute| attribute.key.local_name().as_ref() == b"id")
                         .map(|attribute| {
                             attribute
-                                .decode_and_unescape_value(reader.decoder())
+                                .decoded_and_normalized_value(
+                                    XmlVersion::Implicit1_0,
+                                    reader.decoder(),
+                                )
                                 .map_err(invalid_data)?
                                 .parse::<i64>()
                                 .map_err(invalid_data)
@@ -1029,38 +1063,25 @@ fn read_footnotes(
             Event::End(event) => match event.local_name().as_ref() {
                 b"r" if footnote_id.is_some() => {
                     if !run.is_empty() {
-                        if let Some((
-                            text,
-                            previous_bold,
-                            previous_italic,
-                            previous_strikethrough,
-                            previous_underline,
-                            previous_code,
-                            previous_vert_align,
-                            target,
-                        )) = pending_run.take()
-                        {
+                        if let Some(previous) = pending_run.take() {
                             paragraph.push_str(&markdown_from_docx_run(
-                                &text,
-                                previous_bold,
-                                previous_italic,
-                                previous_strikethrough,
-                                previous_underline,
-                                previous_code,
-                                previous_vert_align,
-                                target.as_deref(),
+                                &previous.text,
+                                previous.style,
+                                previous.target.as_deref(),
                             ));
                         }
-                        pending_run = Some((
-                            run.clone(),
-                            bold,
-                            italic,
-                            strikethrough,
-                            underline,
-                            code,
-                            vert_align,
-                            None,
-                        ));
+                        pending_run = Some(PendingRun {
+                            text: run.clone(),
+                            style: DocxRunStyle {
+                                bold,
+                                italic,
+                                strikethrough,
+                                underline,
+                                code,
+                                vertical_align: vert_align,
+                            },
+                            target: None,
+                        });
                     }
                     bold = false;
                     italic = false;
@@ -1091,18 +1112,11 @@ fn read_footnotes(
 }
 
 fn flush_pending_run(paragraph: &mut String, pending_run: &mut Option<PendingRun>) {
-    if let Some((text, bold, italic, strikethrough, underline, code, vert_align, target)) =
-        pending_run.take()
-    {
+    if let Some(pending) = pending_run.take() {
         paragraph.push_str(&markdown_from_docx_run(
-            &text,
-            bold,
-            italic,
-            strikethrough,
-            underline,
-            code,
-            vert_align,
-            target.as_deref(),
+            &pending.text,
+            pending.style,
+            pending.target.as_deref(),
         ));
     }
 }
@@ -1111,54 +1125,20 @@ fn queue_docx_run(
     paragraph: &mut String,
     pending_run: &mut Option<PendingRun>,
     text: &str,
-    bold: bool,
-    italic: bool,
-    strikethrough: bool,
-    underline: bool,
-    code: bool,
-    vert_align: VerticalAlign,
+    style: DocxRunStyle,
     target: Option<String>,
 ) {
-    if let Some((
-        previous_text,
-        previous_bold,
-        previous_italic,
-        previous_strikethrough,
-        previous_underline,
-        previous_code,
-        previous_vert_align,
-        previous_target,
-    )) = pending_run.as_mut()
-        && (
-            *previous_bold,
-            *previous_italic,
-            *previous_strikethrough,
-            *previous_underline,
-            *previous_code,
-            *previous_vert_align,
-            previous_target.as_deref(),
-        ) == (
-            bold,
-            italic,
-            strikethrough,
-            underline,
-            code,
-            vert_align,
-            target.as_deref(),
-        )
+    if let Some(previous) = pending_run.as_mut()
+        && previous.style == style
+        && previous.target.as_deref() == target.as_deref()
     {
-        previous_text.push_str(text);
+        previous.text.push_str(text);
     } else {
         flush_pending_run(paragraph, pending_run);
-        *pending_run = Some((
-            text.to_string(),
-            bold,
-            italic,
-            strikethrough,
-            underline,
-            code,
-            vert_align,
+        *pending_run = Some(PendingRun {
+            text: text.to_string(),
+            style,
             target,
-        ));
+        });
     }
 }
