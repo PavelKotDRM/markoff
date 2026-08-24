@@ -62,22 +62,19 @@ pub(super) fn read_numbering(
     loop {
         match reader.read_event().map_err(invalid_data)? {
             Event::Start(event) | Event::Empty(event) => match event.local_name().as_ref() {
-                b"abstractNum" => {
-                    abstract_number = attribute_value(&event, b"abstractNumId", reader.decoder())?
+                "abstractNum" => abstract_number = attribute_value(&event, "abstractNumId")?,
+                "num" => number_id = attribute_value(&event, "numId")?,
+                "lvl" => {
+                    level = attribute_value(&event, "ilvl")?.and_then(|value| value.parse().ok());
                 }
-                b"num" => number_id = attribute_value(&event, b"numId", reader.decoder())?,
-                b"lvl" => {
-                    level = attribute_value(&event, b"ilvl", reader.decoder())?
-                        .and_then(|value| value.parse().ok());
-                }
-                b"abstractNumId" if number_id.is_some() => {
-                    if let Some(abstract_id) = attribute_value(&event, b"val", reader.decoder())? {
+                "abstractNumId" if number_id.is_some() => {
+                    if let Some(abstract_id) = attribute_value(&event, "val")? {
                         number_to_abstract
                             .insert(number_id.clone().expect("checked above"), abstract_id);
                     }
                 }
-                b"numFmt" if abstract_number.is_some() && level.is_some() => {
-                    if let Some(format) = attribute_value(&event, b"val", reader.decoder())? {
+                "numFmt" if abstract_number.is_some() && level.is_some() => {
+                    if let Some(format) = attribute_value(&event, "val")? {
                         let key = (
                             abstract_number.clone().expect("checked above"),
                             level.expect("checked above"),
@@ -92,9 +89,9 @@ pub(super) fn read_numbering(
                         formats.insert(key, kind);
                     }
                 }
-                b"start" if abstract_number.is_some() && level.is_some() => {
-                    if let Some(start) = attribute_value(&event, b"val", reader.decoder())?
-                        .and_then(|value| value.parse().ok())
+                "start" if abstract_number.is_some() && level.is_some() => {
+                    if let Some(start) =
+                        attribute_value(&event, "val")?.and_then(|value| value.parse().ok())
                     {
                         let key = (
                             abstract_number.clone().expect("checked above"),
@@ -109,9 +106,9 @@ pub(super) fn read_numbering(
                 _ => {}
             },
             Event::End(event) => match event.local_name().as_ref() {
-                b"lvl" => level = None,
-                b"abstractNum" => abstract_number = None,
-                b"num" => number_id = None,
+                "lvl" => level = None,
+                "abstractNum" => abstract_number = None,
+                "num" => number_id = None,
                 _ => {}
             },
             Event::Eof => break,

@@ -3,7 +3,6 @@ use crate::docx_inline::{DocxRunStyle, VerticalAlign, markdown_from_docx_run};
 use crate::docx_runs::{PendingRun, flush_pending_run, resolve_general_ref, word_property_enabled};
 use crate::error::invalid_data;
 use crate::xml_utils::attribute_value;
-use quick_xml::XmlVersion;
 use std::collections::BTreeMap;
 
 pub(super) fn read_footnotes(
@@ -37,17 +36,14 @@ pub(super) fn read_footnotes(
     loop {
         match reader.read_event().map_err(invalid_data)? {
             Event::Start(event) | Event::Empty(event) => match event.local_name().as_ref() {
-                b"footnote" => {
+                "footnote" => {
                     footnote_id = event
                         .attributes()
                         .flatten()
-                        .find(|attribute| attribute.key.local_name().as_ref() == b"id")
+                        .find(|attribute| attribute.key.local_name().as_ref() == "id")
                         .map(|attribute| {
                             attribute
-                                .decoded_and_normalized_value(
-                                    XmlVersion::Implicit1_0,
-                                    reader.decoder(),
-                                )
+                                .normalized_value(quick_xml::XmlVersion::Implicit1_0)
                                 .map_err(invalid_data)?
                                 .parse::<i64>()
                                 .map_err(invalid_data)
@@ -55,28 +51,20 @@ pub(super) fn read_footnotes(
                         .transpose()?;
                     paragraphs.clear();
                 }
-                b"p" if footnote_id.is_some() => {
+                "p" if footnote_id.is_some() => {
                     paragraph.clear();
                     pending_run = None;
                 }
-                b"r" if footnote_id.is_some() => {
+                "r" if footnote_id.is_some() => {
                     run.clear();
                     vert_align = VerticalAlign::Baseline;
                 }
-                b"b" if footnote_id.is_some() => {
-                    bold = word_property_enabled(&event, reader.decoder())
-                }
-                b"i" if footnote_id.is_some() => {
-                    italic = word_property_enabled(&event, reader.decoder())
-                }
-                b"strike" if footnote_id.is_some() => {
-                    strikethrough = word_property_enabled(&event, reader.decoder())
-                }
-                b"u" if footnote_id.is_some() => {
-                    underline = word_property_enabled(&event, reader.decoder())
-                }
-                b"vertAlign" if footnote_id.is_some() => {
-                    vert_align = attribute_value(&event, b"val", reader.decoder())?
+                "b" if footnote_id.is_some() => bold = word_property_enabled(&event),
+                "i" if footnote_id.is_some() => italic = word_property_enabled(&event),
+                "strike" if footnote_id.is_some() => strikethrough = word_property_enabled(&event),
+                "u" if footnote_id.is_some() => underline = word_property_enabled(&event),
+                "vertAlign" if footnote_id.is_some() => {
+                    vert_align = attribute_value(&event, "val")?
                         .map(|value| match value.as_str() {
                             "superscript" => VerticalAlign::Superscript,
                             "subscript" => VerticalAlign::Subscript,
@@ -87,14 +75,14 @@ pub(super) fn read_footnotes(
                 _ => {}
             },
             Event::Text(event) if footnote_id.is_some() => {
-                let decoded = event.decode().map_err(invalid_data)?;
-                run.push_str(&quick_xml::escape::unescape(&decoded).map_err(invalid_data)?)
+                let decoded = event.as_ref();
+                run.push_str(&quick_xml::escape::unescape(decoded).map_err(invalid_data)?)
             }
             Event::GeneralRef(event) if footnote_id.is_some() => {
-                run.push_str(&resolve_general_ref(&event, reader.decoder())?)
+                run.push_str(&resolve_general_ref(&event)?)
             }
             Event::End(event) => match event.local_name().as_ref() {
-                b"r" if footnote_id.is_some() => {
+                "r" if footnote_id.is_some() => {
                     if !run.is_empty() {
                         if let Some(previous) = pending_run.take() {
                             paragraph.push_str(&markdown_from_docx_run(
@@ -122,13 +110,13 @@ pub(super) fn read_footnotes(
                     underline = false;
                     code = false;
                 }
-                b"p" if footnote_id.is_some() => {
+                "p" if footnote_id.is_some() => {
                     flush_pending_run(&mut paragraph, &mut pending_run);
                     if !paragraph.is_empty() {
                         paragraphs.push(paragraph.clone());
                     }
                 }
-                b"footnote" => {
+                "footnote" => {
                     if let Some(id) = footnote_id.take()
                         && id > 0
                     {

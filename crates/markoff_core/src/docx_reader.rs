@@ -9,7 +9,6 @@ use crate::docx_runs::{
 };
 use crate::error::invalid_data;
 use crate::xml_utils::attribute_value;
-use quick_xml::XmlVersion;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -108,16 +107,16 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
     loop {
         match reader.read_event().map_err(invalid_data)? {
             Event::Start(event) | Event::Empty(event) => match event.local_name().as_ref() {
-                b"tbl" => {
+                "tbl" => {
                     in_table = true;
                     table_rows.clear();
                 }
-                b"tr" if in_table => table_row.clear(),
-                b"tc" if in_table => {
+                "tr" if in_table => table_row.clear(),
+                "tc" if in_table => {
                     in_table_cell = true;
                     table_cell_paragraphs.clear();
                 }
-                b"p" => {
+                "p" => {
                     in_paragraph = true;
                     paragraph.clear();
                     raw_paragraph.clear();
@@ -135,56 +134,50 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                     paragraph_has_code = false;
                     paragraph_has_plain_text = false;
                 }
-                b"r" => {
+                "r" => {
                     run.clear();
                     run_properties.start_run();
                 }
-                b"b" => run_properties.bold = word_property_enabled(&event, reader.decoder()),
-                b"i" => run_properties.italic = word_property_enabled(&event, reader.decoder()),
-                b"strike" => {
-                    run_properties.strikethrough = word_property_enabled(&event, reader.decoder())
+                "b" => run_properties.bold = word_property_enabled(&event),
+                "i" => run_properties.italic = word_property_enabled(&event),
+                "strike" => run_properties.strikethrough = word_property_enabled(&event),
+                "u" => run_properties.underline = word_property_enabled(&event),
+                "vertAlign" => {
+                    run_properties.vertical_align = attribute_value(&event, "val")?
+                        .map(|value| match value.as_str() {
+                            "superscript" => VerticalAlign::Superscript,
+                            "subscript" => VerticalAlign::Subscript,
+                            _ => VerticalAlign::Baseline,
+                        })
+                        .unwrap_or(VerticalAlign::Baseline);
                 }
-                b"u" => run_properties.underline = word_property_enabled(&event, reader.decoder()),
-                b"vertAlign" => {
-                    run_properties.vertical_align =
-                        attribute_value(&event, b"val", reader.decoder())?
-                            .map(|value| match value.as_str() {
-                                "superscript" => VerticalAlign::Superscript,
-                                "subscript" => VerticalAlign::Subscript,
-                                _ => VerticalAlign::Baseline,
-                            })
-                            .unwrap_or(VerticalAlign::Baseline);
-                }
-                b"drawing" => {
+                "drawing" => {
                     image_rel_id = None;
                     image_alt.clear();
                 }
-                b"docPr" => {
-                    if let Some(description) = attribute_value(&event, b"descr", reader.decoder())?
+                "docPr" => {
+                    if let Some(description) = attribute_value(&event, "descr")?
                         .filter(|value| !value.is_empty())
-                        .or(attribute_value(&event, b"name", reader.decoder())?)
+                        .or(attribute_value(&event, "name")?)
                     {
                         image_alt = description;
                     }
                 }
-                b"blip" => {
-                    image_rel_id = attribute_value(&event, b"embed", reader.decoder())?;
+                "blip" => {
+                    image_rel_id = attribute_value(&event, "embed")?;
                 }
-                b"rFonts" => {
+                "rFonts" => {
                     run_properties.code = event.attributes().flatten().any(|attribute| {
-                        attribute.key.local_name().as_ref() == b"ascii"
+                        attribute.key.local_name().as_ref() == "ascii"
                             && attribute
-                                .decoded_and_normalized_value(
-                                    XmlVersion::Implicit1_0,
-                                    reader.decoder(),
-                                )
+                                .normalized_value(quick_xml::XmlVersion::Implicit1_0)
                                 .is_ok_and(|value| {
                                     value.eq_ignore_ascii_case("Consolas")
                                         || value.eq_ignore_ascii_case("Courier New")
                                 })
                     });
                 }
-                b"tab" if in_paragraph => {
+                "tab" if in_paragraph => {
                     let trailing_is_whitespace = run
                         .chars()
                         .last()
@@ -199,7 +192,7 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                         run.push(' ');
                     }
                 }
-                b"br" if in_paragraph => {
+                "br" if in_paragraph => {
                     if !run.is_empty() {
                         raw_paragraph.push_str(&run);
                         paragraph_has_code |= run_properties.code;
@@ -217,16 +210,14 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                     paragraph.push_str("  \n");
                     raw_paragraph.push('\n');
                 }
-                b"instrText" => in_instruction_text = true,
-                b"bookmarkStart" => {
-                    if let Some(name) = attribute_value(&event, b"name", reader.decoder())? {
+                "instrText" => in_instruction_text = true,
+                "bookmarkStart" => {
+                    if let Some(name) = attribute_value(&event, "name")? {
                         bookmarks.push(name);
                     }
                 }
-                b"fldChar" => {
-                    if let Some(field_type) =
-                        attribute_value(&event, b"fldCharType", reader.decoder())?
-                    {
+                "fldChar" => {
+                    if let Some(field_type) = attribute_value(&event, "fldCharType")? {
                         match field_type.as_str() {
                             "begin" => {
                                 field_instruction.clear();
@@ -242,24 +233,23 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                         }
                     }
                 }
-                b"fldSimple" => {
-                    if let Some(instruction) = attribute_value(&event, b"instr", reader.decoder())?
-                    {
+                "fldSimple" => {
+                    if let Some(instruction) = attribute_value(&event, "instr")? {
                         page_reference = pageref_target(&instruction);
                         in_field_result = true;
                     }
                 }
-                b"footnoteReference" => {
-                    if let Some(id) = attribute_value(&event, b"id", reader.decoder())?
-                        .and_then(|value| value.parse::<i64>().ok())
+                "footnoteReference" => {
+                    if let Some(id) =
+                        attribute_value(&event, "id")?.and_then(|value| value.parse::<i64>().ok())
                     {
                         flush_pending_run(&mut paragraph, &mut pending_run);
                         paragraph.push_str(&format!("[^{id}]"));
                         referenced_footnotes.insert(id);
                     }
                 }
-                b"pStyle" => {
-                    if let Some(value) = attribute_value(&event, b"val", reader.decoder())? {
+                "pStyle" => {
+                    if let Some(value) = attribute_value(&event, "val")? {
                         heading_level = value
                             .strip_prefix("Heading")
                             .and_then(|level| level.parse::<usize>().ok())
@@ -268,33 +258,30 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                         quote = value == "Quote";
                     }
                 }
-                b"bottom" if in_paragraph => {
+                "bottom" if in_paragraph => {
                     horizontal_rule = event.attributes().flatten().any(|attribute| {
-                        attribute.key.local_name().as_ref() == b"val"
+                        attribute.key.local_name().as_ref() == "val"
                             && attribute
-                                .decoded_and_normalized_value(
-                                    XmlVersion::Implicit1_0,
-                                    reader.decoder(),
-                                )
+                                .normalized_value(quick_xml::XmlVersion::Implicit1_0)
                                 .is_ok_and(|value| {
                                     !value.eq_ignore_ascii_case("nil")
                                         && !value.eq_ignore_ascii_case("none")
                                 })
                     });
                 }
-                b"numId" => {
-                    list_numbering_id = attribute_value(&event, b"val", reader.decoder())?;
+                "numId" => {
+                    list_numbering_id = attribute_value(&event, "val")?;
                 }
-                b"ilvl" => {
-                    list_level = attribute_value(&event, b"val", reader.decoder())?
+                "ilvl" => {
+                    list_level = attribute_value(&event, "val")?
                         .and_then(|value| value.parse().ok())
                         .unwrap_or(0);
                 }
                 _ => {}
             },
             Event::Text(event) if in_paragraph => {
-                let decoded = event.decode().map_err(invalid_data)?;
-                let text = quick_xml::escape::unescape(&decoded).map_err(invalid_data)?;
+                let decoded = event.as_ref();
+                let text = quick_xml::escape::unescape(decoded).map_err(invalid_data)?;
                 if in_instruction_text {
                     field_instruction.push_str(&text);
                 } else {
@@ -302,7 +289,7 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                 }
             }
             Event::GeneralRef(event) if in_paragraph => {
-                let text = resolve_general_ref(&event, reader.decoder())?;
+                let text = resolve_general_ref(&event)?;
                 if in_instruction_text {
                     field_instruction.push_str(&text);
                 } else {
@@ -310,9 +297,9 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                 }
             }
             Event::End(event) => match event.local_name().as_ref() {
-                b"instrText" => in_instruction_text = false,
-                b"fldSimple" => in_field_result = false,
-                b"drawing" if in_paragraph => {
+                "instrText" => in_instruction_text = false,
+                "fldSimple" => in_field_result = false,
+                "drawing" if in_paragraph => {
                     if let Some(rel_id) = image_rel_id.take()
                         && let Some(target) = relationships.get(&rel_id)
                         && let Some(bytes) = read_media_part(&mut archive, target)
@@ -332,7 +319,7 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                     }
                     image_alt.clear();
                 }
-                b"r" => {
+                "r" => {
                     if !run.is_empty() {
                         raw_paragraph.push_str(&run);
                         paragraph_has_code |= run_properties.code;
@@ -347,7 +334,7 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                     }
                     run_properties = RunProperties::default();
                 }
-                b"p" => {
+                "p" => {
                     flush_pending_run(&mut paragraph, &mut pending_run);
                     if horizontal_rule || !paragraph.is_empty() {
                         if in_table_cell {
@@ -405,16 +392,16 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                     }
                     in_paragraph = false;
                 }
-                b"tc" if in_table_cell => {
+                "tc" if in_table_cell => {
                     table_row.push(table_cell_paragraphs.join("<br>"));
                     in_table_cell = false;
                 }
-                b"tr" if in_table => {
+                "tr" if in_table => {
                     if !table_row.is_empty() {
                         table_rows.push(table_row.clone());
                     }
                 }
-                b"tbl" if in_table => {
+                "tbl" if in_table => {
                     if !table_rows.is_empty() {
                         markdown.push(table_from_rows(&table_rows));
                     }

@@ -1,7 +1,6 @@
 use crate::MarkoffError;
 use crate::docx_inline::{DocxRunStyle, markdown_from_docx_run};
 use crate::error::invalid_data;
-use quick_xml::XmlVersion;
 
 pub(super) struct PendingRun {
     pub(super) text: String,
@@ -11,26 +10,22 @@ pub(super) struct PendingRun {
 
 pub(super) fn resolve_general_ref(
     event: &quick_xml::events::BytesRef<'_>,
-    decoder: quick_xml::encoding::Decoder,
 ) -> Result<String, MarkoffError> {
-    let name = decoder.decode(event).map_err(invalid_data)?;
+    let name = event.as_ref();
     let escaped = format!("&{name};");
     Ok(quick_xml::escape::unescape(&escaped)
         .map_err(invalid_data)?
         .into_owned())
 }
 
-pub(super) fn word_property_enabled(
-    event: &quick_xml::events::BytesStart<'_>,
-    decoder: quick_xml::encoding::Decoder,
-) -> bool {
+pub(super) fn word_property_enabled(event: &quick_xml::events::BytesStart<'_>) -> bool {
     event
         .attributes()
         .flatten()
-        .find(|attribute| attribute.key.local_name().as_ref() == b"val")
+        .find(|attribute| attribute.key.local_name().as_ref() == "val")
         .and_then(|attribute| {
             attribute
-                .decoded_and_normalized_value(XmlVersion::Implicit1_0, decoder)
+                .normalized_value(quick_xml::XmlVersion::Implicit1_0)
                 .ok()
         })
         .is_none_or(|value| !matches!(value.as_ref(), "0" | "false" | "off" | "none" | "nil"))
