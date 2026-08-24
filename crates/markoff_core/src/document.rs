@@ -40,7 +40,8 @@ pub(crate) enum Block {
         rows: Vec<Vec<String>>,
     },
     /// A fenced code block.
-    CodeBlock {
+    #[serde(rename = "code_block")]
+    CodeFence {
         /// Raw code block content.
         code: String,
     },
@@ -199,7 +200,7 @@ fn classify_block(text: String, base_dir: Option<&Path>) -> Block {
     {
         let code = code.strip_prefix('\n').unwrap_or(code);
         let code = code.strip_suffix('\n').unwrap_or(code);
-        return Block::CodeBlock {
+        return Block::CodeFence {
             code: code.to_string(),
         };
     }
@@ -280,7 +281,7 @@ fn render_block(
             Ok(format!("{indentation}{marker}{text}"))
         }
         Block::Table { rows } => Ok(markdown_table_from_rows(rows)),
-        Block::CodeBlock { code } => Ok(format!("```\n{code}\n```")),
+        Block::CodeFence { code } => Ok(format!("```\n{code}\n```")),
         Block::Quote { text } => Ok(text
             .lines()
             .map(|line| format!("> {line}"))
@@ -343,7 +344,7 @@ mod tests {
                         vec!["1".to_string(), "2".to_string()],
                     ]
                 },
-                Block::CodeBlock {
+                Block::CodeFence {
                     code: "code line".to_string()
                 },
                 Block::Quote {

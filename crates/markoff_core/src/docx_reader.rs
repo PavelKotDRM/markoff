@@ -1,20 +1,11 @@
 use crate::MarkoffError;
-use crate::docx_inline::{VerticalAlign, markdown_from_docx_run, pageref_target};
+use crate::docx_inline::{RunFormatting, VerticalAlign, markdown_from_docx_run, pageref_target};
 use crate::error::invalid_data;
 use crate::xml_utils::{attribute_value, parse_relationships};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-type PendingRun = (
-    String,
-    bool,
-    bool,
-    bool,
-    bool,
-    bool,
-    VerticalAlign,
-    Option<String>,
-);
+type PendingRun = (String, RunFormatting, Option<String>);
 
 #[derive(Clone, Copy)]
 enum ListKind {
@@ -82,16 +73,16 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
     loop {
         match reader.read_event().map_err(invalid_data)? {
             Event::Start(event) | Event::Empty(event) => match event.local_name().as_ref() {
-                b"tbl" => {
+                "tbl" => {
                     in_table = true;
                     table_rows.clear();
                 }
-                b"tr" if in_table => table_row.clear(),
-                b"tc" if in_table => {
+                "tr" if in_table => table_row.clear(),
+                "tc" if in_table => {
                     in_table_cell = true;
                     table_cell_paragraphs.clear();
                 }
-                b"p" => {
+                "p" => {
                     in_paragraph = true;
                     paragraph.clear();
                     raw_paragraph.clear();
@@ -109,17 +100,17 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                     paragraph_has_code = false;
                     paragraph_has_plain_text = false;
                 }
-                b"r" => {
+                "r" => {
                     run.clear();
                     code = false;
                     vert_align = VerticalAlign::Baseline;
                 }
-                b"b" => bold = word_property_enabled(&event, reader.decoder()),
-                b"i" => italic = word_property_enabled(&event, reader.decoder()),
-                b"strike" => strikethrough = word_property_enabled(&event, reader.decoder()),
-                b"u" => underline = word_property_enabled(&event, reader.decoder()),
-                b"vertAlign" => {
-                    vert_align = attribute_value(&event, b"val", reader.decoder())?
+                "b" => bold = word_property_enabled(&event),
+                "i" => italic = word_property_enabled(&event),
+                "strike" => strikethrough = word_property_enabled(&event),
+                "u" => underline = word_property_enabled(&event),
+                "vertAlign" => {
+                    vert_align = attribute_value(&event, "val")?
                         .map(|value| match value.as_str() {
                             "superscript" => VerticalAlign::Superscript,
                             "subscript" => VerticalAlign::Subscript,
@@ -127,33 +118,33 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                         })
                         .unwrap_or(VerticalAlign::Baseline);
                 }
-                b"drawing" => {
+                "drawing" => {
                     image_rel_id = None;
                     image_alt.clear();
                 }
-                b"docPr" => {
-                    if let Some(description) = attribute_value(&event, b"descr", reader.decoder())?
+                "docPr" => {
+                    if let Some(description) = attribute_value(&event, "descr")?
                         .filter(|value| !value.is_empty())
-                        .or(attribute_value(&event, b"name", reader.decoder())?)
+                        .or(attribute_value(&event, "name")?)
                     {
                         image_alt = description;
                     }
                 }
-                b"blip" => {
-                    image_rel_id = attribute_value(&event, b"embed", reader.decoder())?;
+                "blip" => {
+                    image_rel_id = attribute_value(&event, "embed")?;
                 }
-                b"rFonts" => {
+                "rFonts" => {
                     code = event.attributes().flatten().any(|attribute| {
-                        attribute.key.local_name().as_ref() == b"ascii"
+                        attribute.key.local_name().as_ref() == "ascii"
                             && attribute
-                                .decode_and_unescape_value(reader.decoder())
+                                .normalized_value(quick_xml::XmlVersion::Implicit1_0)
                                 .is_ok_and(|value| {
                                     value.eq_ignore_ascii_case("Consolas")
                                         || value.eq_ignore_ascii_case("Courier New")
                                 })
                     });
                 }
-                b"tab" if in_paragraph => {
+                "tab" if in_paragraph => {
                     let trailing_is_whitespace = run
                         .chars()
                         .last()
@@ -168,7 +159,7 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                         run.push(' ');
                     }
                 }
-                b"br" if in_paragraph => {
+                "br" if in_paragraph => {
                     if !run.is_empty() {
                         raw_paragraph.push_str(&run);
                         paragraph_has_code |= code;
@@ -177,12 +168,14 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                             &mut paragraph,
                             &mut pending_run,
                             &run,
-                            bold,
-                            italic,
-                            strikethrough,
-                            underline,
-                            code && !code_block,
-                            vert_align,
+                            RunFormatting {
+                                bold,
+                                italic,
+                                strikethrough,
+                                underline,
+                                code: code && !code_block,
+                                vertical_align: vert_align,
+                            },
                             in_field_result.then(|| page_reference.clone()).flatten(),
                         );
                         run.clear();
@@ -191,24 +184,24 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                     paragraph.push_str("  \n");
                     raw_paragraph.push('\n');
                 }
-                b"instrText" => in_instruction_text = true,
-                b"bookmarkStart" => {
+                "instrText" => in_instruction_text = true,
+                "bookmarkStart" => {
                     for attribute in event.attributes().flatten() {
-                        if attribute.key.local_name().as_ref() == b"name" {
+                        if attribute.key.local_name().as_ref() == "name" {
                             bookmarks.push(
                                 attribute
-                                    .decode_and_unescape_value(reader.decoder())
+                                    .normalized_value(quick_xml::XmlVersion::Implicit1_0)
                                     .map_err(invalid_data)?
                                     .into_owned(),
                             );
                         }
                     }
                 }
-                b"fldChar" => {
+                "fldChar" => {
                     for attribute in event.attributes().flatten() {
-                        if attribute.key.local_name().as_ref() == b"fldCharType" {
+                        if attribute.key.local_name().as_ref() == "fldCharType" {
                             let field_type = attribute
-                                .decode_and_unescape_value(reader.decoder())
+                                .normalized_value(quick_xml::XmlVersion::Implicit1_0)
                                 .map_err(invalid_data)?;
                             match field_type.as_ref() {
                                 "begin" => {
@@ -226,22 +219,22 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                         }
                     }
                 }
-                b"fldSimple" => {
+                "fldSimple" => {
                     for attribute in event.attributes().flatten() {
-                        if attribute.key.local_name().as_ref() == b"instr" {
+                        if attribute.key.local_name().as_ref() == "instr" {
                             let instruction = attribute
-                                .decode_and_unescape_value(reader.decoder())
+                                .normalized_value(quick_xml::XmlVersion::Implicit1_0)
                                 .map_err(invalid_data)?;
                             page_reference = pageref_target(&instruction);
                             in_field_result = true;
                         }
                     }
                 }
-                b"footnoteReference" => {
+                "footnoteReference" => {
                     for attribute in event.attributes().flatten() {
-                        if attribute.key.local_name().as_ref() == b"id"
+                        if attribute.key.local_name().as_ref() == "id"
                             && let Ok(id) = attribute
-                                .decode_and_unescape_value(reader.decoder())
+                                .normalized_value(quick_xml::XmlVersion::Implicit1_0)
                                 .map_err(invalid_data)?
                                 .parse::<i64>()
                         {
@@ -251,11 +244,11 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                         }
                     }
                 }
-                b"pStyle" => {
+                "pStyle" => {
                     for attribute in event.attributes().flatten() {
-                        if attribute.key.local_name().as_ref() == b"val" {
+                        if attribute.key.local_name().as_ref() == "val" {
                             let value = attribute
-                                .decode_and_unescape_value(reader.decoder())
+                                .normalized_value(quick_xml::XmlVersion::Implicit1_0)
                                 .map_err(invalid_data)?
                                 .into_owned();
                             heading_level = value
@@ -267,34 +260,34 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                         }
                     }
                 }
-                b"bottom" if in_paragraph => {
+                "bottom" if in_paragraph => {
                     horizontal_rule = event.attributes().flatten().any(|attribute| {
-                        attribute.key.local_name().as_ref() == b"val"
+                        attribute.key.local_name().as_ref() == "val"
                             && attribute
-                                .decode_and_unescape_value(reader.decoder())
+                                .normalized_value(quick_xml::XmlVersion::Implicit1_0)
                                 .is_ok_and(|value| {
                                     !value.eq_ignore_ascii_case("nil")
                                         && !value.eq_ignore_ascii_case("none")
                                 })
                     });
                 }
-                b"numId" => {
+                "numId" => {
                     for attribute in event.attributes().flatten() {
-                        if attribute.key.local_name().as_ref() == b"val" {
+                        if attribute.key.local_name().as_ref() == "val" {
                             list_numbering_id = Some(
                                 attribute
-                                    .decode_and_unescape_value(reader.decoder())
+                                    .normalized_value(quick_xml::XmlVersion::Implicit1_0)
                                     .map_err(invalid_data)?
                                     .into_owned(),
                             );
                         }
                     }
                 }
-                b"ilvl" => {
+                "ilvl" => {
                     for attribute in event.attributes().flatten() {
-                        if attribute.key.local_name().as_ref() == b"val" {
+                        if attribute.key.local_name().as_ref() == "val" {
                             list_level = attribute
-                                .decode_and_unescape_value(reader.decoder())
+                                .normalized_value(quick_xml::XmlVersion::Implicit1_0)
                                 .map_err(invalid_data)?
                                 .parse()
                                 .unwrap_or(0);
@@ -304,8 +297,8 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                 _ => {}
             },
             Event::Text(event) if in_paragraph => {
-                let decoded = event.decode().map_err(invalid_data)?;
-                let text = quick_xml::escape::unescape(&decoded).map_err(invalid_data)?;
+                let decoded = event.as_ref();
+                let text = quick_xml::escape::unescape(decoded).map_err(invalid_data)?;
                 if in_instruction_text {
                     field_instruction.push_str(&text);
                 } else {
@@ -313,7 +306,7 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                 }
             }
             Event::GeneralRef(event) if in_paragraph => {
-                let text = resolve_general_ref(&event, reader.decoder())?;
+                let text = resolve_general_ref(&event)?;
                 if in_instruction_text {
                     field_instruction.push_str(&text);
                 } else {
@@ -321,9 +314,9 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                 }
             }
             Event::End(event) => match event.local_name().as_ref() {
-                b"instrText" => in_instruction_text = false,
-                b"fldSimple" => in_field_result = false,
-                b"drawing" if in_paragraph => {
+                "instrText" => in_instruction_text = false,
+                "fldSimple" => in_field_result = false,
+                "drawing" if in_paragraph => {
                     if let Some(rel_id) = image_rel_id.take()
                         && let Some(target) = relationships.get(&rel_id)
                         && let Some(bytes) = read_media_part(&mut archive, target)
@@ -343,7 +336,7 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                     }
                     image_alt.clear();
                 }
-                b"r" => {
+                "r" => {
                     if !run.is_empty() {
                         raw_paragraph.push_str(&run);
                         paragraph_has_code |= code;
@@ -352,12 +345,14 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                             &mut paragraph,
                             &mut pending_run,
                             &run,
-                            bold,
-                            italic,
-                            strikethrough,
-                            underline,
-                            code && !code_block,
-                            vert_align,
+                            RunFormatting {
+                                bold,
+                                italic,
+                                strikethrough,
+                                underline,
+                                code: code && !code_block,
+                                vertical_align: vert_align,
+                            },
                             in_field_result.then(|| page_reference.clone()).flatten(),
                         );
                     }
@@ -367,7 +362,7 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                     underline = false;
                     code = false;
                 }
-                b"p" => {
+                "p" => {
                     flush_pending_run(&mut paragraph, &mut pending_run);
                     if horizontal_rule || !paragraph.is_empty() {
                         if in_table_cell {
@@ -425,16 +420,16 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                     }
                     in_paragraph = false;
                 }
-                b"tc" if in_table_cell => {
+                "tc" if in_table_cell => {
                     table_row.push(table_cell_paragraphs.join("<br>"));
                     in_table_cell = false;
                 }
-                b"tr" if in_table => {
+                "tr" if in_table => {
                     if !table_row.is_empty() {
                         table_rows.push(table_row.clone());
                     }
                 }
-                b"tbl" if in_table => {
+                "tbl" if in_table => {
                     if !table_rows.is_empty() {
                         markdown.push(markdown_table_from_docx_rows(&table_rows));
                     }
@@ -820,22 +815,19 @@ fn read_numbering(
     loop {
         match reader.read_event().map_err(invalid_data)? {
             Event::Start(event) | Event::Empty(event) => match event.local_name().as_ref() {
-                b"abstractNum" => {
-                    abstract_number = attribute_value(&event, b"abstractNumId", reader.decoder())?
+                "abstractNum" => abstract_number = attribute_value(&event, "abstractNumId")?,
+                "num" => number_id = attribute_value(&event, "numId")?,
+                "lvl" => {
+                    level = attribute_value(&event, "ilvl")?.and_then(|value| value.parse().ok());
                 }
-                b"num" => number_id = attribute_value(&event, b"numId", reader.decoder())?,
-                b"lvl" => {
-                    level = attribute_value(&event, b"ilvl", reader.decoder())?
-                        .and_then(|value| value.parse().ok());
-                }
-                b"abstractNumId" if number_id.is_some() => {
-                    if let Some(abstract_id) = attribute_value(&event, b"val", reader.decoder())? {
+                "abstractNumId" if number_id.is_some() => {
+                    if let Some(abstract_id) = attribute_value(&event, "val")? {
                         number_to_abstract
                             .insert(number_id.clone().expect("checked above"), abstract_id);
                     }
                 }
-                b"numFmt" if abstract_number.is_some() && level.is_some() => {
-                    if let Some(format) = attribute_value(&event, b"val", reader.decoder())? {
+                "numFmt" if abstract_number.is_some() && level.is_some() => {
+                    if let Some(format) = attribute_value(&event, "val")? {
                         let key = (
                             abstract_number.clone().expect("checked above"),
                             level.expect("checked above"),
@@ -850,9 +842,9 @@ fn read_numbering(
                         formats.insert(key, kind);
                     }
                 }
-                b"start" if abstract_number.is_some() && level.is_some() => {
-                    if let Some(start) = attribute_value(&event, b"val", reader.decoder())?
-                        .and_then(|value| value.parse().ok())
+                "start" if abstract_number.is_some() && level.is_some() => {
+                    if let Some(start) =
+                        attribute_value(&event, "val")?.and_then(|value| value.parse().ok())
                     {
                         let key = (
                             abstract_number.clone().expect("checked above"),
@@ -867,9 +859,9 @@ fn read_numbering(
                 _ => {}
             },
             Event::End(event) => match event.local_name().as_ref() {
-                b"lvl" => level = None,
-                b"abstractNum" => abstract_number = None,
-                b"num" => number_id = None,
+                "lvl" => level = None,
+                "abstractNum" => abstract_number = None,
+                "num" => number_id = None,
                 _ => {}
             },
             Event::Eof => break,
@@ -891,26 +883,24 @@ fn read_numbering(
 /// quick-xml reports character/general entity references (e.g. `&amp;`) as a
 /// separate `Event::GeneralRef` rather than folding them into `Event::Text`;
 /// resolve the reference back into its literal character(s).
-fn resolve_general_ref(
-    event: &quick_xml::events::BytesRef<'_>,
-    decoder: quick_xml::encoding::Decoder,
-) -> Result<String, MarkoffError> {
-    let name = decoder.decode(event).map_err(invalid_data)?;
+fn resolve_general_ref(event: &quick_xml::events::BytesRef<'_>) -> Result<String, MarkoffError> {
+    let name = event.as_ref();
     let escaped = format!("&{name};");
     Ok(quick_xml::escape::unescape(&escaped)
         .map_err(invalid_data)?
         .into_owned())
 }
 
-fn word_property_enabled(
-    event: &quick_xml::events::BytesStart<'_>,
-    decoder: quick_xml::encoding::Decoder,
-) -> bool {
+fn word_property_enabled(event: &quick_xml::events::BytesStart<'_>) -> bool {
     event
         .attributes()
         .flatten()
-        .find(|attribute| attribute.key.local_name().as_ref() == b"val")
-        .and_then(|attribute| attribute.decode_and_unescape_value(decoder).ok())
+        .find(|attribute| attribute.key.local_name().as_ref() == "val")
+        .and_then(|attribute| {
+            attribute
+                .normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                .ok()
+        })
         .is_none_or(|value| !matches!(value.as_ref(), "0" | "false" | "off" | "none" | "nil"))
 }
 
@@ -973,14 +963,14 @@ fn read_footnotes(
     loop {
         match reader.read_event().map_err(invalid_data)? {
             Event::Start(event) | Event::Empty(event) => match event.local_name().as_ref() {
-                b"footnote" => {
+                "footnote" => {
                     footnote_id = event
                         .attributes()
                         .flatten()
-                        .find(|attribute| attribute.key.local_name().as_ref() == b"id")
+                        .find(|attribute| attribute.key.local_name().as_ref() == "id")
                         .map(|attribute| {
                             attribute
-                                .decode_and_unescape_value(reader.decoder())
+                                .normalized_value(quick_xml::XmlVersion::Implicit1_0)
                                 .map_err(invalid_data)?
                                 .parse::<i64>()
                                 .map_err(invalid_data)
@@ -988,28 +978,20 @@ fn read_footnotes(
                         .transpose()?;
                     paragraphs.clear();
                 }
-                b"p" if footnote_id.is_some() => {
+                "p" if footnote_id.is_some() => {
                     paragraph.clear();
                     pending_run = None;
                 }
-                b"r" if footnote_id.is_some() => {
+                "r" if footnote_id.is_some() => {
                     run.clear();
                     vert_align = VerticalAlign::Baseline;
                 }
-                b"b" if footnote_id.is_some() => {
-                    bold = word_property_enabled(&event, reader.decoder())
-                }
-                b"i" if footnote_id.is_some() => {
-                    italic = word_property_enabled(&event, reader.decoder())
-                }
-                b"strike" if footnote_id.is_some() => {
-                    strikethrough = word_property_enabled(&event, reader.decoder())
-                }
-                b"u" if footnote_id.is_some() => {
-                    underline = word_property_enabled(&event, reader.decoder())
-                }
-                b"vertAlign" if footnote_id.is_some() => {
-                    vert_align = attribute_value(&event, b"val", reader.decoder())?
+                "b" if footnote_id.is_some() => bold = word_property_enabled(&event),
+                "i" if footnote_id.is_some() => italic = word_property_enabled(&event),
+                "strike" if footnote_id.is_some() => strikethrough = word_property_enabled(&event),
+                "u" if footnote_id.is_some() => underline = word_property_enabled(&event),
+                "vertAlign" if footnote_id.is_some() => {
+                    vert_align = attribute_value(&event, "val")?
                         .map(|value| match value.as_str() {
                             "superscript" => VerticalAlign::Superscript,
                             "subscript" => VerticalAlign::Subscript,
@@ -1020,45 +1002,32 @@ fn read_footnotes(
                 _ => {}
             },
             Event::Text(event) if footnote_id.is_some() => {
-                let decoded = event.decode().map_err(invalid_data)?;
-                run.push_str(&quick_xml::escape::unescape(&decoded).map_err(invalid_data)?)
+                let decoded = event.as_ref();
+                run.push_str(&quick_xml::escape::unescape(decoded).map_err(invalid_data)?)
             }
             Event::GeneralRef(event) if footnote_id.is_some() => {
-                run.push_str(&resolve_general_ref(&event, reader.decoder())?)
+                run.push_str(&resolve_general_ref(&event)?)
             }
             Event::End(event) => match event.local_name().as_ref() {
-                b"r" if footnote_id.is_some() => {
+                "r" if footnote_id.is_some() => {
                     if !run.is_empty() {
-                        if let Some((
-                            text,
-                            previous_bold,
-                            previous_italic,
-                            previous_strikethrough,
-                            previous_underline,
-                            previous_code,
-                            previous_vert_align,
-                            target,
-                        )) = pending_run.take()
-                        {
+                        if let Some((text, formatting, target)) = pending_run.take() {
                             paragraph.push_str(&markdown_from_docx_run(
                                 &text,
-                                previous_bold,
-                                previous_italic,
-                                previous_strikethrough,
-                                previous_underline,
-                                previous_code,
-                                previous_vert_align,
+                                formatting,
                                 target.as_deref(),
                             ));
                         }
                         pending_run = Some((
                             run.clone(),
-                            bold,
-                            italic,
-                            strikethrough,
-                            underline,
-                            code,
-                            vert_align,
+                            RunFormatting {
+                                bold,
+                                italic,
+                                strikethrough,
+                                underline,
+                                code,
+                                vertical_align: vert_align,
+                            },
                             None,
                         ));
                     }
@@ -1068,13 +1037,13 @@ fn read_footnotes(
                     underline = false;
                     code = false;
                 }
-                b"p" if footnote_id.is_some() => {
+                "p" if footnote_id.is_some() => {
                     flush_pending_run(&mut paragraph, &mut pending_run);
                     if !paragraph.is_empty() {
                         paragraphs.push(paragraph.clone());
                     }
                 }
-                b"footnote" => {
+                "footnote" => {
                     if let Some(id) = footnote_id.take()
                         && id > 0
                     {
@@ -1091,17 +1060,10 @@ fn read_footnotes(
 }
 
 fn flush_pending_run(paragraph: &mut String, pending_run: &mut Option<PendingRun>) {
-    if let Some((text, bold, italic, strikethrough, underline, code, vert_align, target)) =
-        pending_run.take()
-    {
+    if let Some((text, formatting, target)) = pending_run.take() {
         paragraph.push_str(&markdown_from_docx_run(
             &text,
-            bold,
-            italic,
-            strikethrough,
-            underline,
-            code,
-            vert_align,
+            formatting,
             target.as_deref(),
         ));
     }
@@ -1111,54 +1073,15 @@ fn queue_docx_run(
     paragraph: &mut String,
     pending_run: &mut Option<PendingRun>,
     text: &str,
-    bold: bool,
-    italic: bool,
-    strikethrough: bool,
-    underline: bool,
-    code: bool,
-    vert_align: VerticalAlign,
+    formatting: RunFormatting,
     target: Option<String>,
 ) {
-    if let Some((
-        previous_text,
-        previous_bold,
-        previous_italic,
-        previous_strikethrough,
-        previous_underline,
-        previous_code,
-        previous_vert_align,
-        previous_target,
-    )) = pending_run.as_mut()
-        && (
-            *previous_bold,
-            *previous_italic,
-            *previous_strikethrough,
-            *previous_underline,
-            *previous_code,
-            *previous_vert_align,
-            previous_target.as_deref(),
-        ) == (
-            bold,
-            italic,
-            strikethrough,
-            underline,
-            code,
-            vert_align,
-            target.as_deref(),
-        )
+    if let Some((previous_text, previous_formatting, previous_target)) = pending_run.as_mut()
+        && (*previous_formatting, previous_target.as_deref()) == (formatting, target.as_deref())
     {
         previous_text.push_str(text);
     } else {
         flush_pending_run(paragraph, pending_run);
-        *pending_run = Some((
-            text.to_string(),
-            bold,
-            italic,
-            strikethrough,
-            underline,
-            code,
-            vert_align,
-            target,
-        ));
+        *pending_run = Some((text.to_string(), formatting, target));
     }
 }

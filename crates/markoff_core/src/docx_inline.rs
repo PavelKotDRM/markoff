@@ -7,6 +7,16 @@ pub(crate) enum VerticalAlign {
     Subscript,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RunFormatting {
+    pub(crate) bold: bool,
+    pub(crate) italic: bool,
+    pub(crate) strikethrough: bool,
+    pub(crate) underline: bool,
+    pub(crate) code: bool,
+    pub(crate) vertical_align: VerticalAlign,
+}
+
 fn latex_escape(value: &str) -> String {
     value
         .replace('\\', "\\\\")
@@ -253,10 +263,13 @@ pub(crate) fn markdown_inline_to_docx_runs(value: &str) -> String {
         }
         let delimiter = if remaining.starts_with("**") || remaining.starts_with("__") {
             let marker = &remaining[..2];
+            let marker_bytes = marker.as_bytes();
             let marker_count = remaining
                 .as_bytes()
-                .chunks_exact(2)
-                .take_while(|chunk| *chunk == marker.as_bytes())
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .take_while(|chunk| chunk.as_slice() == marker_bytes)
                 .count();
             if marker_count % 2 == 1 {
                 bold = !bold;
@@ -386,12 +399,7 @@ pub(crate) fn pageref_target(instruction: &str) -> Option<String> {
 
 pub(crate) fn markdown_from_docx_run(
     text: &str,
-    bold: bool,
-    italic: bool,
-    strikethrough: bool,
-    underline: bool,
-    code: bool,
-    vertical_align: VerticalAlign,
+    formatting: RunFormatting,
     page_reference: Option<&str>,
 ) -> String {
     // Emphasis markers must hug non-whitespace content on both sides, or a
@@ -404,24 +412,24 @@ pub(crate) fn markdown_from_docx_run(
     }
     let leading = &text[..text.len() - text.trim_start_matches(char::is_whitespace).len()];
     let trailing = &text[text.trim_end_matches(char::is_whitespace).len()..];
-    let mut rendered = match vertical_align {
+    let mut rendered = match formatting.vertical_align {
         VerticalAlign::Superscript => format!("$^{{{}}}$", latex_escape(core)),
         VerticalAlign::Subscript => format!("$_{{{}}}$", latex_escape(core)),
         VerticalAlign::Baseline => {
             let mut rendered = markdown_escape(core, MarkdownEscapeContext::Docx);
-            match (bold, italic) {
+            match (formatting.bold, formatting.italic) {
                 (true, true) => rendered = format!("***{rendered}***"),
                 (true, false) => rendered = format!("**{rendered}**"),
                 (false, true) => rendered = format!("*{rendered}*"),
                 (false, false) => {}
             }
-            if strikethrough {
+            if formatting.strikethrough {
                 rendered = format!("~~{rendered}~~");
             }
-            if underline {
+            if formatting.underline {
                 rendered = format!("<u>{rendered}</u>");
             }
-            if code {
+            if formatting.code {
                 rendered = format!("`{rendered}`");
             }
             rendered

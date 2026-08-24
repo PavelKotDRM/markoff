@@ -45,15 +45,14 @@ pub(crate) fn markdown_escape(value: &str, context: MarkdownEscapeContext) -> St
 /// returning `Ok(None)` when the attribute is absent.
 pub(crate) fn attribute_value(
     tag: &quick_xml::events::BytesStart<'_>,
-    name: &[u8],
-    decoder: quick_xml::encoding::Decoder,
+    name: &str,
 ) -> Result<Option<String>, MarkoffError> {
     tag.attributes()
         .flatten()
         .find(|attribute| attribute.key.local_name().as_ref() == name)
         .map(|attribute| {
             attribute
-                .decode_and_unescape_value(decoder)
+                .normalized_value(quick_xml::XmlVersion::Implicit1_0)
                 .map(|value| value.into_owned())
                 .map_err(invalid_data)
         })
@@ -75,10 +74,10 @@ pub(crate) fn parse_relationships(
     loop {
         match reader.read_event().map_err(invalid_data)? {
             Event::Start(tag) | Event::Empty(tag)
-                if tag.local_name().as_ref() == b"Relationship" =>
+                if tag.local_name().as_ref() == "Relationship" =>
             {
-                let id = attribute_value(&tag, b"Id", reader.decoder())?;
-                let target = attribute_value(&tag, b"Target", reader.decoder())?;
+                let id = attribute_value(&tag, "Id")?;
+                let target = attribute_value(&tag, "Target")?;
                 if let (Some(id), Some(target)) = (id, target) {
                     relationships.insert(id, target);
                 }

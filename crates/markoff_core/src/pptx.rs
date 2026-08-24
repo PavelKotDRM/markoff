@@ -82,22 +82,22 @@ fn read_slide_relationship_order(xml: &str) -> Vec<String> {
     loop {
         match reader.read_event() {
             Ok(Event::Eof) | Err(_) => break,
-            Ok(Event::Start(tag)) if tag.local_name().as_ref() == b"sldIdLst" => {
+            Ok(Event::Start(tag)) if tag.local_name().as_ref() == "sldIdLst" => {
                 in_slide_id_list = true;
             }
-            Ok(Event::End(tag)) if tag.local_name().as_ref() == b"sldIdLst" => {
+            Ok(Event::End(tag)) if tag.local_name().as_ref() == "sldIdLst" => {
                 in_slide_id_list = false;
             }
             Ok(Event::Start(tag) | Event::Empty(tag))
-                if in_slide_id_list && tag.local_name().as_ref() == b"sldId" =>
+                if in_slide_id_list && tag.local_name().as_ref() == "sldId" =>
             {
                 if let Some(id) = tag
                     .attributes()
                     .flatten()
-                    .find(|attribute| attribute.key.as_ref() == b"r:id")
+                    .find(|attribute| attribute.key.as_ref() == "r:id")
                     .and_then(|attribute| {
                         attribute
-                            .decode_and_unescape_value(reader.decoder())
+                            .normalized_value(quick_xml::XmlVersion::Implicit1_0)
                             .ok()
                             .map(|value| value.into_owned())
                     })
@@ -135,38 +135,36 @@ fn slide_to_markdown(xml: &str, slide_number: usize) -> String {
         };
         match event {
             Event::Start(tag) | Event::Empty(tag) => match tag.local_name().as_ref() {
-                b"sp" => {
+                "sp" => {
                     in_shape = true;
                     is_title_shape = false;
                 }
-                b"ph" if in_shape => {
+                "ph" if in_shape => {
                     let is_title = tag.attributes().flatten().any(|attribute| {
-                        attribute.key.local_name().as_ref() == b"type"
-                            && matches!(attribute.value.as_ref(), b"title" | b"ctrTitle")
+                        attribute.key.local_name().as_ref() == "type"
+                            && matches!(attribute.value.as_ref(), "title" | "ctrTitle")
                     });
                     if is_title {
                         is_title_shape = true;
                     }
                 }
-                b"p" if in_shape => {
+                "p" if in_shape => {
                     in_paragraph = true;
                     paragraph_text.clear();
                     paragraph_bulleted = false;
                 }
-                b"buChar" | b"buAutoNum" if in_paragraph => paragraph_bulleted = true,
-                b"t" if in_paragraph => in_run_text = true,
+                "buChar" | "buAutoNum" if in_paragraph => paragraph_bulleted = true,
+                "t" if in_paragraph => in_run_text = true,
                 _ => {}
             },
             Event::Text(text) if in_run_text => {
-                if let Ok(decoded) = text.decode()
-                    && let Ok(unescaped) = quick_xml::escape::unescape(&decoded)
-                {
+                if let Ok(unescaped) = quick_xml::escape::unescape(text.as_ref()) {
                     paragraph_text.push_str(&unescaped);
                 }
             }
             Event::End(tag) => match tag.local_name().as_ref() {
-                b"t" => in_run_text = false,
-                b"p" if in_shape => {
+                "t" => in_run_text = false,
+                "p" if in_shape => {
                     in_paragraph = false;
                     let text = markdown_escape(paragraph_text.trim(), MarkdownEscapeContext::Plain);
                     if !text.is_empty() {
@@ -177,7 +175,7 @@ fn slide_to_markdown(xml: &str, slide_number: usize) -> String {
                         }
                     }
                 }
-                b"sp" => in_shape = false,
+                "sp" => in_shape = false,
                 _ => {}
             },
             _ => {}

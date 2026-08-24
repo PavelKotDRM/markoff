@@ -198,6 +198,30 @@ The toolbar also switches between dark and light themes and opens build informat
 cargo bench -p markoff_core --bench conversion
 ```
 
+## Code quality checks
+
+Run these commands from the workspace root to validate code quality with standard Rust tooling:
+
+```powershell
+# 1) Formatting check (rustfmt)
+cargo fmt --all -- --check
+
+# 2) Lints and static analysis (Clippy)
+cargo clippy --workspace --all-targets
+
+# 3) Unit/integration/doctests
+cargo test --workspace
+
+# 4) Documentation build (catches doc issues)
+cargo doc --workspace --no-deps
+```
+
+For CI-grade strictness, make Clippy fail the build on warnings:
+
+```powershell
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
 ## Verification
 
 The current core implementation is verified with:
