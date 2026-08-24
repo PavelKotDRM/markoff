@@ -40,6 +40,12 @@ The project has moved beyond the initial stub stage:
 - DOCX tables, links, images, and footnotes
 - PPTX shape layout, embedded images/charts, and speaker notes are not preserved (only slide titles and body text/bullets)
 
+## Architecture
+
+![markoff workspace architecture](docs/architecture/markoff-architecture.drawio.svg)
+
+Open the [embedded SVG diagram](docs/architecture/markoff-architecture.drawio.svg) directly in the Draw.io Integration extension or [diagrams.net](https://app.diagrams.net/). The SVG retains the editable draw.io data for both pages: **Architecture** shows crate and module dependencies, while **Repository layout** maps the complete workspace structure, build assets, tests, and documentation.
+
 ## Getting started
 
 Install the current stable [Rust toolchain](https://www.rust-lang.org/tools/install), clone the repository, and build the workspace from its root:
@@ -55,6 +61,8 @@ cargo test --workspace
 ```
 
 The commands below use `cargo run` during development. A release build is created with `cargo build --release`; its executable is available at `target/release/markoff_cli` (or `markoff_cli.exe` on Windows).
+
+PDF text extraction uses `pdfium-render`. The matching Pdfium native library is downloaded and embedded at build time, adding roughly 30 MB to each application binary. On first PDF conversion it is extracted to the user's cache; no network access or separately installed Pdfium library is required at runtime.
 
 ### Use the executable file
 
@@ -185,12 +193,69 @@ The toolbar also switches between dark and light themes and opens build informat
 ## Format behavior and limitations
 
 - DOCX and Markdown preserve headings, paragraphs, nested ordered and bulleted lists, tables, bold/italic/strikethrough/underline text, inline and fenced code blocks, blockquotes, horizontal rules, footnotes, bookmarks, and `PAGEREF` links. A fenced-code language identifier is not preserved.
-- PDF to Markdown extracts the document text layer and embedded raster images (saved as files in an `image` folder next to the Markdown output, same convention as DOCX below). Page layout, vector graphics, tables, and scanned text are not preserved, and images are appended after the text rather than placed at their original position.
+- PDF to Markdown extracts the document text layer with Pdfium and embedded raster images with `lopdf` (saved as files in an `image` folder next to the Markdown output, same convention as DOCX below). Page layout, vector graphics, tables, and scanned text are not preserved, and images are appended after the text rather than placed at their original position.
 - Markdown tables convert to and from XLSX. Each `## Sheet name` heading represents a workbook sheet; the first table row becomes the frozen header row in XLSX.
 - `DOCX`/`Markdown <-> JSON/YAML/TOML` preserve the whole document structure (headings, paragraphs, list items, tables, code blocks, blockquotes, horizontal rules), not just tables, as an ordered `blocks` array; each block keeps inline Markdown formatting as raw text, and literal list numbers are not preserved. This round-trips in both directions: DOCX/Markdown can be converted to JSON/YAML/TOML and back.
 - Images embedded in a DOCX or PDF are extracted and saved as files in an `image` folder next to the Markdown output, referenced with standard `![alt](image/file.ext)` syntax. Converting to JSON/YAML/TOML instead embeds each image inline as base64 (self-contained, no external files). Converting Markdown/JSON/YAML/TOML back to Markdown restores the image files from base64. Converting back to DOCX does not yet re-embed images as OOXML pictures; an image reference degrades to literal escaped text in that direction.
 - JSON, CSV, YAML, and TOML convert to XLSX as tabular data. JSON/YAML/TOML input for this route must be an array of objects; this is a separate, table-only convention from the whole-document `blocks` schema above.
 - Ordinary hyperlinks, advanced Word table layout, Excel formulas/styles/charts, and PDF output are not yet semantically preserved. PPTX conversion is limited to slide titles and body text/bullets (no shape layout, images, charts, or speaker notes).
+
+## Rust code quality
+
+Install the standard formatting and linting components once:
+
+```powershell
+rustup component add rustfmt clippy
+```
+
+Use these commands from the workspace root for the usual development checks:
+
+```powershell
+# Fast compile check without producing binaries
+cargo check --workspace --all-targets --all-features
+
+# Format the workspace, or only verify formatting in CI
+cargo fmt --all
+cargo fmt --all -- --check
+
+# Run all Clippy lints used by this workspace
+cargo clippy --workspace --all-targets --all-features
+
+# Treat every Clippy warning as an error (recommended before a commit)
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+# Run all tests, including documentation tests
+cargo test --workspace --all-targets --all-features
+cargo test --workspace --doc
+
+# Verify that API documentation builds without dependency documentation
+cargo doc --workspace --all-features --no-deps
+```
+
+Cargo and Clippy can apply some suggestions automatically. Review the diff afterward; `--allow-dirty` permits changes when the working tree already contains edits:
+
+```powershell
+cargo fix --workspace --all-targets --all-features --allow-dirty
+cargo clippy --fix --workspace --all-targets --all-features --allow-dirty
+git diff
+```
+
+Optional third-party tools can check dependency vulnerabilities, outdated packages, and unused dependencies:
+
+```powershell
+cargo install cargo-audit cargo-outdated cargo-machete
+cargo audit --deny warnings
+cargo outdated --workspace
+cargo machete
+```
+
+Update the installed Rust toolchain and inspect project dependencies with:
+
+```powershell
+rustup update
+cargo tree --workspace
+cargo update --dry-run
+```
 
 ### Run benchmark
 

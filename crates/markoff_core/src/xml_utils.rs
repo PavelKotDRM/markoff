@@ -3,6 +3,7 @@
 
 use crate::MarkoffError;
 use crate::error::invalid_data;
+use quick_xml::XmlVersion;
 
 /// Escapes the three characters that are unsafe to place inside XML text
 /// content (`&`, `<`, `>`); attribute values are never built with this
@@ -45,14 +46,15 @@ pub(crate) fn markdown_escape(value: &str, context: MarkdownEscapeContext) -> St
 /// returning `Ok(None)` when the attribute is absent.
 pub(crate) fn attribute_value(
     tag: &quick_xml::events::BytesStart<'_>,
-    name: &str,
+    name: &[u8],
+    decoder: quick_xml::encoding::Decoder,
 ) -> Result<Option<String>, MarkoffError> {
     tag.attributes()
         .flatten()
         .find(|attribute| attribute.key.local_name().as_ref() == name)
         .map(|attribute| {
             attribute
-                .normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                .decoded_and_normalized_value(XmlVersion::Implicit1_0, decoder)
                 .map(|value| value.into_owned())
                 .map_err(invalid_data)
         })
@@ -74,10 +76,10 @@ pub(crate) fn parse_relationships(
     loop {
         match reader.read_event().map_err(invalid_data)? {
             Event::Start(tag) | Event::Empty(tag)
-                if tag.local_name().as_ref() == "Relationship" =>
+                if tag.local_name().as_ref() == b"Relationship" =>
             {
-                let id = attribute_value(&tag, "Id")?;
-                let target = attribute_value(&tag, "Target")?;
+                let id = attribute_value(&tag, b"Id", reader.decoder())?;
+                let target = attribute_value(&tag, b"Target", reader.decoder())?;
                 if let (Some(id), Some(target)) = (id, target) {
                     relationships.insert(id, target);
                 }

@@ -121,6 +121,12 @@ fn golden_pdf_extracts_embedded_images_alongside_markdown() {
 
     let rendered = fs::read_to_string(&markdown).unwrap();
     assert!(
+        rendered
+            .lines()
+            .any(|line| !line.trim().is_empty() && !line.starts_with("![](")),
+        "missing extracted text in {rendered:?}"
+    );
+    assert!(
         rendered.contains("![](image/image1.png)"),
         "missing extracted image reference in {rendered:?}"
     );

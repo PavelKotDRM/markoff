@@ -8,7 +8,7 @@ pub(crate) enum VerticalAlign {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) struct RunFormatting {
+pub(crate) struct DocxRunStyle {
     pub(crate) bold: bool,
     pub(crate) italic: bool,
     pub(crate) strikethrough: bool,
@@ -263,13 +263,12 @@ pub(crate) fn markdown_inline_to_docx_runs(value: &str) -> String {
         }
         let delimiter = if remaining.starts_with("**") || remaining.starts_with("__") {
             let marker = &remaining[..2];
-            let marker_bytes = marker.as_bytes();
             let marker_count = remaining
                 .as_bytes()
                 .as_chunks::<2>()
                 .0
                 .iter()
-                .take_while(|chunk| chunk.as_slice() == marker_bytes)
+                .take_while(|chunk| *chunk == marker.as_bytes())
                 .count();
             if marker_count % 2 == 1 {
                 bold = !bold;
@@ -399,7 +398,7 @@ pub(crate) fn pageref_target(instruction: &str) -> Option<String> {
 
 pub(crate) fn markdown_from_docx_run(
     text: &str,
-    formatting: RunFormatting,
+    style: DocxRunStyle,
     page_reference: Option<&str>,
 ) -> String {
     // Emphasis markers must hug non-whitespace content on both sides, or a
@@ -412,24 +411,24 @@ pub(crate) fn markdown_from_docx_run(
     }
     let leading = &text[..text.len() - text.trim_start_matches(char::is_whitespace).len()];
     let trailing = &text[text.trim_end_matches(char::is_whitespace).len()..];
-    let mut rendered = match formatting.vertical_align {
+    let mut rendered = match style.vertical_align {
         VerticalAlign::Superscript => format!("$^{{{}}}$", latex_escape(core)),
         VerticalAlign::Subscript => format!("$_{{{}}}$", latex_escape(core)),
         VerticalAlign::Baseline => {
             let mut rendered = markdown_escape(core, MarkdownEscapeContext::Docx);
-            match (formatting.bold, formatting.italic) {
+            match (style.bold, style.italic) {
                 (true, true) => rendered = format!("***{rendered}***"),
                 (true, false) => rendered = format!("**{rendered}**"),
                 (false, true) => rendered = format!("*{rendered}*"),
                 (false, false) => {}
             }
-            if formatting.strikethrough {
+            if style.strikethrough {
                 rendered = format!("~~{rendered}~~");
             }
-            if formatting.underline {
+            if style.underline {
                 rendered = format!("<u>{rendered}</u>");
             }
-            if formatting.code {
+            if style.code {
                 rendered = format!("`{rendered}`");
             }
             rendered

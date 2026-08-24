@@ -13,7 +13,7 @@ glob = "0.3"
 markoff_core = { path = "../markoff_core" }
 markoff_gui = { path = "../markoff_gui" }
 indicatif = "0.18"
-tracing = "0.1"
+tracing = "0.1.30"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [build-dependencies]
