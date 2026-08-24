@@ -321,7 +321,6 @@ impl eframe::App for MarkoffApp {
     }
 }
 
-#[allow(dead_code)]
 fn main() -> eframe::Result<()> {
     run()
 }
