@@ -49,19 +49,25 @@ enum ListKind {
     Ordered(usize),
 }
 
-fn open_block(block_stack: &mut Vec<String>, is_cell_stack: &mut Vec<bool>, is_cell: bool) {
-    block_stack.push(String::new());
-    is_cell_stack.push(is_cell);
+struct BlockBuffer {
+    text: String,
+    is_cell: bool,
 }
 
-fn close_block(block_stack: &mut Vec<String>, is_cell_stack: &mut Vec<bool>) -> Option<String> {
-    is_cell_stack.pop();
-    block_stack.pop()
+fn open_block(block_stack: &mut Vec<BlockBuffer>, is_cell: bool) {
+    block_stack.push(BlockBuffer {
+        text: String::new(),
+        is_cell,
+    });
 }
 
-fn push_marker(block_stack: &mut [String], marker: &str) {
+fn close_block(block_stack: &mut Vec<BlockBuffer>) -> Option<String> {
+    block_stack.pop().map(|buffer| buffer.text)
+}
+
+fn push_marker(block_stack: &mut [BlockBuffer], marker: &str) {
     if let Some(buffer) = block_stack.last_mut() {
-        buffer.push_str(marker);
+        buffer.text.push_str(marker);
     }
 }
 
@@ -87,8 +93,7 @@ fn flush_block(output: &mut String, text: &str, quote_depth: usize) {
 fn html_to_markdown(html: &str) -> String {
     let tokens = tokenize(html);
     let mut output = String::new();
-    let mut block_stack: Vec<String> = Vec::new();
-    let mut is_cell_stack: Vec<bool> = Vec::new();
+    let mut block_stack: Vec<BlockBuffer> = Vec::new();
     let mut quote_depth = 0usize;
     let mut list_stack: Vec<ListKind> = Vec::new();
     let mut link_starts: Vec<(usize, String)> = Vec::new();
@@ -114,22 +119,22 @@ fn html_to_markdown(html: &str) -> String {
                 "head" | "script" | "style" | "title" => skip_tag = Some(name),
                 "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
                     heading_level = name[1..].parse().ok();
-                    open_block(&mut block_stack, &mut is_cell_stack, false);
+                    open_block(&mut block_stack, false);
                 }
                 "p" => {
                     if active_li == 0 {
-                        open_block(&mut block_stack, &mut is_cell_stack, false);
+                        open_block(&mut block_stack, false);
                     }
                 }
                 "blockquote" => {
                     quote_depth += 1;
-                    open_block(&mut block_stack, &mut is_cell_stack, false);
+                    open_block(&mut block_stack, false);
                 }
                 "ul" => list_stack.push(ListKind::Bullet),
                 "ol" => list_stack.push(ListKind::Ordered(1)),
                 "li" => {
                     active_li += 1;
-                    open_block(&mut block_stack, &mut is_cell_stack, false);
+                    open_block(&mut block_stack, false);
                 }
                 "table" => {
                     in_table = true;
@@ -137,10 +142,10 @@ fn html_to_markdown(html: &str) -> String {
                     current_row.clear();
                 }
                 "tr" => current_row.clear(),
-                "td" | "th" => open_block(&mut block_stack, &mut is_cell_stack, true),
+                "td" | "th" => open_block(&mut block_stack, true),
                 "pre" => {
                     in_pre = true;
-                    open_block(&mut block_stack, &mut is_cell_stack, false);
+                    open_block(&mut block_stack, false);
                 }
                 "code" if !in_pre => push_marker(&mut block_stack, "`"),
                 "strong" | "b" => push_marker(&mut block_stack, "**"),
@@ -151,7 +156,7 @@ fn html_to_markdown(html: &str) -> String {
                         .find(|(key, _)| key == "href")
                         .map(|(_, value)| value.clone())
                         .unwrap_or_default();
-                    let start = block_stack.last().map_or(0, String::len);
+                    let start = block_stack.last().map_or(0, |buffer| buffer.text.len());
                     link_starts.push((start, href));
                 }
                 "img" => {
@@ -167,7 +172,7 @@ fn html_to_markdown(html: &str) -> String {
                         .unwrap_or_default();
                     let image = format!("![{alt}]({src})");
                     if let Some(buffer) = block_stack.last_mut() {
-                        buffer.push_str(&image);
+                        buffer.text.push_str(&image);
                     } else {
                         output.push_str(&image);
                         output.push_str("\n\n");
@@ -180,10 +185,9 @@ fn html_to_markdown(html: &str) -> String {
             Token::End(name) => match name.as_str() {
                 "head" | "script" | "style" | "title" => {}
                 "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
-                    if let (Some(text), Some(level)) = (
-                        close_block(&mut block_stack, &mut is_cell_stack),
-                        heading_level.take(),
-                    ) {
+                    if let (Some(text), Some(level)) =
+                        (close_block(&mut block_stack), heading_level.take())
+                    {
                         let text = text.trim();
                         if !text.is_empty() {
                             output.push_str(&"#".repeat(level));
@@ -195,13 +199,13 @@ fn html_to_markdown(html: &str) -> String {
                 }
                 "p" => {
                     if active_li == 0
-                        && let Some(text) = close_block(&mut block_stack, &mut is_cell_stack)
+                        && let Some(text) = close_block(&mut block_stack)
                     {
                         flush_block(&mut output, &text, quote_depth);
                     }
                 }
                 "blockquote" => {
-                    if let Some(text) = close_block(&mut block_stack, &mut is_cell_stack) {
+                    if let Some(text) = close_block(&mut block_stack) {
                         flush_block(&mut output, &text, quote_depth);
                     }
                     quote_depth = quote_depth.saturating_sub(1);
@@ -214,7 +218,7 @@ fn html_to_markdown(html: &str) -> String {
                 }
                 "li" => {
                     active_li = active_li.saturating_sub(1);
-                    if let Some(text) = close_block(&mut block_stack, &mut is_cell_stack) {
+                    if let Some(text) = close_block(&mut block_stack) {
                         let text = text.trim();
                         if !text.is_empty() {
                             let indent = list_stack.len().saturating_sub(1);
@@ -246,12 +250,12 @@ fn html_to_markdown(html: &str) -> String {
                     }
                 }
                 "td" | "th" => {
-                    if let Some(text) = close_block(&mut block_stack, &mut is_cell_stack) {
+                    if let Some(text) = close_block(&mut block_stack) {
                         current_row.push(text.trim().to_string());
                     }
                 }
                 "pre" => {
-                    if let Some(text) = close_block(&mut block_stack, &mut is_cell_stack) {
+                    if let Some(text) = close_block(&mut block_stack) {
                         output.push_str("```\n");
                         output.push_str(text.trim_matches('\n'));
                         output.push_str("\n```\n\n");
@@ -264,27 +268,27 @@ fn html_to_markdown(html: &str) -> String {
                 "a" => {
                     if let Some((start, href)) = link_starts.pop()
                         && let Some(buffer) = block_stack.last_mut()
-                        && start <= buffer.len()
+                        && start <= buffer.text.len()
                     {
-                        let text = buffer[start..].to_string();
-                        buffer.truncate(start);
-                        buffer.push_str(&format!("[{text}]({href})"));
+                        let text = buffer.text[start..].to_string();
+                        buffer.text.truncate(start);
+                        buffer.text.push_str(&format!("[{text}]({href})"));
                     }
                 }
                 _ => {}
             },
             Token::Text(text) => {
-                let is_cell = *is_cell_stack.last().unwrap_or(&false);
                 if let Some(buffer) = block_stack.last_mut() {
                     if in_pre {
-                        buffer.push_str(&text);
+                        buffer.text.push_str(&text);
                     } else {
                         let collapsed = collapse_whitespace(&text);
-                        buffer.push_str(&if is_cell {
+                        let rendered = if buffer.is_cell {
                             collapsed
                         } else {
                             markdown_escape(&collapsed, MarkdownEscapeContext::Html)
-                        });
+                        };
+                        buffer.text.push_str(&rendered);
                     }
                 }
             }

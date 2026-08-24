@@ -9,6 +9,13 @@ pub(super) enum ListKind {
     Decimal { start: usize },
 }
 
+fn numbering_key(
+    abstract_number: &Option<String>,
+    level: Option<usize>,
+) -> Option<(String, usize)> {
+    Some((abstract_number.as_ref()?.clone(), level?))
+}
+
 pub(super) fn read_relationships(
     archive: &mut zip::ZipArchive<std::fs::File>,
 ) -> Result<BTreeMap<String, String>, MarkoffError> {
@@ -68,17 +75,17 @@ pub(super) fn read_numbering(
                     level = attribute_value(&event, "ilvl")?.and_then(|value| value.parse().ok());
                 }
                 "abstractNumId" if number_id.is_some() => {
-                    if let Some(abstract_id) = attribute_value(&event, "val")? {
-                        number_to_abstract
-                            .insert(number_id.clone().expect("checked above"), abstract_id);
+                    if let Some(abstract_id) = attribute_value(&event, "val")?
+                        && let Some(number_id) = number_id.clone()
+                    {
+                        number_to_abstract.insert(number_id, abstract_id);
                     }
                 }
-                "numFmt" if abstract_number.is_some() && level.is_some() => {
-                    if let Some(format) = attribute_value(&event, "val")? {
-                        let key = (
-                            abstract_number.clone().expect("checked above"),
-                            level.expect("checked above"),
-                        );
+                "numFmt" => {
+                    if let (Some(format), Some(key)) = (
+                        attribute_value(&event, "val")?,
+                        numbering_key(&abstract_number, level),
+                    ) {
                         let kind = if format == "bullet" {
                             ListKind::Bullet
                         } else {
@@ -89,14 +96,11 @@ pub(super) fn read_numbering(
                         formats.insert(key, kind);
                     }
                 }
-                "start" if abstract_number.is_some() && level.is_some() => {
-                    if let Some(start) =
-                        attribute_value(&event, "val")?.and_then(|value| value.parse().ok())
-                    {
-                        let key = (
-                            abstract_number.clone().expect("checked above"),
-                            level.expect("checked above"),
-                        );
+                "start" => {
+                    if let (Some(start), Some(key)) = (
+                        attribute_value(&event, "val")?.and_then(|value| value.parse().ok()),
+                        numbering_key(&abstract_number, level),
+                    ) {
                         starts.insert(key.clone(), start);
                         if let Some(ListKind::Decimal { start: current }) = formats.get_mut(&key) {
                             *current = start;
