@@ -10,7 +10,7 @@ publish = false
 anyhow = "1.0"
 egui = "0.36"
 egui_commonmark = "0.25.0"
-egui_extras = "0.36"
+egui_extras = { version = "0.36", features = ["file", "image"] }
 markoff_core = { path = "../markoff_core" }
 rfd = "0.17"
 serde_json = "1.0"

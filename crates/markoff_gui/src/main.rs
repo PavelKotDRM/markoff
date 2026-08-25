@@ -1,5 +1,5 @@
 use eframe::egui;
-use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
+use egui_commonmark::CommonMarkCache;
 use egui_extras::{Column, TableBuilder};
 use markoff_core::{ConversionRequest, Format, convert_document, detect_format};
 use std::path::PathBuf;
@@ -7,7 +7,7 @@ use std::path::PathBuf;
 #[path = "preview.rs"]
 mod preview;
 
-use preview::{SourcePreview, load_source_preview, render_json_tree};
+use preview::{SourcePreview, load_source_preview, render_preview};
 
 const BUILD_INFO: &str = concat!(
     "Version: ",
@@ -45,7 +45,10 @@ pub fn run() -> eframe::Result<()> {
     eframe::run_native(
         "markoff",
         options,
-        Box::new(|_cc| Ok(Box::new(MarkoffApp::default()))),
+        Box::new(|cc| {
+            egui_extras::install_image_loaders(&cc.egui_ctx);
+            Ok(Box::new(MarkoffApp::default()))
+        }),
     )
 }
 
@@ -54,6 +57,12 @@ enum JobStatus {
     Pending,
     Success,
     Failed,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PreviewPane {
+    Source,
+    Result,
 }
 
 impl JobStatus {
@@ -70,6 +79,7 @@ struct ConversionJob {
     input: PathBuf,
     output: PathBuf,
     source_preview: SourcePreview,
+    result_preview: SourcePreview,
     status: JobStatus,
     message: String,
 }
@@ -83,6 +93,7 @@ struct MarkoffApp {
     overwrite: bool,
     csv_delimiter: String,
     markdown_cache: CommonMarkCache,
+    preview_pane: PreviewPane,
 }
 
 impl Default for MarkoffApp {
@@ -96,6 +107,7 @@ impl Default for MarkoffApp {
             overwrite: false,
             csv_delimiter: ",".to_string(),
             markdown_cache: CommonMarkCache::default(),
+            preview_pane: PreviewPane::Source,
         }
     }
 }
@@ -109,6 +121,7 @@ impl MarkoffApp {
         output.set_extension(self.target.to_string());
         self.jobs.push(ConversionJob {
             source_preview: load_source_preview(&input),
+            result_preview: SourcePreview::message("Converted output will appear here."),
             input,
             output,
             status: JobStatus::Pending,
@@ -122,6 +135,7 @@ impl MarkoffApp {
             job.output.set_extension(self.target.to_string());
             job.status = JobStatus::Pending;
             job.message.clear();
+            job.result_preview = SourcePreview::message("Converted output will appear here.");
         }
     }
 
@@ -145,22 +159,14 @@ impl MarkoffApp {
             Ok(()) => {
                 job.status = JobStatus::Success;
                 job.message = format!("Saved to {}", job.output.display());
+                job.result_preview = load_source_preview(&job.output);
             }
             Err(error) => {
                 job.status = JobStatus::Failed;
                 job.message = error.to_string();
+                job.result_preview = SourcePreview::message(job.message.clone());
             }
         }
-    }
-
-    fn result_preview(&self) -> String {
-        self.selected
-            .and_then(|index| self.jobs.get(index))
-            .map(|job| match std::fs::read_to_string(&job.output) {
-                Ok(content) => content,
-                Err(_) => job.message.clone(),
-            })
-            .unwrap_or_else(|| "Converted output will appear here.".to_string())
     }
 }
 
@@ -279,31 +285,46 @@ impl eframe::App for MarkoffApp {
                 .selected
                 .and_then(|index| self.jobs.get(index))
                 .map(|job| &job.source_preview);
-            let result_preview = self.result_preview();
+            let result_preview = self
+                .selected
+                .and_then(|index| self.jobs.get(index))
+                .map(|job| &job.result_preview);
             let markdown_cache = &mut self.markdown_cache;
-            ui.columns(2, |columns| {
-                columns[0].heading("Source");
-                egui::ScrollArea::vertical()
-                    .id_salt("source_scroll")
-                    .show(&mut columns[0], |ui| match selected_preview {
-                        Some(SourcePreview::Markdown(markdown)) => {
-                            CommonMarkViewer::new().show(ui, markdown_cache, markdown);
-                        }
-                        Some(SourcePreview::Tree(value)) => render_json_tree(ui, value),
-                        Some(SourcePreview::Text(text)) => {
-                            ui.monospace(text);
-                        }
-                        None => {
-                            ui.monospace("Select a file to preview its source.");
-                        }
-                    });
-                columns[1].heading("Result");
-                egui::ScrollArea::vertical()
-                    .id_salt("result_scroll")
-                    .show(&mut columns[1], |ui| {
-                        ui.monospace(&result_preview);
-                    });
+
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.preview_pane, PreviewPane::Source, "Source");
+                ui.selectable_value(&mut self.preview_pane, PreviewPane::Result, "Result");
             });
+            ui.separator();
+
+            match self.preview_pane {
+                PreviewPane::Source => {
+                    ui.heading("Source");
+                    egui::ScrollArea::vertical()
+                        .id_salt("source_scroll")
+                        .show(ui, |ui| {
+                            render_preview(
+                                ui,
+                                selected_preview,
+                                markdown_cache,
+                                "Select a file to preview its source.",
+                            );
+                        });
+                }
+                PreviewPane::Result => {
+                    ui.heading("Result");
+                    egui::ScrollArea::vertical()
+                        .id_salt("result_scroll")
+                        .show(ui, |ui| {
+                            render_preview(
+                                ui,
+                                result_preview,
+                                markdown_cache,
+                                "Converted output will appear here.",
+                            );
+                        });
+                }
+            }
         });
 
         if self.show_about {
@@ -349,7 +370,10 @@ mod tests {
         convert_file(&markdown, &document, Format::Markdown, Format::Docx).unwrap();
 
         let preview = load_source_preview(&document);
-        let SourcePreview::Markdown(markdown) = preview else {
+        let SourcePreview::Markdown {
+            content: markdown, ..
+        } = preview
+        else {
             panic!("expected a Markdown preview for a converted DOCX file");
         };
         assert!(markdown.contains("# Project"));
