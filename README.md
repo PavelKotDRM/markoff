@@ -1,5 +1,7 @@
 # markoff
 
+[Русская версия](docs/README.ru.md)
+
 markoff is a Rust workspace for a bi-directional converter between Microsoft Office documents and Markdown / structured data formats. The workspace, conversion baseline, GUI workflow, quality gates, benchmarks, and release pipeline are in place.
 
 ## Current status
@@ -299,4 +301,4 @@ and is passing successfully at the moment.
 
 ## Notes
 
-This project is no longer a blank scaffold. The core engine now performs real conversions for the documented text-based formats, and the next step is to turn that engine into a richer CLI experience and then into the graphical workflow described in the TЗ.
+This project is no longer a blank scaffold. The core engine now performs real conversions for the documented text-based formats, and the next step is to turn that engine into a richer CLI experience and then into the graphical workflow described in the technical specification.
