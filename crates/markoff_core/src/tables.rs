@@ -5,7 +5,7 @@ pub(crate) fn parse_markdown_table(markdown: &str) -> Vec<Vec<String>> {
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
-        .filter(|line| line.starts_with('|') && line.ends_with('|'))
+        .filter(|line| line.contains('|'))
         .collect::<Vec<_>>();
 
     if rows.len() < 3 {
@@ -67,7 +67,7 @@ pub(crate) fn parse_markdown_tables(markdown: &str) -> BTreeMap<String, Vec<Vec<
                 table_lines.clear();
             }
             sheet_name = name.trim().to_string();
-        } else if line.trim().starts_with('|') && line.trim().ends_with('|') {
+        } else if line.trim().contains('|') {
             table_lines.push(line.to_string());
         }
     }

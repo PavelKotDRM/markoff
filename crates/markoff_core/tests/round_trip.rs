@@ -207,6 +207,66 @@ fn markdown_docx_round_trip_preserves_all_heading_levels() {
 }
 
 #[test]
+fn markdown_docx_renders_links_heading_and_table_structure() {
+    use std::io::Read;
+    use zip::ZipArchive;
+
+    let markdown = temporary_path("docx_structure_input", "md");
+    let document = temporary_path("docx_structure_document", "docx");
+    let restored = temporary_path("docx_structure_output", "md");
+    let source = "# Report\n\nSee [website](https://example.com?a=1&b=2) or [section](#report).\n\n| Name | Value |\n| --- | --- |\n| Ada | 42 |\n";
+    fs::write(&markdown, source).unwrap();
+
+    convert_file(&markdown, &document, Format::Markdown, Format::Docx).unwrap();
+
+    let file = fs::File::open(&document).unwrap();
+    let mut archive = ZipArchive::new(file).unwrap();
+    let mut document_xml = String::new();
+    archive
+        .by_name("word/document.xml")
+        .unwrap()
+        .read_to_string(&mut document_xml)
+        .unwrap();
+    let mut relationships = String::new();
+    archive
+        .by_name("word/_rels/document.xml.rels")
+        .unwrap()
+        .read_to_string(&mut relationships)
+        .unwrap();
+    let mut styles = String::new();
+    archive
+        .by_name("word/styles.xml")
+        .unwrap()
+        .read_to_string(&mut styles)
+        .unwrap();
+
+    assert!(document_xml.contains(
+        "xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\""
+    ));
+    assert!(document_xml.contains("<w:pStyle w:val=\"Heading1\"/>"));
+    assert!(document_xml.contains("<w:bookmarkStart w:id=\"1\" w:name=\"report\"/>"));
+    assert!(document_xml.contains("<w:hyperlink r:id=\"rId4\">"));
+    assert!(document_xml.contains("<w:hyperlink w:anchor=\"report\">"));
+    assert!(document_xml.contains("<w:tblBorders>"));
+    assert!(document_xml.contains("<w:gridCol w:w=\"2400\"/>"));
+    assert!(document_xml.contains("<w:tblHeader/>"));
+    assert!(document_xml.contains("<w:shd w:val=\"clear\" w:fill=\"D9EAF7\"/>"));
+    assert!(relationships.contains(
+        "Id=\"rId4\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink\" Target=\"https://example.com?a=1&amp;b=2\" TargetMode=\"External\""
+    ));
+    assert!(relationships.contains(
+        "Id=\"rId3\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\""
+    ));
+    assert!(styles.contains("<w:style w:type=\"paragraph\" w:styleId=\"Heading1\">"));
+    assert!(styles.contains("<w:b/><w:color w:val=\"1F4E79\"/>"));
+
+    convert_file(&document, &restored, Format::Docx, Format::Markdown).unwrap();
+    assert_eq!(fs::read_to_string(&restored).unwrap(), source);
+
+    remove_files(&[&markdown, &document, &restored]);
+}
+
+#[test]
 fn markdown_docx_round_trip_preserves_code_quotes_and_horizontal_rules() {
     let markdown = temporary_path("markdown_blocks_input", "md");
     let document = temporary_path("markdown_blocks_document", "docx");
@@ -330,6 +390,37 @@ fn read_csv_records(path: &PathBuf) -> Vec<Vec<String>> {
 }
 
 #[test]
+fn markdown_docx_accepts_tables_without_outer_pipes() {
+    use std::io::Read;
+    use zip::ZipArchive;
+
+    let markdown = temporary_path("table_without_outer_pipes_input", "md");
+    let document = temporary_path("table_without_outer_pipes_document", "docx");
+    let restored = temporary_path("table_without_outer_pipes_output", "md");
+    fs::write(&markdown, "Name | Score\n--- | ---\nAda | 42\n").unwrap();
+
+    convert_file(&markdown, &document, Format::Markdown, Format::Docx).unwrap();
+
+    let file = fs::File::open(&document).unwrap();
+    let mut archive = ZipArchive::new(file).unwrap();
+    let mut document_xml = String::new();
+    archive
+        .by_name("word/document.xml")
+        .unwrap()
+        .read_to_string(&mut document_xml)
+        .unwrap();
+    assert!(document_xml.contains("<w:tbl>"));
+
+    convert_file(&document, &restored, Format::Docx, Format::Markdown).unwrap();
+    assert_eq!(
+        fs::read_to_string(&restored).unwrap(),
+        "| Name | Score |\n| --- | --- |\n| Ada | 42 |\n"
+    );
+
+    remove_files(&[&markdown, &document, &restored]);
+}
+
+#[test]
 fn docx_tables_convert_to_all_tabular_formats() {
     let markdown = temporary_path("table_formats_input", "md");
     let document = temporary_path("table_formats_document", "docx");
@@ -439,7 +530,7 @@ fn markdown_docx_round_trip_preserves_footnotes() {
     let restored = temporary_path("footnotes_output", "md");
     fs::write(
         &markdown,
-        "Footnote 1 link[^first].\n\nFootnote 2 link[^second].\n\nInline footnote^[Text of inline footnote] definition.\n\nDuplicated footnote reference[^second].\n\n[^first]: Footnote **can have markup**\n\n    and multiple paragraphs.\n\n[^second]: Footnote text.\n",
+        "Footnote 1 link[^first].\n\nFootnote 2 link[^second].\n\nInline footnote^[Text of inline footnote] definition.\n\nDuplicated footnote reference[^second].\n\n[^first]: Footnote **can have markup** with [docs](https://example.com).\n\n    and multiple paragraphs.\n\n[^second]: Footnote text.\n",
     )
     .unwrap();
 
@@ -452,7 +543,7 @@ fn markdown_docx_round_trip_preserves_footnotes() {
         "Footnote 2 link[^2].",
         "Inline footnote[^3] definition.",
         "Duplicated footnote reference[^2].",
-        "[^1]: Footnote **can have markup**\n\n    and multiple paragraphs.",
+        "[^1]: Footnote **can have markup** with [docs](https://example.com).\n\n    and multiple paragraphs.",
         "[^2]: Footnote text.",
         "[^3]: Text of inline footnote",
     ] {

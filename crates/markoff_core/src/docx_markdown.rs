@@ -87,3 +87,24 @@ pub(super) fn table_from_rows(rows: &[Vec<String>]) -> String {
     markdown.extend(rows.iter().skip(1).map(|row| format_row(row)));
     markdown.join("\n")
 }
+
+pub(super) fn heading_anchor(content: &str) -> Option<String> {
+    let content = content
+        .trim()
+        .trim_end_matches(|character: char| character == '#')
+        .trim();
+    let mut anchor = String::new();
+    let mut pending_separator = false;
+    for character in content.chars() {
+        if character.is_alphanumeric() {
+            if pending_separator && !anchor.is_empty() {
+                anchor.push('-');
+            }
+            anchor.extend(character.to_lowercase());
+            pending_separator = false;
+        } else if character.is_whitespace() || character == '-' {
+            pending_separator = true;
+        }
+    }
+    (!anchor.is_empty()).then_some(anchor)
+}

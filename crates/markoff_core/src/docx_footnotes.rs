@@ -2,7 +2,7 @@ use crate::MarkoffError;
 use crate::docx_inline::{DocxRunStyle, VerticalAlign, markdown_from_docx_run};
 use crate::docx_runs::{PendingRun, flush_pending_run, resolve_general_ref, word_property_enabled};
 use crate::error::invalid_data;
-use crate::xml_utils::attribute_value;
+use crate::xml_utils::{attribute_value, parse_relationships};
 use std::collections::BTreeMap;
 
 pub(super) fn read_footnotes(
@@ -12,11 +12,20 @@ pub(super) fn read_footnotes(
     use quick_xml::events::Event;
     use std::io::Read;
 
-    let Ok(mut file) = archive.by_name("word/footnotes.xml") else {
-        return Ok(BTreeMap::new());
-    };
     let mut document = String::new();
-    file.read_to_string(&mut document)?;
+    {
+        let Ok(mut file) = archive.by_name("word/footnotes.xml") else {
+            return Ok(BTreeMap::new());
+        };
+        file.read_to_string(&mut document)?;
+    }
+    let relationships = if let Ok(mut file) = archive.by_name("word/_rels/footnotes.xml.rels") {
+        let mut relationships = String::new();
+        file.read_to_string(&mut relationships)?;
+        parse_relationships(&relationships)?
+    } else {
+        BTreeMap::new()
+    };
 
     let mut reader = Reader::from_str(&document);
     reader.config_mut().trim_text(false);
@@ -32,6 +41,7 @@ pub(super) fn read_footnotes(
     let mut underline = false;
     let mut code = false;
     let mut vert_align = VerticalAlign::Baseline;
+    let mut hyperlink_target = None;
 
     loop {
         match reader.read_event().map_err(invalid_data)? {
@@ -54,6 +64,7 @@ pub(super) fn read_footnotes(
                 "p" if footnote_id.is_some() => {
                     paragraph.clear();
                     pending_run = None;
+                    hyperlink_target = None;
                 }
                 "r" if footnote_id.is_some() => {
                     run.clear();
@@ -71,6 +82,16 @@ pub(super) fn read_footnotes(
                             _ => VerticalAlign::Baseline,
                         })
                         .unwrap_or(VerticalAlign::Baseline);
+                }
+                "hyperlink" if footnote_id.is_some() => {
+                    flush_pending_run(&mut paragraph, &mut pending_run);
+                    hyperlink_target = if let Some(anchor) = attribute_value(&event, "anchor")? {
+                        Some(format!("anchor:{anchor}"))
+                    } else {
+                        attribute_value(&event, "id")?
+                            .and_then(|id| relationships.get(&id))
+                            .map(|target| format!("external:{target}"))
+                    };
                 }
                 _ => {}
             },
@@ -101,7 +122,7 @@ pub(super) fn read_footnotes(
                                 code,
                                 vertical_align: vert_align,
                             },
-                            target: None,
+                            target: hyperlink_target.clone(),
                         });
                     }
                     bold = false;
@@ -109,6 +130,10 @@ pub(super) fn read_footnotes(
                     strikethrough = false;
                     underline = false;
                     code = false;
+                }
+                "hyperlink" if footnote_id.is_some() => {
+                    flush_pending_run(&mut paragraph, &mut pending_run);
+                    hyperlink_target = None;
                 }
                 "p" if footnote_id.is_some() => {
                     flush_pending_run(&mut paragraph, &mut pending_run);

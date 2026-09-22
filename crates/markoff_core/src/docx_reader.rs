@@ -1,7 +1,7 @@
 use crate::MarkoffError;
 use crate::docx_footnotes::read_footnotes;
 use crate::docx_inline::{DocxRunStyle, VerticalAlign, pageref_target};
-use crate::docx_markdown::{list_prefix, table_from_rows, textual_list_item};
+use crate::docx_markdown::{heading_anchor, list_prefix, table_from_rows, textual_list_item};
 use crate::docx_postprocess::{convert_formula_section, convert_textual_footnotes};
 use crate::docx_resources::{read_media_part, read_numbering, read_relationships};
 use crate::docx_runs::{
@@ -88,6 +88,7 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
     let mut bookmarks = Vec::new();
     let mut field_instruction = String::new();
     let mut page_reference = None;
+    let mut hyperlink_target = None;
     let mut in_field_result = false;
     let mut in_instruction_text = false;
     let mut run_properties = RunProperties::default();
@@ -130,6 +131,7 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                     bookmarks.clear();
                     field_instruction.clear();
                     page_reference = None;
+                    hyperlink_target = None;
                     in_field_result = false;
                     paragraph_has_code = false;
                     paragraph_has_plain_text = false;
@@ -165,6 +167,16 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                 }
                 "blip" => {
                     image_rel_id = attribute_value(&event, "embed")?;
+                }
+                "hyperlink" if in_paragraph => {
+                    flush_pending_run(&mut paragraph, &mut pending_run);
+                    hyperlink_target = if let Some(anchor) = attribute_value(&event, "anchor")? {
+                        (!anchor.starts_with("_heading=")).then(|| format!("anchor:{anchor}"))
+                    } else {
+                        attribute_value(&event, "id")?
+                            .and_then(|id| relationships.get(&id))
+                            .map(|target| format!("external:{target}"))
+                    };
                 }
                 "rFonts" => {
                     run_properties.code = event.attributes().flatten().any(|attribute| {
@@ -202,7 +214,9 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                             &mut pending_run,
                             &run,
                             run_properties.style(code_block),
-                            in_field_result.then(|| page_reference.clone()).flatten(),
+                            hyperlink_target.clone().or_else(|| {
+                                in_field_result.then(|| page_reference.clone()).flatten()
+                            }),
                         );
                         run.clear();
                     }
@@ -329,10 +343,16 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                             &mut pending_run,
                             &run,
                             run_properties.style(code_block),
-                            in_field_result.then(|| page_reference.clone()).flatten(),
+                            hyperlink_target.clone().or_else(|| {
+                                in_field_result.then(|| page_reference.clone()).flatten()
+                            }),
                         );
                     }
                     run_properties = RunProperties::default();
+                }
+                "hyperlink" if in_paragraph => {
+                    flush_pending_run(&mut paragraph, &mut pending_run);
+                    hyperlink_target = None;
                 }
                 "p" => {
                     flush_pending_run(&mut paragraph, &mut pending_run);
@@ -349,8 +369,17 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                         {
                             markdown.push(format!("```\n{raw_paragraph}\n```"));
                         } else {
+                            let generated_heading_anchor =
+                                heading_level.and_then(|_| heading_anchor(&paragraph));
                             let anchors = bookmarks
                                 .iter()
+                                .filter(|bookmark| {
+                                    !(heading_level.is_some()
+                                        && (bookmark.starts_with("_markoff_")
+                                            || generated_heading_anchor
+                                                .as_ref()
+                                                .is_some_and(|anchor| anchor == *bookmark)))
+                                })
                                 .map(|bookmark| format!("<a id=\"{bookmark}\"></a>"))
                                 .collect::<Vec<_>>()
                                 .join("\n");

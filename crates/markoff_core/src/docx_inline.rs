@@ -1,4 +1,4 @@
-use crate::xml_utils::{MarkdownEscapeContext, markdown_escape, xml_escape};
+use crate::xml_utils::{MarkdownEscapeContext, markdown_escape, xml_attribute_escape, xml_escape};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum VerticalAlign {
@@ -15,6 +15,12 @@ pub(crate) struct DocxRunStyle {
     pub(crate) underline: bool,
     pub(crate) code: bool,
     pub(crate) vertical_align: VerticalAlign,
+}
+
+#[derive(Clone)]
+pub(crate) enum DocxHyperlink {
+    Relationship(String),
+    Anchor(String),
 }
 
 fn latex_escape(value: &str) -> String {
@@ -58,7 +64,7 @@ fn markdown_unescape(value: &str) -> String {
     unescaped
 }
 
-fn markdown_delimiter_index(value: &str) -> Option<usize> {
+fn markdown_delimiter_index(value: &str, allow_links: bool) -> Option<usize> {
     let mut escaped = false;
     for (index, character) in value.char_indices() {
         if escaped {
@@ -83,6 +89,9 @@ fn markdown_delimiter_index(value: &str) -> Option<usize> {
             && !remaining.starts_with("$_{")
             && remaining[1..].contains('$')
         {
+            return Some(index);
+        }
+        if allow_links && character == '[' && markdown_link_at_start(remaining).is_some() {
             return Some(index);
         }
         if character == '_'
@@ -113,37 +122,152 @@ fn markdown_delimiter_index(value: &str) -> Option<usize> {
     None
 }
 
-fn docx_run(
-    text: &str,
+fn markdown_link_at_start(value: &str) -> Option<(&str, String, usize)> {
+    if !value.starts_with('[') {
+        return None;
+    }
+
+    let mut depth = 0usize;
+    let mut escaped = false;
+    let label_end = value[1..].char_indices().find_map(|(index, character)| {
+        let index = index + 1;
+        if escaped {
+            escaped = false;
+            return None;
+        }
+        if character == '\\' {
+            escaped = true;
+            return None;
+        }
+        match character {
+            '[' => depth += 1,
+            ']' if depth == 0 => return Some(index),
+            ']' => depth -= 1,
+            _ => {}
+        }
+        None
+    })?;
+
+    let after_label = &value[label_end + 1..];
+    let after_open = after_label.strip_prefix('(')?;
+    let mut depth = 0usize;
+    let mut escaped = false;
+    let closing_parenthesis = after_open.char_indices().find_map(|(index, character)| {
+        if escaped {
+            escaped = false;
+            return None;
+        }
+        if character == '\\' {
+            escaped = true;
+            return None;
+        }
+        match character {
+            '(' => depth += 1,
+            ')' if depth == 0 => return Some(index),
+            ')' => depth -= 1,
+            _ => {}
+        }
+        None
+    })?;
+    let destination = markdown_link_destination(&after_open[..closing_parenthesis])?;
+    let consumed = label_end + closing_parenthesis + 3;
+    Some((&value[1..label_end], destination, consumed))
+}
+
+fn markdown_link_destination(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+
+    let destination = if let Some(value) = value.strip_prefix('<') {
+        let end = value.find('>')?;
+        let remainder = value[end + 1..].trim();
+        if !remainder.is_empty() && !remainder.starts_with('"') && !remainder.starts_with('\'') {
+            return None;
+        }
+        &value[..end]
+    } else {
+        let mut depth = 0usize;
+        let mut escaped = false;
+        let end = value
+            .char_indices()
+            .find_map(|(index, character)| {
+                if escaped {
+                    escaped = false;
+                    return None;
+                }
+                if character == '\\' {
+                    escaped = true;
+                    return None;
+                }
+                match character {
+                    '(' => depth += 1,
+                    ')' if depth > 0 => depth -= 1,
+                    character if character.is_whitespace() && depth == 0 => return Some(index),
+                    _ => {}
+                }
+                None
+            })
+            .unwrap_or(value.len());
+        &value[..end]
+    };
+    let mut unescaped = String::new();
+    let mut escaped = false;
+    for character in destination.chars() {
+        if escaped {
+            unescaped.push(character);
+            escaped = false;
+        } else if character == '\\' {
+            escaped = true;
+        } else {
+            unescaped.push(character);
+        }
+    }
+    if escaped {
+        unescaped.push('\\');
+    }
+    (!unescaped.is_empty()).then_some(unescaped)
+}
+
+#[derive(Clone, Copy, Default)]
+struct InlineStyle {
     bold: bool,
     italic: bool,
     strikethrough: bool,
     underline: bool,
     code: bool,
+}
+
+fn docx_run(
+    text: &str,
+    style: InlineStyle,
     vertical_align: VerticalAlign,
+    hyperlink: Option<&DocxHyperlink>,
 ) -> String {
     let mut properties = String::new();
-    if bold
-        || italic
-        || strikethrough
-        || underline
-        || code
+    if style.bold
+        || style.italic
+        || style.strikethrough
+        || style.underline
+        || style.code
         || vertical_align != VerticalAlign::Baseline
+        || hyperlink.is_some()
     {
         properties.push_str("<w:rPr>");
-        if bold {
+        if style.bold {
             properties.push_str("<w:b/>");
         }
-        if italic {
+        if style.italic {
             properties.push_str("<w:i/>");
         }
-        if strikethrough {
+        if style.strikethrough {
             properties.push_str("<w:strike/>");
         }
-        if underline {
+        if style.underline {
             properties.push_str("<w:u w:val=\"single\"/>");
         }
-        if code {
+        if style.code {
             properties.push_str(
                 "<w:rFonts w:ascii=\"Consolas\" w:hAnsi=\"Consolas\" w:cs=\"Consolas\"/>",
             );
@@ -155,54 +279,74 @@ fn docx_run(
             VerticalAlign::Subscript => properties.push_str("<w:vertAlign w:val=\"subscript\"/>"),
             VerticalAlign::Baseline => {}
         }
+        if hyperlink.is_some() {
+            properties.push_str("<w:rStyle w:val=\"Hyperlink\"/>");
+        }
         properties.push_str("</w:rPr>");
     }
-    format!(
+    let run = format!(
         "<w:r>{properties}<w:t xml:space=\"preserve\">{}</w:t></w:r>",
         xml_escape(text)
-    )
+    );
+    match hyperlink {
+        Some(DocxHyperlink::Relationship(id)) => format!(
+            "<w:hyperlink r:id=\"{}\">{run}</w:hyperlink>",
+            xml_attribute_escape(id)
+        ),
+        Some(DocxHyperlink::Anchor(anchor)) => format!(
+            "<w:hyperlink w:anchor=\"{}\">{run}</w:hyperlink>",
+            xml_attribute_escape(anchor)
+        ),
+        None => run,
+    }
 }
 
-pub(crate) fn markdown_inline_to_docx_runs(value: &str) -> String {
+pub(crate) fn markdown_inline_to_docx_runs_with_links<F>(value: &str, resolver: &mut F) -> String
+where
+    F: FnMut(&str) -> Option<DocxHyperlink>,
+{
+    markdown_inline_to_docx_runs_with_context(value, InlineStyle::default(), None, resolver)
+}
+
+fn markdown_inline_to_docx_runs_with_context<F>(
+    value: &str,
+    mut style: InlineStyle,
+    hyperlink: Option<&DocxHyperlink>,
+    resolver: &mut F,
+) -> String
+where
+    F: FnMut(&str) -> Option<DocxHyperlink>,
+{
     let mut runs = String::new();
     let mut remaining = value;
-    let mut bold = false;
-    let mut italic = false;
-    let mut strikethrough = false;
-    let mut underline = false;
-    let mut code = false;
     let mut pending: Option<(bool, bool, bool, bool, bool, String)> = None;
 
     while !remaining.is_empty() {
+        if !style.code
+            && let Some((label, destination, consumed)) = markdown_link_at_start(remaining)
+            && let Some(link) = resolver(&destination)
+        {
+            flush_pending_inline_run(&mut runs, &mut pending, hyperlink);
+            runs.push_str(&markdown_inline_to_docx_runs_with_context(
+                label,
+                style,
+                Some(&link),
+                resolver,
+            ));
+            remaining = &remaining[consumed..];
+            continue;
+        }
         if (remaining.starts_with("$^{") || remaining.starts_with("$_{"))
             && let Some(end) = remaining[3..].find("}$")
         {
-            if let Some((bold, italic, strikethrough, underline, code, text)) = pending.take() {
-                runs.push_str(&docx_run(
-                    &text,
-                    bold,
-                    italic,
-                    strikethrough,
-                    underline,
-                    code,
-                    VerticalAlign::Baseline,
-                ));
-            }
+            flush_pending_inline_run(&mut runs, &mut pending, hyperlink);
             let vertical_align = if remaining.starts_with("$^{") {
                 VerticalAlign::Superscript
             } else {
                 VerticalAlign::Subscript
             };
             let inner = latex_unescape(&remaining[3..3 + end]);
-            runs.push_str(&docx_run(
-                &inner,
-                bold,
-                italic,
-                strikethrough,
-                underline,
-                code,
-                vertical_align,
-            ));
+            runs.push_str(&docx_run(&inner, style, vertical_align, hyperlink));
             remaining = &remaining[3 + end + 2..];
             continue;
         }
@@ -212,25 +356,12 @@ pub(crate) fn markdown_inline_to_docx_runs(value: &str) -> String {
         if remaining.starts_with("$$")
             && let Some(end) = remaining[2..].find("$$")
         {
-            if let Some((bold, italic, strikethrough, underline, code, text)) = pending.take() {
-                runs.push_str(&docx_run(
-                    &text,
-                    bold,
-                    italic,
-                    strikethrough,
-                    underline,
-                    code,
-                    VerticalAlign::Baseline,
-                ));
-            }
+            flush_pending_inline_run(&mut runs, &mut pending, hyperlink);
             runs.push_str(&docx_run(
                 &remaining[..2 + end + 2],
-                bold,
-                italic,
-                strikethrough,
-                underline,
-                code,
+                style,
                 VerticalAlign::Baseline,
+                hyperlink,
             ));
             remaining = &remaining[2 + end + 2..];
             continue;
@@ -238,25 +369,12 @@ pub(crate) fn markdown_inline_to_docx_runs(value: &str) -> String {
         if remaining.starts_with('$')
             && let Some(end) = remaining[1..].find('$')
         {
-            if let Some((bold, italic, strikethrough, underline, code, text)) = pending.take() {
-                runs.push_str(&docx_run(
-                    &text,
-                    bold,
-                    italic,
-                    strikethrough,
-                    underline,
-                    code,
-                    VerticalAlign::Baseline,
-                ));
-            }
+            flush_pending_inline_run(&mut runs, &mut pending, hyperlink);
             runs.push_str(&docx_run(
                 &remaining[..1 + end + 1],
-                bold,
-                italic,
-                strikethrough,
-                underline,
-                code,
+                style,
                 VerticalAlign::Baseline,
+                hyperlink,
             ));
             remaining = &remaining[1 + end + 1..];
             continue;
@@ -271,33 +389,39 @@ pub(crate) fn markdown_inline_to_docx_runs(value: &str) -> String {
                 .take_while(|chunk| *chunk == marker.as_bytes())
                 .count();
             if marker_count % 2 == 1 {
-                bold = !bold;
+                style.bold = !style.bold;
             }
             remaining = &remaining[marker_count * 2..];
             continue;
         } else if remaining.starts_with("~~") {
-            strikethrough = !strikethrough;
+            style.strikethrough = !style.strikethrough;
             remaining = &remaining[2..];
             continue;
         } else if remaining.starts_with("<u>") {
-            underline = true;
+            style.underline = true;
             remaining = &remaining[3..];
             continue;
         } else if remaining.starts_with("</u>") {
-            underline = false;
+            style.underline = false;
             remaining = &remaining[4..];
             continue;
         } else if remaining.starts_with('`') {
-            code = !code;
+            style.code = !style.code;
             remaining = &remaining[1..];
             continue;
         } else if remaining.starts_with('*') || remaining.starts_with('_') {
-            italic = !italic;
+            style.italic = !style.italic;
             remaining = &remaining[1..];
             continue;
         } else {
-            markdown_delimiter_index(remaining)
+            markdown_delimiter_index(remaining, !style.code)
         };
+        let delimiter =
+            if !style.code && delimiter == Some(0) && markdown_link_at_start(remaining).is_some() {
+                Some(1)
+            } else {
+                delimiter
+            };
         let length = delimiter.unwrap_or(remaining.len());
         let (text, rest) = remaining.split_at(length);
         let text = markdown_unescape(text);
@@ -316,38 +440,52 @@ pub(crate) fn markdown_inline_to_docx_runs(value: &str) -> String {
                     *previous_strikethrough,
                     *previous_underline,
                     *previous_code,
-                ) == (bold, italic, strikethrough, underline, code)
+                ) == (
+                    style.bold,
+                    style.italic,
+                    style.strikethrough,
+                    style.underline,
+                    style.code,
+                )
             {
                 previous_text.push_str(&text);
             } else {
-                if let Some((bold, italic, strikethrough, underline, code, text)) = pending.take() {
-                    runs.push_str(&docx_run(
-                        &text,
-                        bold,
-                        italic,
-                        strikethrough,
-                        underline,
-                        code,
-                        VerticalAlign::Baseline,
-                    ));
-                }
-                pending = Some((bold, italic, strikethrough, underline, code, text));
+                flush_pending_inline_run(&mut runs, &mut pending, hyperlink);
+                pending = Some((
+                    style.bold,
+                    style.italic,
+                    style.strikethrough,
+                    style.underline,
+                    style.code,
+                    text,
+                ));
             }
         }
         remaining = rest;
     }
-    if let Some((bold, italic, strikethrough, underline, code, text)) = pending {
+    flush_pending_inline_run(&mut runs, &mut pending, hyperlink);
+    runs
+}
+
+fn flush_pending_inline_run(
+    runs: &mut String,
+    pending: &mut Option<(bool, bool, bool, bool, bool, String)>,
+    hyperlink: Option<&DocxHyperlink>,
+) {
+    if let Some((bold, italic, strikethrough, underline, code, text)) = pending.take() {
         runs.push_str(&docx_run(
             &text,
-            bold,
-            italic,
-            strikethrough,
-            underline,
-            code,
+            InlineStyle {
+                bold,
+                italic,
+                strikethrough,
+                underline,
+                code,
+            },
             VerticalAlign::Baseline,
+            hyperlink,
         ));
     }
-    runs
 }
 
 pub(crate) fn markdown_code_block_to_docx_runs(value: &str) -> String {
@@ -356,12 +494,12 @@ pub(crate) fn markdown_code_block_to_docx_runs(value: &str) -> String {
         .map(|line| {
             docx_run(
                 line,
-                false,
-                false,
-                false,
-                false,
-                true,
+                InlineStyle {
+                    code: true,
+                    ..InlineStyle::default()
+                },
                 VerticalAlign::Baseline,
+                None,
             )
         })
         .collect::<Vec<_>>()
@@ -435,7 +573,14 @@ pub(crate) fn markdown_from_docx_run(
         }
     };
     if let Some(target) = page_reference {
-        rendered = format!("[{rendered}](#{target})");
+        let destination = if let Some(target) = target.strip_prefix("external:") {
+            target.to_string()
+        } else if let Some(target) = target.strip_prefix("anchor:") {
+            format!("#{target}")
+        } else {
+            format!("#{target}")
+        };
+        rendered = format!("[{rendered}]({destination})");
     }
     format!("{leading}{rendered}{trailing}")
 }

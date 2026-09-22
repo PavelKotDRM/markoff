@@ -14,6 +14,12 @@ pub(crate) fn xml_escape(value: &str) -> String {
         .replace('>', "&gt;")
 }
 
+pub(crate) fn xml_attribute_escape(value: &str) -> String {
+    xml_escape(value)
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
 /// Which Markdown-special characters need escaping when emitting plain text
 /// that came from a given source format, so it round-trips as literal text
 /// rather than being misread as Markdown syntax.
@@ -91,11 +97,22 @@ pub(crate) fn parse_relationships(
 
 #[cfg(test)]
 mod tests {
-    use super::{MarkdownEscapeContext, markdown_escape, parse_relationships, xml_escape};
+    use super::{
+        MarkdownEscapeContext, markdown_escape, parse_relationships, xml_attribute_escape,
+        xml_escape,
+    };
 
     #[test]
     fn xml_escape_covers_the_three_reserved_characters() {
         assert_eq!(xml_escape("a & b < c > d"), "a &amp; b &lt; c &gt; d");
+    }
+
+    #[test]
+    fn xml_attribute_escape_covers_quotes() {
+        assert_eq!(
+            xml_attribute_escape("a & b < c > \"d\""),
+            "a &amp; b &lt; c &gt; &quot;d&quot;"
+        );
     }
 
     #[test]
