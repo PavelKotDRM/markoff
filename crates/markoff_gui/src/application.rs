@@ -193,6 +193,7 @@ impl eframe::App for MarkoffApp {
                     .show_ui(ui, |ui| {
                         for format in [
                             Format::Markdown,
+                            Format::Docx,
                             Format::Json,
                             Format::Csv,
                             Format::Yaml,
