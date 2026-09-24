@@ -91,7 +91,7 @@ pub(super) fn table_from_rows(rows: &[Vec<String>]) -> String {
 pub(super) fn heading_anchor(content: &str) -> Option<String> {
     let content = content
         .trim()
-        .trim_end_matches(|character: char| character == '#')
+        .trim_end_matches('#')
         .trim();
     let mut anchor = String::new();
     let mut pending_separator = false;

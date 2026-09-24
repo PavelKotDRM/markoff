@@ -162,33 +162,6 @@ fn has_uri_scheme(destination: &str) -> bool {
         .is_some_and(|index| destination[..index].chars().all(|character| character.is_ascii_alphanumeric()))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::markdown_with_absolute_image_paths;
-    use std::path::Path;
-
-    #[test]
-    fn makes_relative_image_paths_absolute_file_uris() {
-        let rendered = markdown_with_absolute_image_paths(
-            "Before\n\n![Chart](image/chart.png)\n",
-            Path::new("D:/Project/markoff/sample"),
-        );
-
-        assert!(rendered.contains("![Chart](file:///D:/Project/markoff/sample/image/chart.png)"));
-    }
-
-    #[test]
-    fn keeps_explicit_image_uris_unchanged() {
-        let rendered = markdown_with_absolute_image_paths(
-            "![Remote](https://example.com/chart.png)\n![Inline](data:image/png;base64,abc)",
-            Path::new("D:/Project/markoff/sample"),
-        );
-
-        assert!(rendered.contains("![Remote](https://example.com/chart.png)"));
-        assert!(rendered.contains("![Inline](data:image/png;base64,abc)"));
-    }
-}
-
 fn structured_tree_preview(
     input: &Path,
     parse: impl FnOnce(&str) -> Result<serde_json::Value, String>,
@@ -257,5 +230,32 @@ fn json_scalar_to_string(value: &serde_json::Value) -> String {
         serde_json::Value::Number(value) => value.to_string(),
         serde_json::Value::String(value) => value.clone(),
         other => other.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::markdown_with_absolute_image_paths;
+    use std::path::Path;
+
+    #[test]
+    fn makes_relative_image_paths_absolute_file_uris() {
+        let rendered = markdown_with_absolute_image_paths(
+            "Before\n\n![Chart](image/chart.png)\n",
+            Path::new("D:/Project/markoff/sample"),
+        );
+
+        assert!(rendered.contains("![Chart](file:///D:/Project/markoff/sample/image/chart.png)"));
+    }
+
+    #[test]
+    fn keeps_explicit_image_uris_unchanged() {
+        let rendered = markdown_with_absolute_image_paths(
+            "![Remote](https://example.com/chart.png)\n![Inline](data:image/png;base64,abc)",
+            Path::new("D:/Project/markoff/sample"),
+        );
+
+        assert!(rendered.contains("![Remote](https://example.com/chart.png)"));
+        assert!(rendered.contains("![Inline](data:image/png;base64,abc)"));
     }
 }

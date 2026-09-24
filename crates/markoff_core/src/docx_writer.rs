@@ -437,9 +437,11 @@ fn docx_table(
             let cells = (0..column_count)
                 .map(|column_index| {
                     let cell = row.get(column_index).map_or("", String::as_str);
-                    let shading = (row_index == 0)
-                        .then_some("<w:shd w:val=\"clear\" w:fill=\"D9EAF7\"/>")
-                        .unwrap_or("");
+                    let shading = if row_index == 0 {
+                        "<w:shd w:val=\"clear\" w:fill=\"D9EAF7\"/>"
+                    } else {
+                        ""
+                    };
                     format!(
                         "<w:tc><w:tcPr><w:tcW w:w=\"2400\" w:type=\"dxa\"/>{shading}</w:tcPr><w:p>{}</w:p></w:tc>",
                         markdown_inline_to_docx_runs_with_footnotes(
@@ -450,9 +452,11 @@ fn docx_table(
                     )
                 })
                 .collect::<String>();
-            let header = (row_index == 0)
-                .then_some("<w:trPr><w:tblHeader/></w:trPr>")
-                .unwrap_or("");
+            let header = if row_index == 0 {
+                "<w:trPr><w:tblHeader/></w:trPr>"
+            } else {
+                ""
+            };
             format!("<w:tr>{header}{cells}</w:tr>")
         })
         .collect::<String>();
