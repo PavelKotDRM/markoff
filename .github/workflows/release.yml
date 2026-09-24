@@ -57,6 +57,6 @@ jobs:
       - name: Package Linux binaries
         if: runner.os == 'Linux'
         run: tar -czf ${{ matrix.archive }} -C target/release markoff_cli markoff_gui
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: ${{ matrix.archive }}
