@@ -51,6 +51,9 @@ enum Commands {
         /// Overwrite the output file if it already exists.
         #[arg(long)]
         overwrite: bool,
+        /// Keep only table blocks in document/structured-format conversions.
+        #[arg(long)]
+        tables_only: bool,
         /// CSV field delimiter (single character, or 'tab'). Defaults to ','.
         #[arg(long, value_name = "CHAR")]
         delimiter: Option<String>,
@@ -72,6 +75,9 @@ enum Commands {
         /// Overwrite output files that already exist.
         #[arg(long)]
         overwrite: bool,
+        /// Keep only table blocks in document/structured-format conversions.
+        #[arg(long)]
+        tables_only: bool,
         /// CSV field delimiter (single character, or 'tab'). Defaults to ','.
         #[arg(long, value_name = "CHAR")]
         delimiter: Option<String>,
@@ -133,6 +139,7 @@ fn convert_one(
     to: Option<&str>,
     overwrite: bool,
     delimiter: u8,
+    tables_only: bool,
 ) -> anyhow::Result<()> {
     let from = match from {
         Some(value) => parse_format_spec(value)?,
@@ -176,6 +183,7 @@ fn convert_one(
         to,
         overwrite: overwrite || writes_stdout,
         csv_delimiter: delimiter,
+        tables_only,
     })?;
     if writes_stdout {
         let rendered = std::fs::read_to_string(&destination)?;
@@ -197,6 +205,7 @@ fn run_batch(
     to: Format,
     overwrite: bool,
     delimiter: u8,
+    tables_only: bool,
 ) -> anyhow::Result<()> {
     let pattern = directory.join(pattern).to_string_lossy().to_string();
     let inputs = glob::glob(&pattern)?
@@ -222,6 +231,7 @@ fn run_batch(
             to,
             overwrite,
             csv_delimiter: delimiter,
+            tables_only,
         })?;
         progress.inc(1);
     }
@@ -243,6 +253,7 @@ fn main() -> anyhow::Result<()> {
             from,
             to,
             overwrite,
+            tables_only,
             delimiter,
         }) => {
             convert_one(
@@ -252,6 +263,7 @@ fn main() -> anyhow::Result<()> {
                 to.as_deref(),
                 overwrite,
                 parse_delimiter(delimiter.as_deref())?,
+                tables_only,
             )?;
         }
         Some(Commands::Batch {
@@ -260,6 +272,7 @@ fn main() -> anyhow::Result<()> {
             to,
             output,
             overwrite,
+            tables_only,
             delimiter,
         }) => {
             run_batch(
@@ -269,6 +282,7 @@ fn main() -> anyhow::Result<()> {
                 parse_format_spec(&to)?,
                 overwrite,
                 parse_delimiter(delimiter.as_deref())?,
+                tables_only,
             )?;
         }
         Some(Commands::Gui) => {

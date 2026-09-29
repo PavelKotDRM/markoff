@@ -43,7 +43,9 @@ pub use model::{ConversionRequest, Format, MarkoffError, detect_format};
 
 use csv_format::{convert_csv_to_markdown, convert_markdown_to_csv};
 use data::{convert_data_to_xlsx, convert_xlsx_to_data};
-use document::{convert_document_to_markdown, convert_markdown_to_document};
+use document::{
+    convert_document_to_markdown, convert_markdown_to_document, convert_structured_data_format,
+};
 use docx_reader::convert_docx_to_markdown;
 use docx_writer::convert_markdown_to_docx;
 use html::{convert_html_to_markdown, convert_markdown_to_html};
@@ -66,6 +68,12 @@ pub fn convert_document(request: &ConversionRequest) -> Result<(), MarkoffError>
     if !request.input.exists() {
         return Err(MarkoffError::InvalidInput {
             path: request.input.to_string_lossy().to_string(),
+        });
+    }
+
+    if request.tables_only && !supports_tables_only(request.from, request.to) {
+        return Err(MarkoffError::InvalidOption {
+            message: "--tables-only requires a conversion between a document format and JSON, YAML, or TOML".to_string(),
         });
     }
 
@@ -104,7 +112,14 @@ pub fn convert_document(request: &ConversionRequest) -> Result<(), MarkoffError>
         (Format::Docx, Format::Json | Format::Yaml | Format::Toml) => {
             convert_via_markdown_intermediate(
                 |markdown| convert_docx_to_markdown(&request.input, markdown),
-                |markdown| convert_markdown_to_document(markdown, &request.output, request.to),
+                |markdown| {
+                    convert_markdown_to_document(
+                        markdown,
+                        &request.output,
+                        request.to,
+                        request.tables_only,
+                    )
+                },
             )
         }
         (Format::Csv | Format::Xlsx, Format::Docx) => convert_via_markdown_intermediate(
@@ -119,16 +134,46 @@ pub fn convert_document(request: &ConversionRequest) -> Result<(), MarkoffError>
         ),
         (Format::Json | Format::Yaml | Format::Toml, Format::Docx) => {
             convert_via_markdown_intermediate(
-                |markdown| convert_document_to_markdown(&request.input, markdown, request.from),
+                |markdown| {
+                    convert_document_to_markdown(
+                        &request.input,
+                        markdown,
+                        request.from,
+                        request.tables_only,
+                    )
+                },
                 |markdown| convert_markdown_to_docx(markdown, &request.output),
             )
         }
         (Format::Pdf, Format::Markdown) => convert_pdf_to_markdown(&request.input, &request.output),
+        (Format::Pdf, Format::Json | Format::Yaml | Format::Toml) => {
+            convert_via_markdown_intermediate(
+                |markdown| convert_pdf_to_markdown(&request.input, markdown),
+                |markdown| {
+                    convert_markdown_to_document(
+                        markdown,
+                        &request.output,
+                        request.to,
+                        request.tables_only,
+                    )
+                },
+            )
+        }
         (Format::Json | Format::Yaml | Format::Toml, Format::Markdown) => {
-            convert_document_to_markdown(&request.input, &request.output, request.from)
+            convert_document_to_markdown(
+                &request.input,
+                &request.output,
+                request.from,
+                request.tables_only,
+            )
         }
         (Format::Markdown, Format::Json | Format::Yaml | Format::Toml) => {
-            convert_markdown_to_document(&request.input, &request.output, request.to)
+            convert_markdown_to_document(
+                &request.input,
+                &request.output,
+                request.to,
+                request.tables_only,
+            )
         }
         (Format::Csv, Format::Markdown) => {
             convert_csv_to_markdown(&request.input, &request.output, request.csv_delimiter)
@@ -161,20 +206,99 @@ pub fn convert_document(request: &ConversionRequest) -> Result<(), MarkoffError>
         (Format::Pptx, Format::Markdown) => {
             convert_pptx_to_markdown(&request.input, &request.output)
         }
+        (Format::Pptx, Format::Json | Format::Yaml | Format::Toml) => {
+            convert_via_markdown_intermediate(
+                |markdown| convert_pptx_to_markdown(&request.input, markdown),
+                |markdown| {
+                    convert_markdown_to_document(
+                        markdown,
+                        &request.output,
+                        request.to,
+                        request.tables_only,
+                    )
+                },
+            )
+        }
         (Format::Markdown, Format::Pptx) => {
             convert_markdown_to_pptx(&request.input, &request.output)
         }
         (Format::Html, Format::Markdown) => {
             convert_html_to_markdown(&request.input, &request.output)
         }
+        (Format::Html, Format::Json | Format::Yaml | Format::Toml) => {
+            convert_via_markdown_intermediate(
+                |markdown| convert_html_to_markdown(&request.input, markdown),
+                |markdown| {
+                    convert_markdown_to_document(
+                        markdown,
+                        &request.output,
+                        request.to,
+                        request.tables_only,
+                    )
+                },
+            )
+        }
         (Format::Markdown, Format::Html) => {
             convert_markdown_to_html(&request.input, &request.output)
         }
+        (Format::Json | Format::Yaml | Format::Toml, Format::Pptx) => {
+            convert_via_markdown_intermediate(
+                |markdown| {
+                    convert_document_to_markdown(
+                        &request.input,
+                        markdown,
+                        request.from,
+                        request.tables_only,
+                    )
+                },
+                |markdown| convert_markdown_to_pptx(markdown, &request.output),
+            )
+        }
+        (Format::Json | Format::Yaml | Format::Toml, Format::Html) => {
+            convert_via_markdown_intermediate(
+                |markdown| {
+                    convert_document_to_markdown(
+                        &request.input,
+                        markdown,
+                        request.from,
+                        request.tables_only,
+                    )
+                },
+                |markdown| convert_markdown_to_html(markdown, &request.output),
+            )
+        }
+        (
+            Format::Json | Format::Yaml | Format::Toml,
+            Format::Json | Format::Yaml | Format::Toml,
+        ) if request.from != request.to => convert_structured_data_format(
+            &request.input,
+            &request.output,
+            request.from,
+            request.to,
+        ),
         _ => Err(MarkoffError::NotImplemented {
             from: request.from,
             to: request.to,
         }),
     }
+}
+
+fn supports_tables_only(from: Format, to: Format) -> bool {
+    let structured = |format| matches!(format, Format::Json | Format::Yaml | Format::Toml);
+    let document_source = |format| {
+        matches!(
+            format,
+            Format::Markdown | Format::Docx | Format::Pdf | Format::Pptx | Format::Html
+        )
+    };
+    let document_target = |format| {
+        matches!(
+            format,
+            Format::Markdown | Format::Docx | Format::Pptx | Format::Html
+        )
+    };
+
+    (structured(from) && document_target(to)) || (document_source(from) && structured(to))
 }
 
 /// Runs a conversion that must pass through an intermediate Markdown file:
@@ -235,6 +359,7 @@ where
         to,
         overwrite: true,
         csv_delimiter: b',',
+        tables_only: false,
     };
 
     convert_document(&request)
@@ -305,6 +430,7 @@ mod tests {
             to: Format::Markdown,
             overwrite: false,
             csv_delimiter: b',',
+            tables_only: false,
         };
 
         assert!(matches!(
@@ -331,6 +457,7 @@ mod tests {
             to: Format::Markdown,
             overwrite: true,
             csv_delimiter: b',',
+            tables_only: false,
         };
 
         convert_document(&request).unwrap();
@@ -560,6 +687,189 @@ mod tests {
         fs::remove_file(json).ok();
         fs::remove_file(restored_document).ok();
         fs::remove_file(restored_markdown).ok();
+    }
+
+    #[test]
+    fn tables_only_keeps_table_blocks_when_converting_to_and_from_structured_data() {
+        let markdown = unique_temp_path("tables_only_markdown");
+        let json = unique_temp_path("tables_only_json");
+        let table_only_json = unique_temp_path("tables_only_filtered_json");
+        let document = unique_temp_path("tables_only_docx");
+        let restored_markdown = unique_temp_path("tables_only_restored_markdown");
+        fs::write(
+            &markdown,
+            "# Report\n\nSummary text.\n\n| Name | Score |\n| --- | --- |\n| Ada | 42 |\n",
+        )
+        .unwrap();
+
+        convert_file(&markdown, &json, Format::Markdown, Format::Json).unwrap();
+        convert_document(&ConversionRequest {
+            input: markdown.clone(),
+            output: table_only_json.clone(),
+            from: Format::Markdown,
+            to: Format::Json,
+            overwrite: true,
+            csv_delimiter: b',',
+            tables_only: true,
+        })
+        .unwrap();
+
+        let full_document: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&json).unwrap()).unwrap();
+        assert_eq!(full_document["blocks"].as_array().unwrap().len(), 3);
+        let table_only: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&table_only_json).unwrap()).unwrap();
+        let blocks = table_only["blocks"].as_array().unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["type"], "table");
+        assert_eq!(blocks[0]["rows"][1][0], "Ada");
+
+        convert_document(&ConversionRequest {
+            input: json.clone(),
+            output: document.clone(),
+            from: Format::Json,
+            to: Format::Docx,
+            overwrite: true,
+            csv_delimiter: b',',
+            tables_only: true,
+        })
+        .unwrap();
+        convert_file(
+            &document,
+            &restored_markdown,
+            Format::Docx,
+            Format::Markdown,
+        )
+        .unwrap();
+        let restored = fs::read_to_string(&restored_markdown).unwrap();
+        assert!(restored.contains("| Ada | 42 |"));
+        assert!(!restored.contains("Report"));
+        assert!(!restored.contains("Summary text"));
+
+        for path in [markdown, json, table_only_json, document, restored_markdown] {
+            fs::remove_file(path).ok();
+        }
+    }
+
+    #[test]
+    fn converts_html_and_pptx_to_and_from_structured_document_formats() {
+        let markdown = unique_temp_path("structured_format_markdown");
+        let html = unique_temp_path("structured_format_html");
+        let json = unique_temp_path("structured_format_json");
+        let restored_html = unique_temp_path("structured_format_restored_html");
+        let pptx = unique_temp_path("structured_format_pptx");
+        let yaml = unique_temp_path("structured_format_yaml");
+        let restored_pptx = unique_temp_path("structured_format_restored_pptx");
+        let restored_markdown = unique_temp_path("structured_format_restored_markdown");
+        fs::write(
+            &markdown,
+            "# Introduction\n\nA paragraph.\n\n- First item\n- Second item\n",
+        )
+        .unwrap();
+
+        convert_file(&markdown, &html, Format::Markdown, Format::Html).unwrap();
+        convert_file(&html, &json, Format::Html, Format::Json).unwrap();
+        let html_document: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&json).unwrap()).unwrap();
+        assert!(
+            html_document["blocks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|block| block["type"] == "heading")
+        );
+        convert_file(&json, &restored_html, Format::Json, Format::Html).unwrap();
+
+        convert_file(&markdown, &pptx, Format::Markdown, Format::Pptx).unwrap();
+        convert_file(&pptx, &yaml, Format::Pptx, Format::Yaml).unwrap();
+        let pptx_document: serde_yaml::Value =
+            serde_yaml::from_str(&fs::read_to_string(&yaml).unwrap()).unwrap();
+        assert!(
+            pptx_document["blocks"]
+                .as_sequence()
+                .unwrap()
+                .iter()
+                .any(|block| block["type"] == "heading")
+        );
+        convert_file(&yaml, &restored_pptx, Format::Yaml, Format::Pptx).unwrap();
+        convert_file(
+            &restored_pptx,
+            &restored_markdown,
+            Format::Pptx,
+            Format::Markdown,
+        )
+        .unwrap();
+        let rendered = fs::read_to_string(&restored_markdown).unwrap();
+        assert!(rendered.contains("Introduction"));
+        assert!(rendered.contains("First item"));
+
+        for path in [
+            markdown,
+            html,
+            json,
+            restored_html,
+            pptx,
+            yaml,
+            restored_pptx,
+            restored_markdown,
+        ] {
+            fs::remove_file(path).ok();
+        }
+    }
+
+    #[test]
+    fn converts_pdf_text_to_a_structured_document() {
+        let pdf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("golden/golden_test_document.pdf");
+        let json = unique_temp_path("pdf_structured_json");
+
+        convert_file(&pdf, &json, Format::Pdf, Format::Json).unwrap();
+
+        let document: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&json).unwrap()).unwrap();
+        let blocks = document["blocks"].as_array().unwrap();
+        assert!(!blocks.is_empty());
+        assert!(
+            blocks
+                .iter()
+                .any(|block| block["type"] == "paragraph" || block["type"] == "image")
+        );
+
+        fs::remove_file(json).ok();
+    }
+
+    #[test]
+    fn converts_between_json_yaml_and_toml_values() {
+        let json = unique_temp_path("structured_value_json");
+        let yaml = unique_temp_path("structured_value_yaml");
+        let restored_json = unique_temp_path("structured_value_restored_json");
+        let toml = unique_temp_path("structured_value_toml");
+        let restored_toml_json = unique_temp_path("structured_value_toml_restored_json");
+        let value = serde_json::json!({
+            "blocks": [
+                {"type": "heading", "level": 1, "text": "Title"},
+                {"type": "table", "rows": [["Name"], ["Ada"]]}
+            ]
+        });
+        fs::write(&json, serde_json::to_string(&value).unwrap()).unwrap();
+
+        convert_file(&json, &yaml, Format::Json, Format::Yaml).unwrap();
+        convert_file(&yaml, &restored_json, Format::Yaml, Format::Json).unwrap();
+
+        let restored: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&restored_json).unwrap()).unwrap();
+        assert_eq!(restored, value);
+
+        convert_file(&json, &toml, Format::Json, Format::Toml).unwrap();
+        convert_file(&toml, &restored_toml_json, Format::Toml, Format::Json).unwrap();
+        let restored_from_toml: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&restored_toml_json).unwrap()).unwrap();
+        assert_eq!(restored_from_toml, value);
+
+        for path in [json, yaml, restored_json, toml, restored_toml_json] {
+            fs::remove_file(path).ok();
+        }
     }
 
     #[test]

@@ -11,6 +11,7 @@ use crate::error::invalid_data;
 use crate::tables::parse_markdown_table;
 use crate::xml_utils::xml_attribute_escape;
 use crate::zip_utils::write_zip_part;
+use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 
 #[derive(Default)]
 struct HyperlinkAllocator {
@@ -140,9 +141,9 @@ pub(crate) fn convert_markdown_to_docx(input: &Path, output: &Path) -> Result<()
         .collect::<HashMap<_, _>>();
     let lines = source.lines().collect::<Vec<_>>();
     let (heading_bookmarks, heading_anchors) = build_heading_bookmarks(&lines);
+    let lists = parse_markdown_lists(&source);
     let mut body = String::new();
     let mut index = 0;
-    let mut list_ids = ListIdAllocator::default();
     let mut document_hyperlinks = HyperlinkAllocator::new(4, &heading_anchors);
     while index < lines.len() {
         let line = lines[index];
@@ -153,7 +154,6 @@ pub(crate) fn convert_markdown_to_docx(input: &Path, output: &Path) -> Result<()
             }
             let rows = parse_markdown_table(&lines[start..index].join("\n"));
             body.push_str(&docx_table(&rows, &footnote_ids, &mut document_hyperlinks));
-            list_ids.reset();
         } else if is_fenced_code_block_start(line) {
             let start = index + 1;
             index += 1;
@@ -164,7 +164,6 @@ pub(crate) fn convert_markdown_to_docx(input: &Path, output: &Path) -> Result<()
             if index < lines.len() {
                 index += 1;
             }
-            list_ids.reset();
         } else {
             if !line.trim().is_empty() {
                 let paragraph_start = index;
@@ -179,11 +178,11 @@ pub(crate) fn convert_markdown_to_docx(input: &Path, output: &Path) -> Result<()
                     paragraph.push('\n');
                     paragraph.push_str(lines[index]);
                 }
-                let list_num_id = list_ids.resolve(&paragraph);
+                let list_item = lists.items_by_line.get(paragraph_start).copied().flatten();
                 body.push_str(&docx_paragraph(
                     &paragraph,
                     &footnote_ids,
-                    list_num_id,
+                    list_item,
                     heading_bookmarks
                         .get(paragraph_start)
                         .and_then(Option::as_ref),
@@ -232,21 +231,30 @@ pub(crate) fn convert_markdown_to_docx(input: &Path, output: &Path) -> Result<()
     let ordered_list_levels = (0..=8)
         .map(|level| format!("<w:lvl w:ilvl=\"{level}\"><w:start w:val=\"1\"/><w:numFmt w:val=\"decimal\"/><w:lvlText w:val=\"%{level_plus_one}.\"/></w:lvl>", level_plus_one = level + 1))
         .collect::<String>();
-    let num_entries = list_ids
-        .allocated()
+    let num_entries = lists
+        .definitions
         .iter()
-        .map(|(num_id, kind)| {
-            let abstract_id = match kind {
+        .map(|list| {
+            let abstract_id = match list.style {
                 NumberingStyle::Bullet => 0,
                 NumberingStyle::Decimal => 1,
             };
+            let start_override = if list.style == NumberingStyle::Decimal && list.start != 1 {
+                format!(
+                    "<w:lvlOverride w:ilvl=\"{}\"><w:startOverride w:val=\"{}\"/></w:lvlOverride>",
+                    list.level, list.start
+                )
+            } else {
+                String::new()
+            };
             format!(
-                "<w:num w:numId=\"{num_id}\"><w:abstractNumId w:val=\"{abstract_id}\"/></w:num>"
+                "<w:num w:numId=\"{}\"><w:abstractNumId w:val=\"{abstract_id}\"/>{start_override}</w:num>",
+                list.num_id
             )
         })
         .collect::<String>();
     let numbering = format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><w:numbering xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:abstractNum w:abstractNumId=\"0\">{list_levels}</w:abstractNum><w:abstractNum w:abstractNumId=\"1\">{ordered_list_levels}</w:abstractNum>{num_entries}</w:numbering>"
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><w:numbering xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:abstractNum w:abstractNumId=\"0\"><w:multiLevelType w:val=\"multilevel\"/>{list_levels}</w:abstractNum><w:abstractNum w:abstractNumId=\"1\"><w:multiLevelType w:val=\"multilevel\"/>{ordered_list_levels}</w:abstractNum>{num_entries}</w:numbering>"
     );
     let styles = styles_xml();
 
@@ -315,54 +323,82 @@ enum NumberingStyle {
     Decimal,
 }
 
-/// Assigns each independent run of list-item lines its own DOCX `numId`, so
-/// separate Markdown lists do not share one continuously incrementing Word
-/// numbering counter.
-#[derive(Default)]
-struct ListIdAllocator {
-    next_id: u32,
-    active_bullet: Option<u32>,
-    active_decimal: Option<u32>,
-    allocated: Vec<(u32, NumberingStyle)>,
+#[derive(Clone, Copy)]
+struct ListParagraph {
+    num_id: u32,
+    level: usize,
 }
 
-impl ListIdAllocator {
-    fn resolve(&mut self, line: &str) -> Option<u32> {
-        let Some((kind, ..)) = markdown_list_item(line) else {
-            self.reset();
-            return None;
-        };
-        if self.next_id == 0 {
-            self.next_id = 1;
+#[derive(Clone, Copy)]
+struct ListDefinition {
+    num_id: u32,
+    style: NumberingStyle,
+    level: usize,
+    start: u64,
+}
+
+#[derive(Default)]
+struct MarkdownLists {
+    items_by_line: Vec<Option<ListParagraph>>,
+    definitions: Vec<ListDefinition>,
+}
+
+/// Gives each Markdown list block its own DOCX numbering instance.
+fn parse_markdown_lists(source: &str) -> MarkdownLists {
+    let mut options = Options::empty();
+    options.insert(Options::ENABLE_TABLES);
+    let mut lists = MarkdownLists {
+        items_by_line: vec![None; source.lines().count()],
+        ..MarkdownLists::default()
+    };
+    let mut list_stack = Vec::new();
+    let mut next_num_id = 1;
+
+    for (event, range) in Parser::new_ext(source, options).into_offset_iter() {
+        match event {
+            Event::Start(Tag::List(start)) => {
+                let definition = ListDefinition {
+                    num_id: next_num_id,
+                    style: if start.is_some() {
+                        NumberingStyle::Decimal
+                    } else {
+                        NumberingStyle::Bullet
+                    },
+                    level: list_stack.len(),
+                    start: start.unwrap_or(1),
+                };
+                next_num_id += 1;
+                lists.definitions.push(definition);
+                list_stack.push(definition);
+            }
+            Event::Start(Tag::Item) => {
+                if let Some(list) = list_stack.last() {
+                    let line_index = source[..range.start]
+                        .bytes()
+                        .filter(|byte| *byte == b'\n')
+                        .count();
+                    if let Some(item) = lists.items_by_line.get_mut(line_index) {
+                        *item = Some(ListParagraph {
+                            num_id: list.num_id,
+                            level: list.level,
+                        });
+                    }
+                }
+            }
+            Event::End(TagEnd::List(_)) => {
+                list_stack.pop();
+            }
+            _ => {}
         }
-        let (kind, active) = match kind {
-            1 => (NumberingStyle::Bullet, &mut self.active_bullet),
-            _ => (NumberingStyle::Decimal, &mut self.active_decimal),
-        };
-        if let Some(id) = active {
-            return Some(*id);
-        }
-        let id = self.next_id;
-        self.next_id += 1;
-        *active = Some(id);
-        self.allocated.push((id, kind));
-        Some(id)
     }
 
-    fn reset(&mut self) {
-        self.active_bullet = None;
-        self.active_decimal = None;
-    }
-
-    fn allocated(&self) -> &[(u32, NumberingStyle)] {
-        &self.allocated
-    }
+    lists
 }
 
 fn docx_paragraph(
     line: &str,
     footnote_ids: &HashMap<&str, usize>,
-    list_num_id: Option<u32>,
+    list_item: Option<ListParagraph>,
     bookmark: Option<&Bookmark>,
     hyperlinks: &mut HyperlinkAllocator,
 ) -> String {
@@ -385,12 +421,13 @@ fn docx_paragraph(
             format!("<w:pPr><w:pStyle w:val=\"Heading{heading_level}\"/></w:pPr>"),
             &line[heading_level + 1..],
         )
-    } else if let Some((_, list_level, content)) = markdown_list_item(line) {
-        let numbering_id =
-            list_num_id.expect("list item lines are resolved to a numId before rendering");
+    } else if let Some(list_item) = list_item {
+        let (_, _, content) =
+            markdown_list_item(line).expect("parsed Markdown list item has a list marker");
         (
             format!(
-                "<w:pPr><w:numPr><w:ilvl w:val=\"{list_level}\"/><w:numId w:val=\"{numbering_id}\"/></w:numPr></w:pPr>"
+                "<w:pPr><w:numPr><w:ilvl w:val=\"{}\"/><w:numId w:val=\"{}\"/></w:numPr></w:pPr>",
+                list_item.level, list_item.num_id
             ),
             content,
         )

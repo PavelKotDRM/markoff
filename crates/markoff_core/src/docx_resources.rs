@@ -65,12 +65,18 @@ pub(super) fn read_numbering(
     let mut starts = BTreeMap::new();
     let mut number_to_abstract = BTreeMap::new();
     let mut number_id = None;
+    let mut override_level = None;
+    let mut number_level_starts = BTreeMap::new();
 
     loop {
         match reader.read_event().map_err(invalid_data)? {
             Event::Start(event) | Event::Empty(event) => match event.local_name().as_ref() {
                 "abstractNum" => abstract_number = attribute_value(&event, "abstractNumId")?,
                 "num" => number_id = attribute_value(&event, "numId")?,
+                "lvlOverride" => {
+                    override_level =
+                        attribute_value(&event, "ilvl")?.and_then(|value| value.parse().ok());
+                }
                 "lvl" => {
                     level = attribute_value(&event, "ilvl")?.and_then(|value| value.parse().ok());
                 }
@@ -107,9 +113,19 @@ pub(super) fn read_numbering(
                         }
                     }
                 }
+                "startOverride" => {
+                    if let (Some(number_id), Some(level), Some(start)) = (
+                        number_id.as_ref(),
+                        override_level,
+                        attribute_value(&event, "val")?.and_then(|value| value.parse().ok()),
+                    ) {
+                        number_level_starts.insert((number_id.clone(), level), start);
+                    }
+                }
                 _ => {}
             },
             Event::End(event) => match event.local_name().as_ref() {
+                "lvlOverride" => override_level = None,
                 "lvl" => level = None,
                 "abstractNum" => abstract_number = None,
                 "num" => number_id = None,
@@ -120,13 +136,25 @@ pub(super) fn read_numbering(
         }
     }
 
+    let number_level_starts = &number_level_starts;
     Ok(number_to_abstract
         .into_iter()
         .flat_map(|(number_id, abstract_id)| {
             formats
                 .iter()
                 .filter(move |((id, _), _)| *id == abstract_id)
-                .map(move |((_, level), kind)| ((number_id.clone(), *level), *kind))
+                .map(move |((_, level), kind)| {
+                    let kind = match kind {
+                        ListKind::Bullet => ListKind::Bullet,
+                        ListKind::Decimal { start } => ListKind::Decimal {
+                            start: number_level_starts
+                                .get(&(number_id.clone(), *level))
+                                .copied()
+                                .unwrap_or(*start),
+                        },
+                    };
+                    ((number_id.clone(), *level), kind)
+                })
         })
         .collect())
 }

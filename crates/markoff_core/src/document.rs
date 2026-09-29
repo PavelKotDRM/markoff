@@ -11,10 +11,14 @@ pub(crate) fn convert_markdown_to_document(
     input: &Path,
     output: &Path,
     format: Format,
+    tables_only: bool,
 ) -> Result<(), MarkoffError> {
     let source = std::fs::read_to_string(input)?;
     let base_dir = input.parent().filter(|path| !path.as_os_str().is_empty());
-    let document = markdown_to_document(&source, base_dir);
+    let mut document = markdown_to_document(&source, base_dir);
+    if tables_only {
+        retain_table_blocks(&mut document);
+    }
     let rendered = render_document(&document, format)?;
     std::fs::write(output, rendered)?;
     Ok(())
@@ -24,12 +28,49 @@ pub(crate) fn convert_document_to_markdown(
     input: &Path,
     output: &Path,
     format: Format,
+    tables_only: bool,
 ) -> Result<(), MarkoffError> {
     let source = std::fs::read_to_string(input)?;
-    let document = parse_document(&source, format)?;
+    let mut document = parse_document(&source, format)?;
+    if tables_only {
+        retain_table_blocks(&mut document);
+    }
     let base_dir = output.parent().filter(|path| !path.as_os_str().is_empty());
     std::fs::write(output, document_to_markdown(&document, base_dir)?)?;
     Ok(())
+}
+
+pub(crate) fn convert_structured_data_format(
+    input: &Path,
+    output: &Path,
+    from: Format,
+    to: Format,
+) -> Result<(), MarkoffError> {
+    let source = std::fs::read_to_string(input)?;
+    let value = parse_structured_value(&source, from)?;
+    let rendered = match to {
+        Format::Json => serde_json::to_string_pretty(&value).map_err(invalid_data)?,
+        Format::Yaml => serde_yaml::to_string(&value).map_err(invalid_data)?,
+        Format::Toml => toml::to_string_pretty(&value).map_err(invalid_data)?,
+        _ => unreachable!("only JSON, YAML, and TOML use this helper"),
+    };
+    std::fs::write(output, rendered)?;
+    Ok(())
+}
+
+fn parse_structured_value(source: &str, format: Format) -> Result<serde_json::Value, MarkoffError> {
+    match format {
+        Format::Json => Ok(serde_json::from_str(source).map_err(invalid_data)?),
+        Format::Yaml => Ok(serde_yaml::from_str(source).map_err(invalid_data)?),
+        Format::Toml => Ok(toml::from_str(source).map_err(invalid_data)?),
+        _ => unreachable!("only JSON, YAML, and TOML use this helper"),
+    }
+}
+
+fn retain_table_blocks(document: &mut Document) {
+    document
+        .blocks
+        .retain(|block| matches!(block, Block::Table { .. }));
 }
 
 fn markdown_to_document(markdown: &str, base_dir: Option<&Path>) -> Document {

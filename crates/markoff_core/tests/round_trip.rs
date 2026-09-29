@@ -84,8 +84,8 @@ fn golden_document_round_trip_preserves_core_markdown_content() {
         "И пример имени файла: report_final_v2.docx",
         "- Элемент 1",
         "1. Первый",
-        "1. Шаг первый",
-        "2. Шаг второй",
+        "8. Шаг первый",
+        "9. Шаг второй",
         "Inline code: `const answer = 42;`",
         "```\nfunction greet(name) {\n    console.log(\"Hello, \" + name);",
         "Строка с ручным разрывом строки.  \nСледующая строка после soft line break.",
@@ -357,6 +357,7 @@ fn csv_supports_a_custom_delimiter() {
         to: Format::Markdown,
         overwrite: true,
         csv_delimiter: b';',
+        tables_only: false,
     })
     .unwrap();
     assert_eq!(
@@ -371,6 +372,7 @@ fn csv_supports_a_custom_delimiter() {
         to: Format::Csv,
         overwrite: true,
         csv_delimiter: b';',
+        tables_only: false,
     })
     .unwrap();
     assert_eq!(
@@ -501,6 +503,73 @@ fn markdown_docx_round_trip_preserves_emphasis_and_nested_lists() {
             "missing {expected:?} in {rendered:?}"
         );
     }
+
+    remove_files(&[&markdown, &document, &restored]);
+}
+
+#[test]
+fn markdown_docx_preserves_list_boundaries_and_start_numbers() {
+    use std::io::Read;
+    use zip::ZipArchive;
+
+    let markdown = temporary_path("list_boundaries_input", "md");
+    let document = temporary_path("list_boundaries_document", "docx");
+    let restored = temporary_path("list_boundaries_output", "md");
+    let source = "1. First group\n\n2. Second group\n\nA paragraph separator.\n\n1. Restarted group\n2. Second restarted item\n\n- Bullet group\n- Second bullet\n\n4) List starting at four\n5) Next item\n\n8. Mixed list first item\n\n- Mixed bullet first item\n\n- Mixed bullet second item\n\n9. Mixed list second item\n";
+    fs::write(&markdown, source).unwrap();
+
+    convert_file(&markdown, &document, Format::Markdown, Format::Docx).unwrap();
+
+    let file = fs::File::open(&document).unwrap();
+    let mut archive = ZipArchive::new(file).unwrap();
+    let mut document_xml = String::new();
+    archive
+        .by_name("word/document.xml")
+        .unwrap()
+        .read_to_string(&mut document_xml)
+        .unwrap();
+    let mut numbering_xml = String::new();
+    archive
+        .by_name("word/numbering.xml")
+        .unwrap()
+        .read_to_string(&mut numbering_xml)
+        .unwrap();
+
+    let list_ids = document_xml
+        .split("<w:numId w:val=\"")
+        .skip(1)
+        .map(|entry| entry.split('"').next().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        list_ids,
+        ["1", "1", "2", "2", "3", "3", "4", "4", "5", "6", "6", "7"]
+    );
+    assert!(
+        numbering_xml.contains(
+            "<w:abstractNum w:abstractNumId=\"0\"><w:multiLevelType w:val=\"multilevel\"/>"
+        )
+    );
+    assert!(
+        numbering_xml.contains(
+            "<w:abstractNum w:abstractNumId=\"1\"><w:multiLevelType w:val=\"multilevel\"/>"
+        )
+    );
+    assert!(numbering_xml.contains(
+        "<w:num w:numId=\"4\"><w:abstractNumId w:val=\"1\"/><w:lvlOverride w:ilvl=\"0\"><w:startOverride w:val=\"4\"/></w:lvlOverride></w:num>"
+    ));
+    assert!(numbering_xml.contains(
+        "<w:num w:numId=\"5\"><w:abstractNumId w:val=\"1\"/><w:lvlOverride w:ilvl=\"0\"><w:startOverride w:val=\"8\"/></w:lvlOverride></w:num>"
+    ));
+    assert!(numbering_xml.contains(
+        "<w:num w:numId=\"7\"><w:abstractNumId w:val=\"1\"/><w:lvlOverride w:ilvl=\"0\"><w:startOverride w:val=\"9\"/></w:lvlOverride></w:num>"
+    ));
+
+    convert_file(&document, &restored, Format::Docx, Format::Markdown).unwrap();
+    let rendered = fs::read_to_string(&restored).unwrap();
+    assert!(rendered.contains("4. List starting at four"));
+    assert!(rendered.contains("5. Next item"));
+    assert!(rendered.contains("8. Mixed list first item"));
+    assert!(rendered.contains("9. Mixed list second item"));
 
     remove_files(&[&markdown, &document, &restored]);
 }

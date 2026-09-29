@@ -97,6 +97,10 @@ pub struct ConversionRequest {
     /// comma (`,`); common alternatives include `;` and tab (`\t`).
     #[serde(default = "default_csv_delimiter")]
     pub csv_delimiter: u8,
+    /// Whether to retain only table blocks when converting between documents
+    /// and the JSON, YAML, or TOML document schema.
+    #[serde(default)]
+    pub tables_only: bool,
 }
 
 /// The default CSV field delimiter (`,`).
@@ -119,6 +123,12 @@ pub enum MarkoffError {
     InvalidInput {
         /// The invalid input path.
         path: String,
+    },
+    /// A conversion option is not valid for the requested format pair.
+    #[error("invalid conversion option: {message}")]
+    InvalidOption {
+        /// Explanation of the invalid option.
+        message: String,
     },
     /// The output directory could not be created.
     #[error("failed to create output directory: {path}")]

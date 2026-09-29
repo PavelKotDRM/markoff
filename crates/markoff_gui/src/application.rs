@@ -153,6 +153,7 @@ impl MarkoffApp {
                 to: self.target,
                 overwrite: self.overwrite,
                 csv_delimiter: delimiter,
+                tables_only: false,
             })
         });
         match result {

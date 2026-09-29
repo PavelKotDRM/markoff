@@ -56,7 +56,7 @@
 ```text
 markoff_cli convert INPUT [--from FORMAT] [--to FORMAT]
                          [-o OUTPUT] [--overwrite]
-                         [--delimiter CHAR]
+                         [--tables-only] [--delimiter CHAR]
 ```
 
 ### Аргументы и параметры
@@ -68,6 +68,7 @@ markoff_cli convert INPUT [--from FORMAT] [--to FORMAT]
 | `--from FORMAT` | Нет* | Явно задать формат источника |
 | `--to FORMAT` | Нет* | Задать формат результата |
 | `--overwrite` | Нет | Разрешить перезапись существующего результата |
+| `--tables-only` | Нет | Оставить только таблицы при обмене документа с JSON/YAML/TOML |
 | `--delimiter CHAR` | Нет | Разделитель CSV: один ASCII-символ или `tab` |
 | `-h, --help` | Нет | Показать справку по `convert` |
 
@@ -107,6 +108,12 @@ markoff_cli convert INPUT [--from FORMAT] [--to FORMAT]
 
 # TSV
 .\markoff_cli.exe convert .\table.tsv --to md --delimiter tab
+
+# Извлечь из DOCX только таблицы в JSON
+.\markoff_cli.exe convert .\report.docx --to json --tables-only
+
+# Восстановить DOCX только из табличных блоков JSON
+.\markoff_cli.exe convert .\report.json --to docx --tables-only
 ```
 
 Linux-вариант той же команды:
@@ -122,7 +129,7 @@ Linux-вариант той же команды:
 ```text
 markoff_cli batch DIRECTORY --pattern GLOB --to FORMAT
                        -o OUTPUT_DIRECTORY
-                       [--overwrite] [--delimiter CHAR]
+                       [--overwrite] [--tables-only] [--delimiter CHAR]
 ```
 
 ### Аргументы и параметры
@@ -134,6 +141,7 @@ markoff_cli batch DIRECTORY --pattern GLOB --to FORMAT
 | `--to FORMAT` | Да | Формат результата для всех найденных файлов |
 | `-o, --output OUTPUT_DIRECTORY` | Да | Каталог для результатов |
 | `--overwrite` | Нет | Разрешить перезапись существующих результатов |
+| `--tables-only` | Нет | Оставить только таблицы при обмене документа с JSON/YAML/TOML |
 | `--delimiter CHAR` | Нет | Разделитель CSV: один ASCII-символ или `tab` |
 | `-h, --help` | Нет | Показать справку по `batch` |
 
@@ -220,10 +228,14 @@ markoff_cli gui
 - Markdown -> DOCX, CSV, XLSX, JSON, YAML, TOML, PPTX, HTML;
 - CSV -> Markdown, XLSX, DOCX;
 - XLSX/XLSM -> Markdown, CSV, JSON, YAML, TOML, DOCX;
-- JSON/YAML/TOML -> Markdown, DOCX, XLSX;
-- PDF -> Markdown;
-- PPTX -> Markdown;
-- HTML -> Markdown.
+- JSON/YAML/TOML -> Markdown, DOCX, PPTX, HTML, XLSX и другие JSON/YAML/TOML;
+- PDF -> Markdown, JSON, YAML, TOML;
+- PPTX -> Markdown, JSON, YAML, TOML;
+- HTML -> Markdown, JSON, YAML, TOML.
+
+При обмене документами и JSON/YAML/TOML в схеме `blocks` по умолчанию
+сохраняются все поддерживаемые типы блоков; `--tables-only` оставляет только
+отдельные блоки таблиц. Табличный обмен JSON/YAML/TOML с XLSX не меняется.
 
 Если направление не поддерживается, приложение завершает команду с ошибкой и
 не создаёт корректный результат автоматически.
