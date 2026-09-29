@@ -588,7 +588,7 @@ PDF не предлагается GUI как целевой формат, пос
 
 | Источник | Поддерживаемые цели |
 | --- | --- |
-| DOCX | Markdown, CSV, XLSX, JSON, YAML, TOML |
+| DOCX | Markdown, HTML, CSV, XLSX, JSON, YAML, TOML |
 | Markdown | DOCX, CSV, XLSX, JSON, YAML, TOML, PPTX, HTML |
 | CSV | Markdown, XLSX, DOCX |
 | XLSX/XLSM | Markdown, CSV, JSON, YAML, TOML, DOCX |

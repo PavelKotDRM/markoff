@@ -474,6 +474,57 @@ fn docx_tables_convert_to_all_tabular_formats() {
 }
 
 #[test]
+fn markdown_json_yaml_toml_docx_html_chain_preserves_document_elements() {
+    let markdown = temporary_path("format_chain_input", "md");
+    let json = temporary_path("format_chain", "json");
+    let yaml = temporary_path("format_chain", "yaml");
+    let toml = temporary_path("format_chain", "toml");
+    let docx = temporary_path("format_chain", "docx");
+    let html = temporary_path("format_chain", "html");
+    fs::write(
+        &markdown,
+        "# Report\n\nA paragraph.\n\n- First item\n- Second item\n\n| Name | Score |\n| --- | --- |\n| Ada | 42 |\n",
+    )
+    .unwrap();
+
+    convert_file(&markdown, &json, Format::Markdown, Format::Json).unwrap();
+    convert_file(&json, &yaml, Format::Json, Format::Yaml).unwrap();
+    convert_file(&yaml, &toml, Format::Yaml, Format::Toml).unwrap();
+
+    let json_document: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&json).unwrap()).unwrap();
+    let yaml_document: serde_json::Value =
+        serde_yaml::from_str(&fs::read_to_string(&yaml).unwrap()).unwrap();
+    let toml_document: serde_json::Value =
+        toml::from_str(&fs::read_to_string(&toml).unwrap()).unwrap();
+    assert_eq!(yaml_document, json_document);
+    assert_eq!(toml_document, json_document);
+
+    convert_file(&toml, &docx, Format::Toml, Format::Docx).unwrap();
+    convert_file(&docx, &html, Format::Docx, Format::Html).unwrap();
+
+    let rendered = fs::read_to_string(&html).unwrap();
+    for expected in [
+        "<h1>Report</h1>",
+        "<p>A paragraph.</p>",
+        "<ul>",
+        "<p>First item</p>",
+        "<p>Second item</p>",
+        "<table>",
+        "<th>Name</th>",
+        "<td>Ada</td>",
+        "<td>42</td>",
+    ] {
+        assert!(
+            rendered.contains(expected),
+            "missing {expected:?} in final HTML: {rendered:?}"
+        );
+    }
+
+    remove_files(&[&markdown, &json, &yaml, &toml, &docx, &html]);
+}
+
+#[test]
 fn markdown_docx_round_trip_preserves_emphasis_and_nested_lists() {
     let markdown = temporary_path("formatted_docx_input", "md");
     let document = temporary_path("formatted_docx_document", "docx");

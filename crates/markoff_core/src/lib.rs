@@ -96,6 +96,10 @@ pub fn convert_document(request: &ConversionRequest) -> Result<(), MarkoffError>
         (Format::Docx, Format::Markdown) => {
             convert_docx_to_markdown(&request.input, &request.output)
         }
+        (Format::Docx, Format::Html) => convert_via_markdown_intermediate(
+            |markdown| convert_docx_to_markdown(&request.input, markdown),
+            |markdown| convert_markdown_to_html(markdown, &request.output),
+        ),
         (Format::Markdown, Format::Docx) => {
             convert_markdown_to_docx(&request.input, &request.output)
         }

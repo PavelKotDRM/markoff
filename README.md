@@ -31,6 +31,7 @@ The project has moved beyond the initial stub stage:
 - `Markdown Tables <-> XLSX`, including multi-sheet workbooks, frozen header rows, and fitted column widths
 - `JSON / CSV / YAML / TOML <-> XLSX` for arrays of objects and tabular sheets
 - `DOCX <-> Markdown` for headings, paragraphs, tables, nested bulleted/numbered lists, bold/italic/strikethrough/underline text, inline and fenced code, blockquotes, horizontal rules, footnotes, bookmarks, and `PAGEREF` links
+- `DOCX -> HTML` through Markdown, preserving supported document elements
 - `DOCX tables -> CSV / XLSX / JSON / YAML / TOML`, plus `CSV / XLSX -> DOCX`
 - `PDF -> Markdown / JSON / YAML / TOML` for documents with an embedded text layer
 - `PPTX <-> Markdown` for slide titles and body text/bullets
