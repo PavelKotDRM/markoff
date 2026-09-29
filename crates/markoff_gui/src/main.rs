@@ -1,3 +1,5 @@
+#![cfg_attr(all(target_os = "windows", not(test)), windows_subsystem = "windows")]
+
 use eframe::egui;
 use egui_commonmark::CommonMarkCache;
 use egui_extras::{Column, TableBuilder};
