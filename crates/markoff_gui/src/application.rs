@@ -428,4 +428,37 @@ mod tests {
         fs::remove_file(markdown).ok();
         fs::remove_file(output).ok();
     }
+
+    #[test]
+    fn keeps_all_document_blocks_by_default_in_gui() {
+        let markdown = temporary_path("full_document_input", "md");
+        fs::write(
+            &markdown,
+            "| A | B |\r\n| --- | --- |\r\n| 1 | 2 |\r\n\r\n# Title\r\n\r\nA paragraph.\r\n\r\n- One\r\n",
+        )
+        .unwrap();
+
+        let mut app = MarkoffApp {
+            target: Format::Json,
+            ..MarkoffApp::default()
+        };
+        app.add_file(markdown.clone());
+        assert!(!app.tables_only);
+        let output = app.jobs[0].output.clone();
+
+        app.convert_selected();
+
+        assert!(matches!(app.jobs[0].status, JobStatus::Success));
+        let document: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&output).unwrap()).unwrap();
+        let blocks = document["blocks"].as_array().unwrap();
+        let block_types = blocks
+            .iter()
+            .map(|block| block["type"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(block_types, ["table", "heading", "paragraph", "list_item"]);
+
+        fs::remove_file(markdown).ok();
+        fs::remove_file(output).ok();
+    }
 }

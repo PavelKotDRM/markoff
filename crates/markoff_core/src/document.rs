@@ -117,6 +117,7 @@ fn parse_document(source: &str, format: Format) -> Result<Document, MarkoffError
 /// (footnote/quote continuation) back into the preceding block instead of
 /// splitting it out, since it is not itself a recognizable list item.
 fn split_into_raw_blocks(markdown: &str) -> Vec<String> {
+    let markdown = markdown.replace("\r\n", "\n").replace('\r', "\n");
     let mut blocks: Vec<String> = Vec::new();
     for paragraph in markdown.split("\n\n") {
         let paragraph = paragraph.trim_end_matches('\n');
@@ -326,6 +327,36 @@ mod tests {
             ]
         );
         assert_eq!(document_to_markdown(&document, None).unwrap(), markdown);
+    }
+
+    #[test]
+    fn splits_crlf_markdown_into_all_document_blocks() {
+        let markdown = "| A | B |\r\n| --- | --- |\r\n| 1 | 2 |\r\n\r\n# Title\r\n\r\nA paragraph.\r\n\r\n- Item\r\n";
+        let document = markdown_to_document(markdown, None);
+
+        assert_eq!(
+            document.blocks,
+            vec![
+                Block::Table {
+                    rows: vec![
+                        vec!["A".to_string(), "B".to_string()],
+                        vec!["1".to_string(), "2".to_string()],
+                    ]
+                },
+                Block::Heading {
+                    level: 1,
+                    text: "Title".to_string()
+                },
+                Block::Paragraph {
+                    text: "A paragraph.".to_string()
+                },
+                Block::ListItem {
+                    ordered: false,
+                    level: 0,
+                    text: "Item".to_string()
+                },
+            ]
+        );
     }
 
     #[test]
