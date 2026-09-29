@@ -2093,7 +2093,7 @@ dependencies = [
 
 [[package]]
 name = "markoff_cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -2108,7 +2108,7 @@ dependencies = [
 
 [[package]]
 name = "markoff_core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "base64",
@@ -2133,7 +2133,7 @@ dependencies = [
 
 [[package]]
 name = "markoff_gui"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "eframe",
