@@ -37,7 +37,7 @@ The project has moved beyond the initial stub stage:
 - `HTML <-> Markdown` for headings, emphasis, links, images, lists, blockquotes, code blocks, and tables
 - `PDF / PPTX / HTML -> JSON / YAML / TOML` and JSON/YAML/TOML back to Markdown, DOCX, PPTX, or HTML
 - CLI `convert` with text stdin/stdout and `batch` with glob patterns and progress bars
-- GUI conversion queue with file picker, drag-and-drop, selectable target format, themes, and a format-aware preview (rendered Markdown, collapsible JSON/YAML/TOML tree, or plain text)
+- GUI conversion queue with file picker, drag-and-drop, selectable target format, a compatible-pairs-only **Tables only** toggle, themes, and a format-aware preview (rendered Markdown, collapsible JSON/YAML/TOML tree, or plain text)
 - Unit, integration, and property-based core tests covering DOCX and XLSX round-trips
 
 ### Still pending
@@ -193,7 +193,7 @@ cargo run -p markoff_cli -- gui
 4. Choose a file in the queue and select **Convert selected**.
 5. Inspect the source and result previews. The converted file is saved beside the original source using the selected target extension.
 
-The toolbar also switches between dark and light themes and opens build information in **About**. Files are converted one at a time from the selected queue entry; adding the same source path twice does not create a duplicate job.
+The toolbar also offers **Tables only** for supported document ↔ JSON/YAML/TOML conversions, switches between dark and light themes, and opens build information in **About**. Files are converted one at a time from the selected queue entry; adding the same source path twice does not create a duplicate job.
 
 ## Format behavior and limitations
 

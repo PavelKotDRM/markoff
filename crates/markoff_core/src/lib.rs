@@ -283,7 +283,12 @@ pub fn convert_document(request: &ConversionRequest) -> Result<(), MarkoffError>
     }
 }
 
-fn supports_tables_only(from: Format, to: Format) -> bool {
+/// Reports whether the table-only option applies to a format pair.
+///
+/// It is available when converting between JSON/YAML/TOML and supported
+/// document formats. PDF is supported as a source format only.
+#[must_use]
+pub fn supports_tables_only(from: Format, to: Format) -> bool {
     let structured = |format| matches!(format, Format::Json | Format::Yaml | Format::Toml);
     let document_source = |format| {
         matches!(

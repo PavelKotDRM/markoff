@@ -1,7 +1,9 @@
 use eframe::egui;
 use egui_commonmark::CommonMarkCache;
 use egui_extras::{Column, TableBuilder};
-use markoff_core::{ConversionRequest, Format, convert_document, detect_format};
+use markoff_core::{
+    ConversionRequest, Format, convert_document, detect_format, supports_tables_only,
+};
 use std::path::PathBuf;
 
 #[path = "preview.rs"]
@@ -91,6 +93,7 @@ struct MarkoffApp {
     dark_mode: bool,
     show_about: bool,
     overwrite: bool,
+    tables_only: bool,
     csv_delimiter: String,
     markdown_cache: CommonMarkCache,
     preview_pane: PreviewPane,
@@ -105,6 +108,7 @@ impl Default for MarkoffApp {
             dark_mode: true,
             show_about: false,
             overwrite: false,
+            tables_only: false,
             csv_delimiter: ",".to_string(),
             markdown_cache: CommonMarkCache::default(),
             preview_pane: PreviewPane::Source,
@@ -153,7 +157,7 @@ impl MarkoffApp {
                 to: self.target,
                 overwrite: self.overwrite,
                 csv_delimiter: delimiter,
-                tables_only: false,
+                tables_only: self.tables_only,
             })
         });
         match result {
@@ -210,6 +214,20 @@ impl eframe::App for MarkoffApp {
                     self.update_outputs();
                 }
                 ui.checkbox(&mut self.overwrite, "Overwrite existing files");
+                let tables_only_supported = self
+                    .selected
+                    .and_then(|index| self.jobs.get(index))
+                    .and_then(|job| detect_format(&job.input).ok())
+                    .is_some_and(|from| supports_tables_only(from, self.target));
+                if !tables_only_supported {
+                    self.tables_only = false;
+                }
+                ui.add_enabled_ui(tables_only_supported, |ui| {
+                    ui.checkbox(&mut self.tables_only, "Tables only")
+                        .on_hover_text(
+                            "Keep only table blocks when converting between documents and JSON/YAML/TOML.",
+                        );
+                });
                 ui.label("CSV delimiter:");
                 ui.add(
                     egui::TextEdit::singleline(&mut self.csv_delimiter)
@@ -346,7 +364,7 @@ impl eframe::App for MarkoffApp {
 
 #[cfg(test)]
 mod tests {
-    use super::{SourcePreview, load_source_preview};
+    use super::{JobStatus, MarkoffApp, SourcePreview, load_source_preview};
     use markoff_core::{Format, convert_file};
     use std::fs;
     use std::path::PathBuf;
@@ -379,5 +397,35 @@ mod tests {
 
         fs::remove_file(markdown).ok();
         fs::remove_file(document).ok();
+    }
+
+    #[test]
+    fn converts_only_table_blocks_when_enabled_in_gui() {
+        let markdown = temporary_path("tables_only_input", "md");
+        fs::write(
+            &markdown,
+            "# Report\n\nSummary.\n\n| Name | Score |\n| --- | --- |\n| Ada | 42 |\n",
+        )
+        .unwrap();
+
+        let mut app = MarkoffApp {
+            target: Format::Json,
+            tables_only: true,
+            ..MarkoffApp::default()
+        };
+        app.add_file(markdown.clone());
+        let output = app.jobs[0].output.clone();
+
+        app.convert_selected();
+
+        assert!(matches!(app.jobs[0].status, JobStatus::Success));
+        let document: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&output).unwrap()).unwrap();
+        let blocks = document["blocks"].as_array().unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["type"], "table");
+
+        fs::remove_file(markdown).ok();
+        fs::remove_file(output).ok();
     }
 }
