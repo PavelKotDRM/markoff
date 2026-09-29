@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use crate::MarkoffError;
@@ -16,16 +16,20 @@ use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 #[derive(Default)]
 struct HyperlinkAllocator {
     next_id: u32,
+    next_bookmark_id: usize,
     relationships: Vec<(String, String)>,
     anchors: HashMap<String, String>,
+    bookmark_names: HashSet<String>,
 }
 
 impl HyperlinkAllocator {
-    fn new(first_id: u32, anchors: &HashMap<String, String>) -> Self {
+    fn new(first_id: u32, first_bookmark_id: usize, anchors: &HashMap<String, String>) -> Self {
         Self {
             next_id: first_id,
+            next_bookmark_id: first_bookmark_id,
             relationships: Vec::new(),
             anchors: anchors.clone(),
+            bookmark_names: anchors.values().cloned().collect(),
         }
     }
 
@@ -64,6 +68,30 @@ impl HyperlinkAllocator {
 
     fn has_relationships(&self) -> bool {
         !self.relationships.is_empty()
+    }
+
+    fn wrap_bookmarks(&mut self, mut content: String, bookmarks: Vec<String>) -> String {
+        for name in bookmarks.into_iter().rev() {
+            if self.anchors.values().any(|heading| heading == &name)
+                || !self.bookmark_names.insert(name.clone())
+            {
+                continue;
+            }
+            let id = self.next_bookmark_id;
+            self.next_bookmark_id += 1;
+            let name = if is_word_bookmark_name(&name) {
+                name
+            } else {
+                format!("_markoff_bookmark_{id}")
+            };
+            let start = format!(
+                "<w:bookmarkStart w:id=\"{id}\" w:name=\"{}\"/>",
+                xml_attribute_escape(&name)
+            );
+            let end = format!("<w:bookmarkEnd w:id=\"{id}\"/>");
+            content = format!("{start}{content}{end}");
+        }
+        content
     }
 }
 
@@ -144,7 +172,8 @@ pub(crate) fn convert_markdown_to_docx(input: &Path, output: &Path) -> Result<()
     let lists = parse_markdown_lists(&source);
     let mut body = String::new();
     let mut index = 0;
-    let mut document_hyperlinks = HyperlinkAllocator::new(4, &heading_anchors);
+    let mut document_hyperlinks =
+        HyperlinkAllocator::new(4, lines.len().saturating_add(1), &heading_anchors);
     while index < lines.len() {
         let line = lines[index];
         if is_markdown_table_start(&lines, index) {
@@ -261,7 +290,8 @@ pub(crate) fn convert_markdown_to_docx(input: &Path, output: &Path) -> Result<()
     let file = std::fs::File::create(output)?;
     let mut archive = zip::ZipWriter::new(file);
     let options = SimpleFileOptions::default();
-    let mut footnote_hyperlinks = HyperlinkAllocator::new(1, &heading_anchors);
+    let mut footnote_hyperlinks =
+        HyperlinkAllocator::new(1, lines.len().saturating_add(1), &heading_anchors);
     let footnotes_xml =
         (!footnotes.is_empty()).then(|| render_footnotes(&footnotes, &mut footnote_hyperlinks));
     let footnote_relationships = footnote_hyperlinks.has_relationships().then(|| {
@@ -596,11 +626,37 @@ fn markdown_inline_to_docx_runs_with_footnotes(
     footnote_ids: &HashMap<&str, usize>,
     hyperlinks: &mut HyperlinkAllocator,
 ) -> String {
-    value
+    let (value, bookmarks) = extract_bookmark_markers(value);
+    let rendered = value
         .split('\n')
         .map(|line| markdown_inline_to_docx_runs_without_breaks(line, footnote_ids, hyperlinks))
         .collect::<Vec<_>>()
-        .join("<w:r><w:br/></w:r>")
+        .join("<w:r><w:br/></w:r>");
+    hyperlinks.wrap_bookmarks(rendered, bookmarks)
+}
+
+fn extract_bookmark_markers(value: &str) -> (String, Vec<String>) {
+    let mut remaining = value;
+    let mut text = String::with_capacity(value.len());
+    let mut bookmarks = Vec::new();
+    while let Some(start) = remaining.find("<a id=\"") {
+        let marker_start = start + "<a id=\"".len();
+        let Some(name_end) = remaining[marker_start..].find('"') else {
+            break;
+        };
+        let name_end = marker_start + name_end;
+        let marker_end = name_end + 1;
+        let Some(closing) = remaining[marker_end..].strip_prefix("></a>") else {
+            text.push_str(&remaining[..start + 1]);
+            remaining = &remaining[start + 1..];
+            continue;
+        };
+        text.push_str(&remaining[..start]);
+        bookmarks.push(remaining[marker_start..name_end].to_string());
+        remaining = closing;
+    }
+    text.push_str(remaining);
+    (text, bookmarks)
 }
 
 fn markdown_inline_to_docx_runs_without_breaks(

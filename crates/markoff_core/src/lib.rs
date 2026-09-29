@@ -731,7 +731,7 @@ mod tests {
         let blocks = table_only["blocks"].as_array().unwrap();
         assert_eq!(blocks.len(), 1);
         assert_eq!(blocks[0]["type"], "table");
-        assert_eq!(blocks[0]["rows"][1][0], "Ada");
+        assert_eq!(blocks[0]["cells"][1][0][0]["text"], "Ada");
 
         convert_document(&ConversionRequest {
             input: json.clone(),

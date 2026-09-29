@@ -21,9 +21,10 @@ The project has moved beyond the initial stub stage:
 - GitHub Actions CI on Windows and Linux for formatting, Clippy, tests, and release builds
 - Shared `Format` enum and file-extension detection
 - Conversion request validation and typed error handling
-- Whole-document conversion from Markdown/DOCX/PDF/PPTX/HTML to the
-  JSON/YAML/TOML document schema, and back to Markdown/DOCX/PPTX/HTML; tables
-  are explicit blocks and `--tables-only` retains just those blocks
+- Whole-document conversion from Markdown/DOCX/PDF/PPTX/HTML to a typed
+  JSON/YAML/TOML document schema, and back to Markdown/DOCX/PPTX/HTML; inline
+  formatting, lists, links, footnotes, code metadata, and rich table cells are
+  represented as typed nodes
 - Direct conversion between JSON, YAML, and TOML values
 - Real text conversion support for:
   - `JSON <-> Markdown`
@@ -43,7 +44,7 @@ The project has moved beyond the initial stub stage:
 
 ### Still pending
 
-- DOCX tables, links, images, and footnotes
+- Re-embedding images into DOCX when converting from Markdown or structured data
 - PPTX shape layout, embedded images/charts, and speaker notes are not preserved (only slide titles and body text/bullets)
 
 ## Architecture
@@ -198,13 +199,13 @@ The toolbar also offers **Tables only** for supported document ↔ JSON/YAML/TOM
 
 ## Format behavior and limitations
 
-- DOCX and Markdown preserve headings, paragraphs, nested ordered and bulleted lists, tables, bold/italic/strikethrough/underline text, inline and fenced code blocks, blockquotes, horizontal rules, footnotes, bookmarks, and `PAGEREF` links. A fenced-code language identifier is not preserved.
+- DOCX and Markdown preserve headings, paragraphs, nested ordered and bulleted lists, tables, bold/italic/strikethrough/underline text, inline and fenced code blocks, blockquotes, horizontal rules, footnotes, bookmarks, and `PAGEREF` links. Structured JSON/YAML/TOML also preserve inline formatting, list numbering, table alignment, and fenced-code info strings.
 - PDF to Markdown, JSON, YAML, or TOML extracts the document text layer with Pdfium and embedded raster images with `lopdf` (saved as files next to Markdown or embedded in structured output). Page layout, vector graphics, tables, and scanned text are not preserved, and images are appended after the text rather than placed at their original position.
 - Markdown tables convert to and from XLSX. Each `## Sheet name` heading represents a workbook sheet; the first table row becomes the frozen header row in XLSX.
-- Markdown/DOCX/PDF/PPTX/HTML to JSON/YAML/TOML and JSON/YAML/TOML back to Markdown/DOCX/PPTX/HTML preserve supported document structure as an ordered `blocks` array; tables are distinct `table` blocks with `rows`. `--tables-only` keeps only those blocks. Inline Markdown formatting remains raw text, and literal list numbers are not preserved.
-- Images embedded in a DOCX or PDF are extracted and saved as files in an `image` folder next to the Markdown output, referenced with standard `![alt](image/file.ext)` syntax. Converting to JSON/YAML/TOML instead embeds each image inline as base64 (self-contained, no external files). Converting Markdown/JSON/YAML/TOML back to Markdown restores the image files from base64. Converting back to DOCX does not yet re-embed images as OOXML pictures; an image reference degrades to literal escaped text in that direction.
+- Markdown/DOCX/PDF/PPTX/HTML to JSON/YAML/TOML and back preserve supported document structure as an ordered `blocks` array with typed inline `content`, nested list items, footnote definitions and references, links, bookmarks, images, and rich table `cells`. Older `text` and table `rows` documents remain readable. `--tables-only` retains table blocks.
+- Images embedded in a DOCX or PDF are extracted and saved as files in an `image` folder next to the Markdown output, referenced with standard `![alt](image/file.ext)` syntax. Converting to JSON/YAML/TOML embeds image data as base64. Converting structured data back to Markdown restores image files; Markdown-to-HTML embeds local image data in the HTML. Converting back to DOCX does not yet re-embed images as OOXML pictures.
 - JSON, CSV, YAML, and TOML convert to XLSX as tabular data. JSON/YAML/TOML input for this route must be an array of objects; this is a separate, table-only convention from the whole-document `blocks` schema above.
-- Ordinary hyperlinks, advanced Word table layout, Excel formulas/styles/charts, and PDF output are not yet semantically preserved. PPTX conversion is limited to slide titles and body text/bullets (no shape layout, images, charts, or speaker notes).
+- Advanced Word table layout, Excel formulas/styles/charts, and PDF output are not yet semantically preserved. PPTX conversion is limited to slide titles and body text/bullets (no shape layout, images, charts, or speaker notes).
 
 ## Rust code quality
 

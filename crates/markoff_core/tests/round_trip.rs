@@ -447,7 +447,16 @@ fn docx_tables_convert_to_all_tabular_formats() {
             "blocks": [
                 {
                     "type": "table",
-                    "rows": [["Name", "Score"], ["Ada", "42"]]
+                    "cells": [
+                        [
+                            [{"type": "text", "text": "Name"}],
+                            [{"type": "text", "text": "Score"}]
+                        ],
+                        [
+                            [{"type": "text", "text": "Ada"}],
+                            [{"type": "text", "text": "42"}]
+                        ]
+                    ]
                 }
             ]
         })
@@ -481,6 +490,7 @@ fn markdown_json_yaml_toml_docx_html_chain_preserves_document_elements() {
     let toml = temporary_path("format_chain", "toml");
     let docx = temporary_path("format_chain", "docx");
     let html = temporary_path("format_chain", "html");
+    let restored_markdown = temporary_path("format_chain_restored", "md");
     fs::write(
         &markdown,
         "# Report\n\nA paragraph.\n\n- First item\n- Second item\n\n| Name | Score |\n| --- | --- |\n| Ada | 42 |\n",
@@ -521,7 +531,202 @@ fn markdown_json_yaml_toml_docx_html_chain_preserves_document_elements() {
         );
     }
 
-    remove_files(&[&markdown, &json, &yaml, &toml, &docx, &html]);
+    convert_file(&html, &restored_markdown, Format::Html, Format::Markdown).unwrap();
+    let restored = fs::read_to_string(&restored_markdown).unwrap();
+    assert_eq!(restored, fs::read_to_string(&markdown).unwrap());
+
+    remove_files(&[
+        &markdown,
+        &json,
+        &yaml,
+        &toml,
+        &docx,
+        &html,
+        &restored_markdown,
+    ]);
+}
+
+#[test]
+fn markdown_structured_formats_preserve_inline_semantics_and_footnotes() {
+    let workspace = temporary_path("rich_schema_workspace", "dir");
+    let markdown = workspace.join("input.md");
+    let json = workspace.join("document.json");
+    let yaml = workspace.join("document.yaml");
+    let toml = workspace.join("document.toml");
+    let restored_json = workspace.join("restored_json.md");
+    let restored_yaml = workspace.join("restored_yaml.md");
+    let restored_toml = workspace.join("restored_toml.md");
+    let html = workspace.join("document.html");
+    let restored_html = workspace.join("restored_html.md");
+    let docx = workspace.join("document.docx");
+    let restored_docx = workspace.join("restored_docx.md");
+    let docx_html = workspace.join("document_from_docx.html");
+    let restored_docx_html = workspace.join("restored_docx_html.md");
+    let source = "# Report\n\nText **bold**, *italic*, ~~strike~~, <u>underlined</u>, `code`, [site](https://example.com \"title\"), x$^{2}$ and H$_{2}$O[^note]. See <a id=\"spot\"></a>here and ![graph](image/picture.png).\n\n- [x] Done\n    - Nested\n- [ ] Pending\n\n8. First\n9. Second\n\n| **Name** | Score |\n| :--- | ---: |\n| Ada | 42 |\n\n```rust\nfn main() {}\n```\n\n> Quoted *text*.\n\n---\n\n$$\nE = mc^2\n$$\n\nInline footnote^[Inline **note**].\n\n[^note]: Footnote *body*.\n\n    Additional **paragraph**.\n";
+    fs::create_dir_all(workspace.join("image")).unwrap();
+    let image_bytes = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+    fs::write(workspace.join("image").join("picture.png"), image_bytes).unwrap();
+    fs::write(&markdown, source).unwrap();
+
+    convert_file(&markdown, &json, Format::Markdown, Format::Json).unwrap();
+    convert_file(&json, &yaml, Format::Json, Format::Yaml).unwrap();
+    convert_file(&yaml, &toml, Format::Yaml, Format::Toml).unwrap();
+
+    let json_document: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&json).unwrap()).unwrap();
+    let yaml_document: serde_json::Value =
+        serde_yaml::from_str(&fs::read_to_string(&yaml).unwrap()).unwrap();
+    let toml_document: serde_json::Value =
+        toml::from_str(&fs::read_to_string(&toml).unwrap()).unwrap();
+    assert_eq!(yaml_document, json_document);
+    assert_eq!(toml_document, json_document);
+
+    fn has_type(value: &serde_json::Value, expected: &str) -> bool {
+        match value {
+            serde_json::Value::Array(values) => {
+                values.iter().any(|value| has_type(value, expected))
+            }
+            serde_json::Value::Object(fields) => {
+                fields.get("type").and_then(|value| value.as_str()) == Some(expected)
+                    || fields.values().any(|value| has_type(value, expected))
+            }
+            _ => false,
+        }
+    }
+
+    assert!(has_type(&json_document, "strong"));
+    assert!(has_type(&json_document, "emphasis"));
+    assert!(has_type(&json_document, "strikethrough"));
+    assert!(has_type(&json_document, "underline"));
+    assert!(has_type(&json_document, "code"));
+    assert!(has_type(&json_document, "math"));
+    assert!(has_type(&json_document, "superscript"));
+    assert!(has_type(&json_document, "subscript"));
+    assert!(has_type(&json_document, "link"));
+    assert!(has_type(&json_document, "image"));
+    assert!(has_type(&json_document, "bookmark"));
+    assert!(has_type(&json_document, "footnote_reference"));
+    assert!(has_type(&json_document, "footnote"));
+    assert!(has_type(&json_document, "footnote_definition"));
+    assert!(has_type(&json_document, "quote"));
+    assert!(has_type(&json_document, "horizontal_rule"));
+    assert!(has_type(&json_document, "math"));
+
+    let blocks = json_document["blocks"].as_array().unwrap();
+    let checked_list = blocks.iter().find(|block| block["type"] == "list").unwrap();
+    assert_eq!(
+        checked_list["items"][0]["blocks"][0]["content"][0]["checked"],
+        true
+    );
+    assert_eq!(
+        checked_list["items"][1]["blocks"][0]["content"][0]["checked"],
+        false
+    );
+    let ordered_list = blocks
+        .iter()
+        .find(|block| block["type"] == "list" && block["ordered"] == true)
+        .unwrap();
+    assert_eq!(ordered_list["start"], 8);
+    let table = blocks
+        .iter()
+        .find(|block| block["type"] == "table")
+        .unwrap();
+    assert_eq!(table["alignments"], serde_json::json!(["left", "right"]));
+    assert!(
+        blocks
+            .iter()
+            .any(|block| { block["type"] == "code_block" && block["info"] == "rust" })
+    );
+    assert!(
+        json_document
+            .to_string()
+            .contains("\"destination\":\"https://example.com\"")
+    );
+    assert!(json_document.to_string().contains("\"label\":\"note\""));
+    convert_file(&json, &html, Format::Json, Format::Html).unwrap();
+    assert!(
+        fs::read_to_string(&html)
+            .unwrap()
+            .contains("src=\"data:image/png;base64,iVBORw0KGgo=\"")
+    );
+    convert_file(&html, &restored_html, Format::Html, Format::Markdown).unwrap();
+    let html_markdown = fs::read_to_string(&restored_html).unwrap();
+    for expected in [
+        "Text **bold**",
+        "[site](https://example.com \"title\")",
+        "H$_{2}$O",
+        "E = mc^2",
+        "<a id=\"spot\"></a>",
+        "```rust",
+        "[^note]",
+        "[^note]: Footnote *body*.",
+        "Additional **paragraph**.",
+        "Additional **paragraph**.",
+        "[^markoff-inline-0]: Inline **note**",
+        "- [x] Done",
+        "    - Nested",
+        "- [ ] Pending",
+        "8. First",
+        "9. Second",
+        "| :--- | ---: |",
+    ] {
+        assert!(
+            html_markdown.contains(expected),
+            "missing {expected:?} after HTML round trip: {html_markdown:?}"
+        );
+    }
+
+    for (input, format, output) in [
+        (&json, Format::Json, &restored_json),
+        (&yaml, Format::Yaml, &restored_yaml),
+        (&toml, Format::Toml, &restored_toml),
+    ] {
+        convert_file(input, output, format, Format::Markdown).unwrap();
+        assert_eq!(
+            fs::read_to_string(output).unwrap(),
+            source.replace("image/picture.png", "image/image1.png")
+        );
+        assert_eq!(
+            fs::read(workspace.join("image").join("image1.png")).unwrap(),
+            image_bytes
+        );
+    }
+
+    convert_file(&toml, &docx, Format::Toml, Format::Docx).unwrap();
+    convert_file(&docx, &restored_docx, Format::Docx, Format::Markdown).unwrap();
+    let restored = fs::read_to_string(&restored_docx).unwrap();
+    assert!(restored.contains("[^1]"), "{restored:?}");
+    assert!(restored.contains("Footnote"), "{restored:?}");
+    assert!(restored.contains("Additional"), "{restored:?}");
+    assert!(restored.contains("<a id=\"spot\"></a>"), "{restored:?}");
+
+    convert_file(&docx, &docx_html, Format::Docx, Format::Html).unwrap();
+    convert_file(
+        &docx_html,
+        &restored_docx_html,
+        Format::Html,
+        Format::Markdown,
+    )
+    .unwrap();
+    let restored_docx_html = fs::read_to_string(&restored_docx_html).unwrap();
+    assert!(
+        restored_docx_html.contains("Footnote"),
+        "{restored_docx_html:?}"
+    );
+    assert!(
+        restored_docx_html.contains("Additional"),
+        "{restored_docx_html:?}"
+    );
+    assert!(
+        restored_docx_html.contains("[^1]"),
+        "{restored_docx_html:?}"
+    );
+    assert!(
+        restored_docx_html.contains("<a id=\"spot\"></a>"),
+        "{restored_docx_html:?}"
+    );
+
+    fs::remove_dir_all(workspace).ok();
 }
 
 #[test]
