@@ -8,8 +8,8 @@
 //!
 //! # Supported formats
 //!
-//! Conversions include Markdown, DOCX, PDF, PPTX, HTML, XLSX, CSV, JSON, YAML,
-//! and TOML. Not every format pair is available; an unsupported pair returns
+//! Conversions include Markdown, DOCX, ODT, PDF, PPTX, ODP, HTML, XLSX, ODS,
+//! CSV, JSON, YAML, and TOML. Not every format pair is available; an unsupported pair returns
 //! [`MarkoffError::NotImplemented`]. Office and PDF conversions may preserve
 //! less layout information than text-based conversions.
 //!
@@ -72,6 +72,7 @@ mod error;
 mod html;
 mod html_tokenizer;
 mod model;
+mod opendocument;
 mod pdf;
 mod pdf_writer;
 mod pptx;
@@ -92,6 +93,10 @@ use document::{
 use docx_reader::convert_docx_to_markdown;
 use docx_writer::convert_markdown_to_docx;
 use html::{convert_html_to_markdown, convert_markdown_to_html};
+use opendocument::{
+    convert_data_to_ods, convert_markdown_to_odp, convert_markdown_to_ods, convert_markdown_to_odt,
+    convert_odp_to_markdown, convert_ods_to_data, convert_ods_to_markdown, convert_odt_to_markdown,
+};
 use pdf::convert_pdf_to_markdown;
 use pdf_writer::convert_markdown_to_pdf;
 use pptx::{convert_markdown_to_pptx, convert_pptx_to_markdown};
@@ -160,13 +165,43 @@ pub fn convert_document(request: &ConversionRequest) -> Result<(), MarkoffError>
 fn route_conversion(request: &ConversionRequest) -> Result<(), MarkoffError> {
     match request.from {
         Format::Docx => route_docx(request),
+        Format::Odt => route_odt(request),
         Format::Pdf => route_pdf(request),
         Format::Markdown => route_markdown(request),
         Format::Csv => route_csv(request),
         Format::Xlsx => route_xlsx(request),
+        Format::Ods => route_ods(request),
         Format::Json | Format::Yaml | Format::Toml => route_structured_data(request),
         Format::Pptx => route_pptx(request),
+        Format::Odp => route_odp(request),
         Format::Html => route_html(request),
+    }
+}
+
+fn route_odt(request: &ConversionRequest) -> Result<(), MarkoffError> {
+    match request.to {
+        Format::Markdown => convert_odt_to_markdown(&request.input, &request.output),
+        Format::Html | Format::Pdf | Format::Csv | Format::Xlsx | Format::Ods => {
+            convert_via_markdown_intermediate(
+                |markdown| convert_odt_to_markdown(&request.input, markdown),
+                |markdown| match request.to {
+                    Format::Html => convert_markdown_to_html(markdown, &request.output),
+                    Format::Pdf => convert_markdown_to_pdf(markdown, &request.output),
+                    Format::Csv => {
+                        convert_markdown_to_csv(markdown, &request.output, request.csv_delimiter)
+                    }
+                    Format::Xlsx => convert_markdown_to_xlsx(markdown, &request.output),
+                    Format::Ods => convert_markdown_to_ods(markdown, &request.output),
+                    _ => unreachable!("only Markdown-backed ODT targets reach this branch"),
+                },
+            )
+        }
+        Format::Json | Format::Yaml | Format::Toml => {
+            convert_source_to_structured(request, |markdown| {
+                convert_odt_to_markdown(&request.input, markdown)
+            })
+        }
+        _ => not_implemented(request),
     }
 }
 
@@ -215,6 +250,7 @@ fn route_pdf(request: &ConversionRequest) -> Result<(), MarkoffError> {
 fn route_markdown(request: &ConversionRequest) -> Result<(), MarkoffError> {
     match request.to {
         Format::Docx => convert_markdown_to_docx(&request.input, &request.output),
+        Format::Odt => convert_markdown_to_odt(&request.input, &request.output),
         Format::Pdf => convert_markdown_to_pdf(&request.input, &request.output),
         Format::Json | Format::Yaml | Format::Toml => convert_markdown_to_document(
             &request.input,
@@ -226,7 +262,9 @@ fn route_markdown(request: &ConversionRequest) -> Result<(), MarkoffError> {
             convert_markdown_to_csv(&request.input, &request.output, request.csv_delimiter)
         }
         Format::Xlsx => convert_markdown_to_xlsx(&request.input, &request.output),
+        Format::Ods => convert_markdown_to_ods(&request.input, &request.output),
         Format::Pptx => convert_markdown_to_pptx(&request.input, &request.output),
+        Format::Odp => convert_markdown_to_odp(&request.input, &request.output),
         Format::Html => convert_markdown_to_html(&request.input, &request.output),
         _ => not_implemented(request),
     }
@@ -241,10 +279,51 @@ fn route_csv(request: &ConversionRequest) -> Result<(), MarkoffError> {
             |markdown| convert_csv_to_markdown(&request.input, markdown, request.csv_delimiter),
             |markdown| convert_markdown_to_docx(markdown, &request.output),
         ),
+        Format::Odt => convert_via_markdown_intermediate(
+            |markdown| convert_csv_to_markdown(&request.input, markdown, request.csv_delimiter),
+            |markdown| convert_markdown_to_odt(markdown, &request.output),
+        ),
         Format::Xlsx => convert_data_to_xlsx(
             &request.input,
             &request.output,
             request.from,
+            request.csv_delimiter,
+        ),
+        Format::Ods => convert_via_markdown_intermediate(
+            |markdown| convert_csv_to_markdown(&request.input, markdown, request.csv_delimiter),
+            |markdown| convert_markdown_to_ods(markdown, &request.output),
+        ),
+        _ => not_implemented(request),
+    }
+}
+
+fn route_ods(request: &ConversionRequest) -> Result<(), MarkoffError> {
+    match request.to {
+        Format::Markdown => convert_ods_to_markdown(&request.input, &request.output),
+        Format::Docx | Format::Odt | Format::Html | Format::Pdf => {
+            convert_via_markdown_intermediate(
+                |markdown| convert_ods_to_markdown(&request.input, markdown),
+                |markdown| match request.to {
+                    Format::Docx => convert_markdown_to_docx(markdown, &request.output),
+                    Format::Odt => convert_markdown_to_odt(markdown, &request.output),
+                    Format::Html => convert_markdown_to_html(markdown, &request.output),
+                    Format::Pdf => convert_markdown_to_pdf(markdown, &request.output),
+                    _ => unreachable!("only Markdown-backed ODS targets reach this branch"),
+                },
+            )
+        }
+        Format::Csv => convert_via_markdown_intermediate(
+            |markdown| convert_ods_to_markdown(&request.input, markdown),
+            |markdown| convert_markdown_to_csv(markdown, &request.output, request.csv_delimiter),
+        ),
+        Format::Xlsx => convert_via_markdown_intermediate(
+            |markdown| convert_ods_to_markdown(&request.input, markdown),
+            |markdown| convert_markdown_to_xlsx(markdown, &request.output),
+        ),
+        Format::Json | Format::Yaml | Format::Toml => convert_ods_to_data(
+            &request.input,
+            &request.output,
+            request.to,
             request.csv_delimiter,
         ),
         _ => not_implemented(request),
@@ -257,6 +336,10 @@ fn route_xlsx(request: &ConversionRequest) -> Result<(), MarkoffError> {
         Format::Docx => convert_via_markdown_intermediate(
             |markdown| convert_xlsx_to_markdown(&request.input, markdown),
             |markdown| convert_markdown_to_docx(markdown, &request.output),
+        ),
+        Format::Ods => convert_via_markdown_intermediate(
+            |markdown| convert_xlsx_to_markdown(&request.input, markdown),
+            |markdown| convert_markdown_to_ods(markdown, &request.output),
         ),
         Format::Json | Format::Csv | Format::Yaml | Format::Toml => convert_xlsx_to_data(
             &request.input,
@@ -279,7 +362,16 @@ fn route_structured_data(request: &ConversionRequest) -> Result<(), MarkoffError
         Format::Docx => convert_structured_via_markdown(request, |markdown| {
             convert_markdown_to_docx(markdown, &request.output)
         }),
+        Format::Odt => convert_structured_via_markdown(request, |markdown| {
+            convert_markdown_to_odt(markdown, &request.output)
+        }),
         Format::Xlsx => convert_data_to_xlsx(
+            &request.input,
+            &request.output,
+            request.from,
+            request.csv_delimiter,
+        ),
+        Format::Ods => convert_data_to_ods(
             &request.input,
             &request.output,
             request.from,
@@ -287,6 +379,9 @@ fn route_structured_data(request: &ConversionRequest) -> Result<(), MarkoffError
         ),
         Format::Pptx => convert_structured_via_markdown(request, |markdown| {
             convert_markdown_to_pptx(markdown, &request.output)
+        }),
+        Format::Odp => convert_structured_via_markdown(request, |markdown| {
+            convert_markdown_to_odp(markdown, &request.output)
         }),
         Format::Pdf => convert_structured_data_to_pdf(
             &request.input,
@@ -304,6 +399,18 @@ fn route_structured_data(request: &ConversionRequest) -> Result<(), MarkoffError
                 request.from,
                 request.to,
             )
+        }
+        _ => not_implemented(request),
+    }
+}
+
+fn route_odp(request: &ConversionRequest) -> Result<(), MarkoffError> {
+    match request.to {
+        Format::Markdown => convert_odp_to_markdown(&request.input, &request.output),
+        Format::Json | Format::Yaml | Format::Toml => {
+            convert_source_to_structured(request, |markdown| {
+                convert_odp_to_markdown(&request.input, markdown)
+            })
         }
         _ => not_implemented(request),
     }
@@ -368,8 +475,8 @@ fn not_implemented(request: &ConversionRequest) -> Result<(), MarkoffError> {
 
 /// Reports whether table-only conversion applies to a format pair.
 ///
-/// The option is available between JSON/YAML/TOML and Markdown, DOCX, PPTX, or
-/// HTML. PDF is supported as both a source and destination format.
+/// The option is available between JSON/YAML/TOML and Markdown, DOCX, ODT,
+/// PPTX, ODP, or HTML. PDF is supported as both a source and destination format.
 ///
 /// # Examples
 ///
@@ -385,13 +492,25 @@ pub fn supports_tables_only(from: Format, to: Format) -> bool {
     let document_source = |format| {
         matches!(
             format,
-            Format::Markdown | Format::Docx | Format::Pdf | Format::Pptx | Format::Html
+            Format::Markdown
+                | Format::Docx
+                | Format::Odt
+                | Format::Pdf
+                | Format::Pptx
+                | Format::Odp
+                | Format::Html
         )
     };
     let document_target = |format| {
         matches!(
             format,
-            Format::Markdown | Format::Docx | Format::Pdf | Format::Pptx | Format::Html
+            Format::Markdown
+                | Format::Docx
+                | Format::Odt
+                | Format::Pdf
+                | Format::Pptx
+                | Format::Odp
+                | Format::Html
         )
     };
 

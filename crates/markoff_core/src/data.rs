@@ -92,8 +92,19 @@ pub(crate) fn convert_data_to_xlsx(
     format: Format,
     delimiter: u8,
 ) -> Result<(), MarkoffError> {
+    let rows = read_data_rows(input, format, delimiter)?;
+    let mut sheets = BTreeMap::new();
+    sheets.insert("Sheet1".to_string(), rows);
+    write_xlsx_value_sheets(output, &sheets)
+}
+
+pub(crate) fn read_data_rows(
+    input: &Path,
+    format: Format,
+    delimiter: u8,
+) -> Result<Vec<Vec<CellValue>>, MarkoffError> {
     let source = std::fs::read_to_string(input)?;
-    let rows = match format {
+    Ok(match format {
         Format::Json => rows_from_json(&serde_json::from_str(&source).map_err(invalid_data)?)?,
         Format::Yaml => {
             let value: serde_json::Value = serde_yaml::from_str(&source).map_err(invalid_data)?;
@@ -128,10 +139,7 @@ pub(crate) fn convert_data_to_xlsx(
             rows
         }
         _ => unreachable!("only structured data formats use this helper"),
-    };
-    let mut sheets = BTreeMap::new();
-    sheets.insert("Sheet1".to_string(), rows);
-    write_xlsx_value_sheets(output, &sheets)
+    })
 }
 
 pub(crate) fn convert_xlsx_to_data(
@@ -141,12 +149,21 @@ pub(crate) fn convert_xlsx_to_data(
     delimiter: u8,
 ) -> Result<(), MarkoffError> {
     let sheets = read_xlsx_value_sheets(input)?;
+    write_data_sheets(output, format, delimiter, &sheets)
+}
+
+pub(crate) fn write_data_sheets(
+    output: &Path,
+    format: Format,
+    delimiter: u8,
+    sheets: &BTreeMap<String, Vec<Vec<CellValue>>>,
+) -> Result<(), MarkoffError> {
     let value = if sheets.len() == 1 {
         let rows = sheets
             .values()
             .next()
             .ok_or_else(|| MarkoffError::InvalidInput {
-                path: input.to_string_lossy().to_string(),
+                path: output.to_string_lossy().to_string(),
             })?;
         json_from_rows(rows)
     } else {
@@ -182,7 +199,7 @@ pub(crate) fn convert_xlsx_to_data(
                 .values()
                 .next()
                 .ok_or_else(|| MarkoffError::InvalidInput {
-                    path: input.to_string_lossy().to_string(),
+                    path: output.to_string_lossy().to_string(),
                 })?;
             let mut writer = csv::WriterBuilder::new()
                 .delimiter(delimiter)

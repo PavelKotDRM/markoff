@@ -7,18 +7,23 @@ use thiserror::Error;
 ///
 /// File extensions are parsed case-insensitively by [`Format::from_extension`].
 /// Extensions are notated without a leading dot. Markdown accepts `md` and
-/// `markdown`; Excel accepts `xlsx` and `xlsm`; YAML accepts `yaml` and `yml`;
-/// and HTML accepts `html` and `htm`.
+/// `markdown`; Excel accepts `xlsx` and `xlsm`; OpenDocument accepts `odt`,
+/// `ods`, and `odp`; YAML accepts `yaml` and `yml`; and HTML accepts `html`
+/// and `htm`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Format {
     /// Microsoft Word document format.
     Docx,
+    /// OpenDocument Text document format.
+    Odt,
     /// Portable Document Format.
     Pdf,
     /// Markdown text format.
     Markdown,
     /// Microsoft Excel workbook format.
     Xlsx,
+    /// OpenDocument Spreadsheet format.
+    Ods,
     /// JavaScript Object Notation.
     Json,
     /// Comma-separated values.
@@ -29,6 +34,8 @@ pub enum Format {
     Toml,
     /// Microsoft PowerPoint presentation format.
     Pptx,
+    /// OpenDocument Presentation format.
+    Odp,
     /// HyperText Markup Language.
     Html,
 }
@@ -37,14 +44,17 @@ impl fmt::Display for Format {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let value = match self {
             Self::Docx => "docx",
+            Self::Odt => "odt",
             Self::Pdf => "pdf",
             Self::Markdown => "md",
             Self::Xlsx => "xlsx",
+            Self::Ods => "ods",
             Self::Json => "json",
             Self::Csv => "csv",
             Self::Yaml => "yaml",
             Self::Toml => "toml",
             Self::Pptx => "pptx",
+            Self::Odp => "odp",
             Self::Html => "html",
         };
         f.write_str(value)
@@ -64,14 +74,17 @@ impl Format {
     pub fn from_extension(extension: &str) -> Result<Self, MarkoffError> {
         match extension.trim().to_ascii_lowercase().as_str() {
             "docx" => Ok(Self::Docx),
+            "odt" => Ok(Self::Odt),
             "pdf" => Ok(Self::Pdf),
             "md" | "markdown" => Ok(Self::Markdown),
             "xlsx" | "xlsm" => Ok(Self::Xlsx),
+            "ods" => Ok(Self::Ods),
             "json" => Ok(Self::Json),
             "csv" => Ok(Self::Csv),
             "yaml" | "yml" => Ok(Self::Yaml),
             "toml" => Ok(Self::Toml),
             "pptx" => Ok(Self::Pptx),
+            "odp" => Ok(Self::Odp),
             "html" | "htm" => Ok(Self::Html),
             other => Err(MarkoffError::UnsupportedFormat {
                 format: other.to_string(),

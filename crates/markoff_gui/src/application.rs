@@ -217,13 +217,16 @@ impl eframe::App for MarkoffApp {
                             Format::Markdown,
                             Format::Pdf,
                             Format::Docx,
+                            Format::Odt,
                             Format::Json,
                             Format::Csv,
                             Format::Yaml,
                             Format::Toml,
                             Format::Xlsx,
+                            Format::Ods,
                             Format::Html,
                             Format::Pptx,
+                            Format::Odp,
                         ] {
                             ui.selectable_value(&mut self.target, format, format.to_string());
                         }

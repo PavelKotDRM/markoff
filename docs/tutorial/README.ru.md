@@ -374,7 +374,7 @@ PDF-экспорт сохраняет поддерживаемое формат�
 - `-` после `-o` — писать в stdout.
 
 Поддерживаются Markdown, JSON, CSV, YAML, TOML и HTML. Двоичные форматы
-DOCX, XLSX/XLSM, PDF и PPTX нельзя передавать через stdin/stdout.
+DOCX, ODT, XLSX/XLSM, ODS, PDF, PPTX и ODP нельзя передавать через stdin/stdout.
 
 Пример для PowerShell:
 
@@ -590,14 +590,17 @@ PDF также можно добавить как входной файл; дл�
 | Формат | Расширения | Назначение |
 | --- | --- | --- |
 | Word | `.docx` | Документы Microsoft Word |
+| OpenDocument Text | `.odt` | Текстовые документы OpenDocument |
 | PDF | `.pdf` | Входной PDF с текстовым слоем или целевой формат |
 | Markdown | `.md`, `.markdown` | Текстовая разметка |
 | Excel | `.xlsx`, `.xlsm` | Табличные книги |
+| OpenDocument Spreadsheet | `.ods` | Табличные книги OpenDocument |
 | JSON | `.json` | Структурированные данные или схема документа |
 | CSV | `.csv` | Табличные данные |
 | YAML | `.yaml`, `.yml` | Структурированные данные или схема документа |
 | TOML | `.toml` | Структурированные данные или схема документа |
 | PowerPoint | `.pptx` | Презентации |
+| OpenDocument Presentation | `.odp` | Презентации OpenDocument |
 | HTML | `.html`, `.htm` | HTML-документы |
 
 ### 6.2. Реализованные направления
@@ -605,12 +608,15 @@ PDF также можно добавить как входной файл; дл�
 | Источник | Поддерживаемые цели |
 | --- | --- |
 | DOCX | Markdown, HTML, CSV, XLSX, JSON, YAML, TOML, PDF |
-| Markdown | DOCX, PDF, CSV, XLSX, JSON, YAML, TOML, PPTX, HTML |
-| CSV | Markdown, XLSX, DOCX |
-| XLSX/XLSM | Markdown, CSV, JSON, YAML, TOML, DOCX |
-| JSON/YAML/TOML | Markdown, DOCX, PDF, PPTX, HTML, XLSX, другие JSON/YAML/TOML |
+| ODT | Markdown, HTML, CSV, XLSX, ODS, JSON, YAML, TOML, PDF |
+| Markdown | DOCX, ODT, PDF, CSV, XLSX, ODS, JSON, YAML, TOML, PPTX, ODP, HTML |
+| CSV | Markdown, XLSX, ODS, DOCX, ODT |
+| XLSX/XLSM | Markdown, CSV, JSON, YAML, TOML, DOCX, ODS |
+| ODS | Markdown, CSV, JSON, YAML, TOML, DOCX, ODT, XLSX |
+| JSON/YAML/TOML | Markdown, DOCX, ODT, PDF, PPTX, ODP, HTML, XLSX, ODS, другие JSON/YAML/TOML |
 | PDF | Markdown, JSON, YAML, TOML |
 | PPTX | Markdown, JSON, YAML, TOML |
+| ODP | Markdown, JSON, YAML, TOML |
 | HTML | Markdown, JSON, YAML, TOML |
 
 Не всякая пара форматов является прямым преобразованием. Если выбранное
@@ -857,15 +863,19 @@ Get-Content -Raw .\config.json |
 - Разметка страниц, векторная графика и таблицы PDF не восстанавливаются как
   исходный макет; изображения добавляются в Markdown отдельными ссылками.
 - PPTX преобразуется по заголовкам слайдов и основному тексту/маркированным
-  спискам. Встроенная Markdown-разметка преобразуется в отображаемый обычный
-  текст. Позиции фигур, изображения, диаграммы, темы и заметки докладчика не
-  сохраняются.
+  спискам. Для ODP видимый Markdown также является упрощённым представлением,
+  однако полный исходный пакет сохраняется в служебном блоке Markoff.
 - HTML преобразуется по смысловым элементам: заголовкам, тексту, ссылкам,
   изображениям, спискам, цитатам, блокам кода и таблицам. CSS, точный
   визуальный макет, формы и скрипты не сохраняются.
-- Формулы, стили и диаграммы Excel не сохраняются семантически.
-- Сложная разметка таблиц Word может упроститься.
-- DOCX, XLSX/XLSM, PDF и PPTX нельзя использовать в потоковом режиме
+- ODT/ODS/ODP -> Markdown добавляет служебный блок с полным исходным пакетом.
+  Без правок пакет восстанавливается побайтно; текстовые правки существующих
+  элементов сохраняют формулы, стили, диаграммы, изображения, макеты, заметки,
+  метаданные и расширения. Небезопасная структурная правка возвращает ошибку,
+  а не документ с молча потерянными объектами.
+- Сложный макет и изображения ODT/ODP не извлекаются в отдельные редактируемые
+  Markdown-ресурсы и остаются внутри служебного блока.
+- DOCX, ODT, XLSX/XLSM, ODS, PDF, PPTX и ODP нельзя использовать в потоковом режиме
   stdin/stdout.
 - Для табличного преобразования JSON/YAML/TOML требуется массив объектов.
 

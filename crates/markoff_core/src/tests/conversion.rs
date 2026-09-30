@@ -17,6 +17,9 @@ fn detects_known_formats() {
     assert!(matches!(detect_format("report.md"), Ok(Format::Markdown)));
     assert!(matches!(detect_format("report.pdf"), Ok(Format::Pdf)));
     assert!(matches!(detect_format("sheet.xlsx"), Ok(Format::Xlsx)));
+    assert!(matches!(detect_format("document.odt"), Ok(Format::Odt)));
+    assert!(matches!(detect_format("sheet.ods"), Ok(Format::Ods)));
+    assert!(matches!(detect_format("slides.odp"), Ok(Format::Odp)));
     assert!(matches!(detect_format("records.csv"), Ok(Format::Csv)));
 }
 

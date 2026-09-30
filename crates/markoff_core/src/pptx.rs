@@ -69,7 +69,7 @@ fn parse_markdown_into_slides(source: &str) -> Vec<Slide> {
     slides
 }
 
-fn markdown_inline_to_plain_text(markdown: &str) -> String {
+pub(crate) fn markdown_inline_to_plain_text(markdown: &str) -> String {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_STRIKETHROUGH);
     options.insert(Options::ENABLE_MATH);

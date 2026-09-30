@@ -219,25 +219,30 @@ markoff_cli gui
 | Формат | Идентификаторы |
 | --- | --- |
 | Word | `docx` |
+| OpenDocument Text | `odt` |
 | PDF | `pdf` |
 | Markdown | `md`, `markdown` |
 | Excel | `xlsx`, `xlsm` |
+| OpenDocument Spreadsheet | `ods` |
 | JSON | `json` |
 | CSV | `csv` |
 | YAML | `yaml`, `yml` |
 | TOML | `toml` |
 | PowerPoint | `pptx` |
+| OpenDocument Presentation | `odp` |
 | HTML | `html`, `htm` |
 
 Основные реализованные направления:
 
 - DOCX -> Markdown, CSV, XLSX, JSON, YAML, TOML, PDF;
-- Markdown -> DOCX, PDF, CSV, XLSX, JSON, YAML, TOML, PPTX, HTML;
-- CSV -> Markdown, XLSX, DOCX;
-- XLSX/XLSM -> Markdown, CSV, JSON, YAML, TOML, DOCX;
-- JSON/YAML/TOML -> Markdown, DOCX, PDF, PPTX, HTML, XLSX и другие JSON/YAML/TOML;
+- ODT -> Markdown, HTML, CSV, XLSX, ODS, JSON, YAML, TOML, PDF;
+- Markdown -> DOCX, ODT, PDF, CSV, XLSX, ODS, JSON, YAML, TOML, PPTX, ODP, HTML;
+- CSV -> Markdown, XLSX, ODS, DOCX, ODT;
+- XLSX/XLSM и ODS -> Markdown и поддерживаемые табличные форматы;
+- JSON/YAML/TOML -> Markdown, DOCX, ODT, PDF, PPTX, ODP, HTML, XLSX, ODS и другие JSON/YAML/TOML;
 - PDF -> Markdown, JSON, YAML, TOML;
 - PPTX -> Markdown, JSON, YAML, TOML;
+- ODP -> Markdown, JSON, YAML, TOML;
 - HTML -> Markdown, JSON, YAML, TOML.
 
 При обмене документами и JSON/YAML/TOML в схеме `blocks` по умолчанию
@@ -272,7 +277,7 @@ Linux:
 cat ./data.json | ./markoff_cli convert - --from json --to yaml -o -
 ```
 
-DOCX, XLSX/XLSM, PDF и PPTX через stdin/stdout не обрабатываются.
+DOCX, ODT, XLSX/XLSM, ODS, PDF, PPTX и ODP через stdin/stdout не обрабатываются.
 
 ## Общие правила параметров
 

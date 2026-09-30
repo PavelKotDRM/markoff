@@ -297,6 +297,57 @@ fn structured_data_xlsx_round_trip_preserves_cell_types() {
 }
 
 #[test]
+fn structured_data_ods_round_trip_preserves_cell_types() {
+    let source = temporary_path("structured_ods_input", "json");
+    let workbook = temporary_path("structured_workbook", "ods");
+    let restored = temporary_path("structured_ods_output", "json");
+    let records = json!([
+        {"name": "Ada", "score": 42, "active": true},
+        {"name": "Grace", "score": -7, "active": false}
+    ]);
+    fs::write(&source, serde_json::to_string(&records).unwrap()).unwrap();
+
+    convert_file(&source, &workbook, Format::Json, Format::Ods).unwrap();
+    convert_file(&workbook, &restored, Format::Ods, Format::Json).unwrap();
+
+    let converted: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&restored).unwrap()).unwrap();
+    assert_eq!(converted, records);
+
+    remove_files(&[&source, &workbook, &restored]);
+}
+
+#[test]
+fn edited_ods_markdown_updates_typed_cell_values() {
+    let source = temporary_path("edited_ods_input", "json");
+    let workbook = temporary_path("edited_ods_workbook", "ods");
+    let markdown = temporary_path("edited_ods_markdown", "md");
+    let edited_workbook = temporary_path("edited_ods_result", "ods");
+    let restored = temporary_path("edited_ods_output", "json");
+    let records = json!([{"name": "Ada", "score": 42, "active": true}]);
+    fs::write(&source, serde_json::to_string(&records).unwrap()).unwrap();
+
+    convert_file(&source, &workbook, Format::Json, Format::Ods).unwrap();
+    convert_file(&workbook, &markdown, Format::Ods, Format::Markdown).unwrap();
+    let edited = fs::read_to_string(&markdown)
+        .unwrap()
+        .replacen("42", "43", 1)
+        .replacen("true", "false", 1);
+    fs::write(&markdown, edited).unwrap();
+    convert_file(&markdown, &edited_workbook, Format::Markdown, Format::Ods).unwrap();
+    convert_file(&edited_workbook, &restored, Format::Ods, Format::Json).unwrap();
+
+    let converted: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&restored).unwrap()).unwrap();
+    assert_eq!(
+        converted,
+        json!([{"name": "Ada", "score": 43, "active": false}])
+    );
+
+    remove_files(&[&source, &workbook, &markdown, &edited_workbook, &restored]);
+}
+
+#[test]
 fn json_xlsx_round_trip_preserves_string_values_that_look_like_scalars() {
     let source = temporary_path("string_scalars_input", "json");
     let workbook = temporary_path("string_scalars_workbook", "xlsx");

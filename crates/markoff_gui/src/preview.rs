@@ -114,9 +114,16 @@ pub(super) fn load_source_preview(input: &Path) -> SourcePreview {
                 .map_err(|error| error.to_string())
                 .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
         }),
-        Ok(format @ (Format::Docx | Format::Pdf | Format::Xlsx | Format::Pptx | Format::Html)) => {
-            markdown_document_preview(input, format, preview_directory())
-        }
+        Ok(
+            format @ (Format::Docx
+            | Format::Odt
+            | Format::Pdf
+            | Format::Xlsx
+            | Format::Ods
+            | Format::Pptx
+            | Format::Odp
+            | Format::Html),
+        ) => markdown_document_preview(input, format, preview_directory()),
         Ok(_) => SourcePreview::Text(read_text_or_error(input)),
         Err(_) => SourcePreview::Text(format!(
             "Unable to preview {}: unrecognized format",
