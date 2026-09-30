@@ -2,14 +2,55 @@
 
 //! Core conversion engine for the `markoff` document converter.
 //!
-//! This crate exposes the shared domain model, format detection helpers,
-//! and conversion orchestration used by the CLI and GUI layers.
+//! The crate provides a shared [`Format`] model, typed conversion
+//! options ([`ConversionRequest`]), format detection, and the conversion
+//! entry points used by the CLI and GUI.
+//!
+//! # Supported formats
+//!
+//! Conversions include Markdown, DOCX, PDF, PPTX, HTML, XLSX, CSV, JSON, YAML,
+//! and TOML. Not every format pair is available; an unsupported pair returns
+//! [`MarkoffError::NotImplemented`]. Office and PDF conversions may preserve
+//! less layout information than text-based conversions.
+//!
+//! # Choosing a conversion API
+//!
+//! Use [`convert_file`] for a concise one-off conversion. It overwrites an
+//! existing destination. Use [`convert_document`] with a [`ConversionRequest`]
+//! to control overwrite behavior, the CSV delimiter, and table-only
+//! conversion.
 //!
 //! # Examples
 //!
+//! Detect an input format before constructing a request:
+//!
 //! ```rust
-//! use markoff_core::{detect_format, Format};
-//! assert!(matches!(detect_format("report.md"), Ok(Format::Markdown)));
+//! # fn main() -> Result<(), markoff_core::MarkoffError> {
+//! use markoff_core::{ConversionRequest, Format, detect_format};
+//!
+//! let source = "report.md";
+//! let request = ConversionRequest {
+//!     input: source.into(),
+//!     output: "report.html".into(),
+//!     from: detect_format(source)?,
+//!     to: Format::Html,
+//!     overwrite: false,
+//!     csv_delimiter: b',',
+//!     tables_only: false,
+//! };
+//! assert_eq!(request.from, Format::Markdown);
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! Run a conversion with [`convert_file`]:
+//!
+//! ```no_run
+//! # use markoff_core::{convert_file, Format, MarkoffError};
+//! # fn main() -> Result<(), MarkoffError> {
+//! convert_file("report.md", "report.html", Format::Markdown, Format::Html)?;
+//! # Ok(())
+//! # }
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -55,15 +96,26 @@ use xlsx::{convert_markdown_to_xlsx, convert_xlsx_to_markdown};
 
 static INTERMEDIATE_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-/// Converts a document using a conversion request.
+/// Converts one input file according to a [`ConversionRequest`].
+///
+/// The input must exist. Missing output directories are created before
+/// conversion. When `tables_only` is enabled, the requested format pair must
+/// be supported by [`supports_tables_only`].
 ///
 /// # Errors
 ///
-/// Returns a typed conversion error when validation or conversion fails.
+/// Returns a typed error when validation, file access, parsing, or conversion
+/// fails. Unsupported format pairs return [`MarkoffError::NotImplemented`].
 ///
-/// # Panics
-///
-/// This function does not panic under normal use.
+/// - [`MarkoffError::InvalidInput`] when the input file does not exist.
+/// - [`MarkoffError::InvalidOption`] when `tables_only` is not supported for
+///   the requested format pair.
+/// - [`MarkoffError::OutputExists`] when overwriting is disabled and the
+///   destination already exists.
+/// - [`MarkoffError::OutputDirectory`] when a missing destination directory
+///   cannot be created.
+/// - [`MarkoffError::Io`] when reading, writing, or converting a file fails.
+/// - [`MarkoffError::NotImplemented`] when the format pair is unavailable.
 pub fn convert_document(request: &ConversionRequest) -> Result<(), MarkoffError> {
     if !request.input.exists() {
         return Err(MarkoffError::InvalidInput {
@@ -287,10 +339,20 @@ pub fn convert_document(request: &ConversionRequest) -> Result<(), MarkoffError>
     }
 }
 
-/// Reports whether the table-only option applies to a format pair.
+/// Reports whether table-only conversion applies to a format pair.
 ///
-/// It is available when converting between JSON/YAML/TOML and supported
-/// document formats. PDF is supported as a source format only.
+/// The option is available between JSON/YAML/TOML and Markdown, DOCX, PPTX, or
+/// HTML. PDF is additionally supported as a source format, but not as a
+/// destination.
+///
+/// # Examples
+///
+/// ```
+/// use markoff_core::{Format, supports_tables_only};
+///
+/// assert!(supports_tables_only(Format::Docx, Format::Json));
+/// assert!(!supports_tables_only(Format::Json, Format::Pdf));
+/// ```
 #[must_use]
 pub fn supports_tables_only(from: Format, to: Format) -> bool {
     let structured = |format| matches!(format, Format::Json | Format::Yaml | Format::Toml);
@@ -356,6 +418,21 @@ fn remove_intermediate_markdown(markdown: &Path) {
 /// Always overwrites an existing file at `output`; use `convert_document` with
 /// `ConversionRequest.overwrite` set to `false` to require the destination to
 /// be absent.
+///
+/// # Errors
+///
+/// Returns the same typed conversion errors as [`convert_document`].
+///
+/// # Examples
+///
+/// ```no_run
+/// use markoff_core::{Format, MarkoffError, convert_file};
+///
+/// # fn main() -> Result<(), MarkoffError> {
+/// convert_file("report.md", "report.docx", Format::Markdown, Format::Docx)?;
+/// # Ok(())
+/// # }
+/// ```
 pub fn convert_file<P, Q>(input: P, output: Q, from: Format, to: Format) -> Result<(), MarkoffError>
 where
     P: AsRef<Path>,
@@ -394,630 +471,4 @@ pub(crate) mod test_support {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{
-        ConversionRequest, Format, MarkoffError, convert_document, convert_file, detect_format,
-    };
-    use crate::xlsx::{read_xlsx_sheets, write_xlsx_sheets};
-    use std::collections::BTreeMap;
-    use std::fs;
-    use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    fn unique_temp_path(name: &str) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        std::env::temp_dir().join(format!("markoff_{name}_{nanos}.tmp"))
-    }
-
-    #[test]
-    fn detects_known_formats() {
-        assert!(matches!(detect_format("report.md"), Ok(Format::Markdown)));
-        assert!(matches!(detect_format("report.pdf"), Ok(Format::Pdf)));
-        assert!(matches!(detect_format("sheet.xlsx"), Ok(Format::Xlsx)));
-        assert!(matches!(detect_format("records.csv"), Ok(Format::Csv)));
-    }
-
-    #[test]
-    fn rejects_unknown_formats() {
-        assert!(detect_format("archive.bin").is_err());
-    }
-
-    #[test]
-    fn rejects_existing_output_without_overwrite() {
-        let input = unique_temp_path("overwrite_input");
-        let output = unique_temp_path("overwrite_output");
-        fs::write(&input, r#"{"name":"Ada"}"#).unwrap();
-        fs::write(&output, "pre-existing content").unwrap();
-
-        let request = ConversionRequest {
-            input: input.clone(),
-            output: output.clone(),
-            from: Format::Json,
-            to: Format::Markdown,
-            overwrite: false,
-            csv_delimiter: b',',
-            tables_only: false,
-        };
-
-        assert!(matches!(
-            convert_document(&request),
-            Err(MarkoffError::OutputExists { .. })
-        ));
-        assert_eq!(fs::read_to_string(&output).unwrap(), "pre-existing content");
-
-        fs::remove_file(input).ok();
-        fs::remove_file(output).ok();
-    }
-
-    #[test]
-    fn overwrites_existing_output_when_requested() {
-        let input = unique_temp_path("overwrite_allowed_input");
-        let output = unique_temp_path("overwrite_allowed_output");
-        fs::write(&input, r#"{"blocks":[{"type":"paragraph","text":"Ada"}]}"#).unwrap();
-        fs::write(&output, "pre-existing content").unwrap();
-
-        let request = ConversionRequest {
-            input: input.clone(),
-            output: output.clone(),
-            from: Format::Json,
-            to: Format::Markdown,
-            overwrite: true,
-            csv_delimiter: b',',
-            tables_only: false,
-        };
-
-        convert_document(&request).unwrap();
-        assert!(fs::read_to_string(&output).unwrap().contains("Ada"));
-
-        fs::remove_file(input).ok();
-        fs::remove_file(output).ok();
-    }
-
-    #[test]
-    fn converts_json_to_markdown() {
-        let input = unique_temp_path("json_to_markdown_input");
-        let output = unique_temp_path("json_to_markdown_output");
-        fs::write(
-            &input,
-            r#"{"blocks":[{"type":"heading","level":1,"text":"Ada"},{"type":"paragraph","text":"count 42"}]}"#,
-        )
-        .unwrap();
-
-        convert_file(&input, &output, Format::Json, Format::Markdown).unwrap();
-
-        let rendered = fs::read_to_string(&output).unwrap();
-        assert!(rendered.contains("# Ada"));
-        assert!(rendered.contains("count 42"));
-
-        fs::remove_file(input).ok();
-        fs::remove_file(output).ok();
-    }
-
-    #[test]
-    fn converts_pdf_to_markdown() {
-        let input = unique_temp_path("pdf_to_markdown_input");
-        let output = unique_temp_path("pdf_to_markdown_output");
-        let content = b"BT /F1 12 Tf 72 720 Td (Hello from PDF) Tj ET";
-        let objects = [
-            b"<< /Type /Catalog /Pages 2 0 R >>".as_slice(),
-            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".as_slice(),
-            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>".as_slice(),
-            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".as_slice(),
-        ];
-        let mut pdf = b"%PDF-1.4\n".to_vec();
-        let mut offsets = Vec::new();
-        for (index, object) in objects.iter().enumerate() {
-            offsets.push(pdf.len());
-            pdf.extend_from_slice(format!("{} 0 obj\n", index + 1).as_bytes());
-            pdf.extend_from_slice(object);
-            pdf.extend_from_slice(b"\nendobj\n");
-        }
-        offsets.push(pdf.len());
-        pdf.extend_from_slice(b"5 0 obj\n<< /Length ");
-        pdf.extend_from_slice(content.len().to_string().as_bytes());
-        pdf.extend_from_slice(b" >>\nstream\n");
-        pdf.extend_from_slice(content);
-        pdf.extend_from_slice(b"\nendstream\nendobj\n");
-        let xref_offset = pdf.len();
-        pdf.extend_from_slice(b"xref\n0 6\n0000000000 65535 f \n");
-        for offset in offsets {
-            pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
-        }
-        pdf.extend_from_slice(
-            format!("trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n")
-                .as_bytes(),
-        );
-        fs::write(&input, pdf).unwrap();
-
-        convert_file(&input, &output, Format::Pdf, Format::Markdown).unwrap();
-
-        assert!(
-            fs::read_to_string(&output)
-                .unwrap()
-                .contains("Hello from PDF")
-        );
-
-        fs::remove_file(input).ok();
-        fs::remove_file(output).ok();
-    }
-
-    #[test]
-    fn converts_markdown_to_json() {
-        let input = unique_temp_path("markdown_to_json_input");
-        let output = unique_temp_path("markdown_to_json_output");
-        fs::write(&input, "# Example\n\nThis is a markdown note.").unwrap();
-
-        convert_file(&input, &output, Format::Markdown, Format::Json).unwrap();
-
-        let rendered = fs::read_to_string(&output).unwrap();
-        assert!(rendered.contains("Example"));
-        assert!(rendered.contains("markdown note"));
-
-        fs::remove_file(input).ok();
-        fs::remove_file(output).ok();
-    }
-
-    #[test]
-    fn converts_csv_to_markdown() {
-        let input = unique_temp_path("csv_to_markdown_input");
-        let output = unique_temp_path("csv_to_markdown_output");
-        fs::write(&input, "name,age\nAda,42\nBob,30\n").unwrap();
-
-        convert_file(&input, &output, Format::Csv, Format::Markdown).unwrap();
-
-        let rendered = fs::read_to_string(&output).unwrap();
-        assert!(rendered.contains("| name | age |"));
-        assert!(rendered.contains("| Ada | 42 |"));
-
-        fs::remove_file(input).ok();
-        fs::remove_file(output).ok();
-    }
-
-    #[test]
-    fn converts_markdown_to_csv() {
-        let input = unique_temp_path("markdown_to_csv_input");
-        let output = unique_temp_path("markdown_to_csv_output");
-        fs::write(
-            &input,
-            "| name | age |\n| --- | --- |\n| Ada | 42 |\n| Bob | 30 |\n",
-        )
-        .unwrap();
-
-        convert_file(&input, &output, Format::Markdown, Format::Csv).unwrap();
-
-        let rendered = fs::read_to_string(&output).unwrap();
-        assert!(rendered.contains("name,age"));
-        assert!(rendered.contains("Ada,42"));
-
-        fs::remove_file(input).ok();
-        fs::remove_file(output).ok();
-    }
-
-    #[test]
-    fn converts_yaml_to_markdown() {
-        let input = unique_temp_path("yaml_to_markdown_input");
-        let output = unique_temp_path("yaml_to_markdown_output");
-        fs::write(
-            &input,
-            "blocks:\n  - type: paragraph\n    text: Ada count 42\n",
-        )
-        .unwrap();
-
-        convert_file(&input, &output, Format::Yaml, Format::Markdown).unwrap();
-
-        let rendered = fs::read_to_string(&output).unwrap();
-        assert!(rendered.contains("Ada count 42"));
-
-        fs::remove_file(input).ok();
-        fs::remove_file(output).ok();
-    }
-
-    #[test]
-    fn converts_toml_to_markdown() {
-        let input = unique_temp_path("toml_to_markdown_input");
-        let output = unique_temp_path("toml_to_markdown_output");
-        fs::write(
-            &input,
-            "[[blocks]]\ntype = \"paragraph\"\ntext = \"Ada count 42\"\n",
-        )
-        .unwrap();
-
-        convert_file(&input, &output, Format::Toml, Format::Markdown).unwrap();
-
-        let rendered = fs::read_to_string(&output).unwrap();
-        assert!(rendered.contains("Ada count 42"));
-
-        fs::remove_file(input).ok();
-        fs::remove_file(output).ok();
-    }
-
-    #[test]
-    fn round_trips_markdown_document_through_json_yaml_toml() {
-        for format in [Format::Json, Format::Yaml, Format::Toml] {
-            let markdown = unique_temp_path("document_round_trip_markdown");
-            let structured = unique_temp_path("document_round_trip_structured");
-            let restored = unique_temp_path("document_round_trip_restored");
-            fs::write(
-                &markdown,
-                "# Title\n\nA paragraph.\n\n- First\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n",
-            )
-            .unwrap();
-
-            convert_file(&markdown, &structured, Format::Markdown, format).unwrap();
-            convert_file(&structured, &restored, format, Format::Markdown).unwrap();
-
-            assert_eq!(
-                fs::read_to_string(&markdown).unwrap(),
-                fs::read_to_string(&restored).unwrap()
-            );
-
-            fs::remove_file(markdown).ok();
-            fs::remove_file(structured).ok();
-            fs::remove_file(restored).ok();
-        }
-    }
-
-    #[test]
-    fn round_trips_docx_document_through_json() {
-        let markdown = unique_temp_path("docx_document_json_markdown");
-        let document = unique_temp_path("docx_document_json_document");
-        let json = unique_temp_path("docx_document_json");
-        let restored_document = unique_temp_path("docx_document_json_restored_document");
-        let restored_markdown = unique_temp_path("docx_document_json_restored_markdown");
-        fs::write(
-            &markdown,
-            "# Title\n\n| Name | Score |\n| --- | --- |\n| Ada | 42 |\n",
-        )
-        .unwrap();
-
-        convert_file(&markdown, &document, Format::Markdown, Format::Docx).unwrap();
-        convert_file(&document, &json, Format::Docx, Format::Json).unwrap();
-        let rendered = fs::read_to_string(&json).unwrap();
-        assert!(rendered.contains("\"type\": \"heading\""));
-        assert!(rendered.contains("\"type\": \"table\""));
-
-        convert_file(&json, &restored_document, Format::Json, Format::Docx).unwrap();
-        convert_file(
-            &restored_document,
-            &restored_markdown,
-            Format::Docx,
-            Format::Markdown,
-        )
-        .unwrap();
-        let restored = fs::read_to_string(&restored_markdown).unwrap();
-        assert!(restored.contains("# Title"));
-        assert!(restored.contains("| Ada | 42 |"));
-
-        fs::remove_file(markdown).ok();
-        fs::remove_file(document).ok();
-        fs::remove_file(json).ok();
-        fs::remove_file(restored_document).ok();
-        fs::remove_file(restored_markdown).ok();
-    }
-
-    #[test]
-    fn tables_only_keeps_table_blocks_when_converting_to_and_from_structured_data() {
-        let markdown = unique_temp_path("tables_only_markdown");
-        let json = unique_temp_path("tables_only_json");
-        let table_only_json = unique_temp_path("tables_only_filtered_json");
-        let document = unique_temp_path("tables_only_docx");
-        let restored_markdown = unique_temp_path("tables_only_restored_markdown");
-        fs::write(
-            &markdown,
-            "# Report\n\nSummary text.\n\n| Name | Score |\n| --- | --- |\n| Ada | 42 |\n",
-        )
-        .unwrap();
-
-        convert_file(&markdown, &json, Format::Markdown, Format::Json).unwrap();
-        convert_document(&ConversionRequest {
-            input: markdown.clone(),
-            output: table_only_json.clone(),
-            from: Format::Markdown,
-            to: Format::Json,
-            overwrite: true,
-            csv_delimiter: b',',
-            tables_only: true,
-        })
-        .unwrap();
-
-        let full_document: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(&json).unwrap()).unwrap();
-        assert_eq!(full_document["blocks"].as_array().unwrap().len(), 3);
-        let table_only: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(&table_only_json).unwrap()).unwrap();
-        let blocks = table_only["blocks"].as_array().unwrap();
-        assert_eq!(blocks.len(), 1);
-        assert_eq!(blocks[0]["type"], "table");
-        assert_eq!(blocks[0]["cells"][1][0][0]["text"], "Ada");
-
-        convert_document(&ConversionRequest {
-            input: json.clone(),
-            output: document.clone(),
-            from: Format::Json,
-            to: Format::Docx,
-            overwrite: true,
-            csv_delimiter: b',',
-            tables_only: true,
-        })
-        .unwrap();
-        convert_file(
-            &document,
-            &restored_markdown,
-            Format::Docx,
-            Format::Markdown,
-        )
-        .unwrap();
-        let restored = fs::read_to_string(&restored_markdown).unwrap();
-        assert!(restored.contains("| Ada | 42 |"));
-        assert!(!restored.contains("Report"));
-        assert!(!restored.contains("Summary text"));
-
-        for path in [markdown, json, table_only_json, document, restored_markdown] {
-            fs::remove_file(path).ok();
-        }
-    }
-
-    #[test]
-    fn converts_html_and_pptx_to_and_from_structured_document_formats() {
-        let markdown = unique_temp_path("structured_format_markdown");
-        let html = unique_temp_path("structured_format_html");
-        let json = unique_temp_path("structured_format_json");
-        let restored_html = unique_temp_path("structured_format_restored_html");
-        let pptx = unique_temp_path("structured_format_pptx");
-        let yaml = unique_temp_path("structured_format_yaml");
-        let restored_pptx = unique_temp_path("structured_format_restored_pptx");
-        let restored_markdown = unique_temp_path("structured_format_restored_markdown");
-        fs::write(
-            &markdown,
-            "# Introduction\n\nA paragraph.\n\n- First item\n- Second item\n",
-        )
-        .unwrap();
-
-        convert_file(&markdown, &html, Format::Markdown, Format::Html).unwrap();
-        convert_file(&html, &json, Format::Html, Format::Json).unwrap();
-        let html_document: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(&json).unwrap()).unwrap();
-        assert!(
-            html_document["blocks"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|block| block["type"] == "heading")
-        );
-        convert_file(&json, &restored_html, Format::Json, Format::Html).unwrap();
-
-        convert_file(&markdown, &pptx, Format::Markdown, Format::Pptx).unwrap();
-        convert_file(&pptx, &yaml, Format::Pptx, Format::Yaml).unwrap();
-        let pptx_document: serde_yaml::Value =
-            serde_yaml::from_str(&fs::read_to_string(&yaml).unwrap()).unwrap();
-        assert!(
-            pptx_document["blocks"]
-                .as_sequence()
-                .unwrap()
-                .iter()
-                .any(|block| block["type"] == "heading")
-        );
-        convert_file(&yaml, &restored_pptx, Format::Yaml, Format::Pptx).unwrap();
-        convert_file(
-            &restored_pptx,
-            &restored_markdown,
-            Format::Pptx,
-            Format::Markdown,
-        )
-        .unwrap();
-        let rendered = fs::read_to_string(&restored_markdown).unwrap();
-        assert!(rendered.contains("Introduction"));
-        assert!(rendered.contains("First item"));
-
-        for path in [
-            markdown,
-            html,
-            json,
-            restored_html,
-            pptx,
-            yaml,
-            restored_pptx,
-            restored_markdown,
-        ] {
-            fs::remove_file(path).ok();
-        }
-    }
-
-    #[test]
-    fn converts_pdf_text_to_a_structured_document() {
-        let pdf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .join("golden/golden_test_document.pdf");
-        let json = unique_temp_path("pdf_structured_json");
-
-        convert_file(&pdf, &json, Format::Pdf, Format::Json).unwrap();
-
-        let document: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(&json).unwrap()).unwrap();
-        let blocks = document["blocks"].as_array().unwrap();
-        assert!(!blocks.is_empty());
-        assert!(
-            blocks
-                .iter()
-                .any(|block| block["type"] == "paragraph" || block["type"] == "image")
-        );
-
-        fs::remove_file(json).ok();
-    }
-
-    #[test]
-    fn converts_between_json_yaml_and_toml_values() {
-        let json = unique_temp_path("structured_value_json");
-        let yaml = unique_temp_path("structured_value_yaml");
-        let restored_json = unique_temp_path("structured_value_restored_json");
-        let toml = unique_temp_path("structured_value_toml");
-        let restored_toml_json = unique_temp_path("structured_value_toml_restored_json");
-        let value = serde_json::json!({
-            "blocks": [
-                {"type": "heading", "level": 1, "text": "Title"},
-                {"type": "table", "rows": [["Name"], ["Ada"]]}
-            ]
-        });
-        fs::write(&json, serde_json::to_string(&value).unwrap()).unwrap();
-
-        convert_file(&json, &yaml, Format::Json, Format::Yaml).unwrap();
-        convert_file(&yaml, &restored_json, Format::Yaml, Format::Json).unwrap();
-
-        let restored: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(&restored_json).unwrap()).unwrap();
-        assert_eq!(restored, value);
-
-        convert_file(&json, &toml, Format::Json, Format::Toml).unwrap();
-        convert_file(&toml, &restored_toml_json, Format::Toml, Format::Json).unwrap();
-        let restored_from_toml: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(&restored_toml_json).unwrap()).unwrap();
-        assert_eq!(restored_from_toml, value);
-
-        for path in [json, yaml, restored_json, toml, restored_toml_json] {
-            fs::remove_file(path).ok();
-        }
-    }
-
-    #[test]
-    fn round_trips_markdown_table_through_xlsx() {
-        let markdown = unique_temp_path("markdown_xlsx_input");
-        let workbook = unique_temp_path("markdown_xlsx_workbook");
-        let restored = unique_temp_path("markdown_xlsx_output");
-        fs::write(&markdown, "| name | score |\n| --- | --- |\n| Ada | 42 |\n").unwrap();
-
-        convert_file(&markdown, &workbook, Format::Markdown, Format::Xlsx).unwrap();
-        convert_file(&workbook, &restored, Format::Xlsx, Format::Markdown).unwrap();
-
-        let rendered = fs::read_to_string(&restored).unwrap();
-        assert!(rendered.contains("| name | score |"));
-        assert!(rendered.contains("| Ada | 42 |"));
-
-        fs::remove_file(markdown).ok();
-        fs::remove_file(workbook).ok();
-        fs::remove_file(restored).ok();
-    }
-
-    #[test]
-    fn round_trips_multiple_xlsx_sheets_through_markdown() {
-        let workbook = unique_temp_path("multiple_sheets_input");
-        let markdown = unique_temp_path("multiple_sheets_markdown");
-        let restored = unique_temp_path("multiple_sheets_output");
-        let mut sheets = BTreeMap::new();
-        sheets.insert(
-            "People".to_string(),
-            vec![vec!["name".to_string()], vec!["Ada".to_string()]],
-        );
-        sheets.insert(
-            "Scores".to_string(),
-            vec![vec!["score".to_string()], vec!["42".to_string()]],
-        );
-        write_xlsx_sheets(&workbook, &sheets).unwrap();
-
-        convert_file(&workbook, &markdown, Format::Xlsx, Format::Markdown).unwrap();
-        convert_file(&markdown, &restored, Format::Markdown, Format::Xlsx).unwrap();
-
-        let restored_sheets = read_xlsx_sheets(&restored).unwrap();
-        assert_eq!(restored_sheets["People"][1][0], "Ada");
-        assert_eq!(restored_sheets["Scores"][1][0], "42");
-
-        fs::remove_file(workbook).ok();
-        fs::remove_file(markdown).ok();
-        fs::remove_file(restored).ok();
-    }
-
-    #[test]
-    fn round_trips_json_rows_through_xlsx() {
-        let json = unique_temp_path("json_xlsx_input");
-        let workbook = unique_temp_path("json_xlsx_workbook");
-        let restored = unique_temp_path("json_xlsx_output");
-        fs::write(&json, r#"[{"name":"Ada","active":true,"score":42}]"#).unwrap();
-
-        convert_file(&json, &workbook, Format::Json, Format::Xlsx).unwrap();
-        convert_file(&workbook, &restored, Format::Xlsx, Format::Json).unwrap();
-
-        let rendered: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(&restored).unwrap()).unwrap();
-        assert_eq!(rendered[0]["name"], "Ada");
-        assert_eq!(rendered[0]["active"], true);
-        assert_eq!(rendered[0]["score"], 42);
-
-        fs::remove_file(json).ok();
-        fs::remove_file(workbook).ok();
-        fs::remove_file(restored).ok();
-    }
-
-    #[test]
-    fn round_trips_markdown_through_docx() {
-        let markdown = unique_temp_path("markdown_docx_input");
-        let document = unique_temp_path("markdown_docx_document");
-        let restored = unique_temp_path("markdown_docx_output");
-        fs::write(&markdown, "# Project\n\nA **bold** and *italic* note.\n").unwrap();
-
-        convert_file(&markdown, &document, Format::Markdown, Format::Docx).unwrap();
-        convert_file(&document, &restored, Format::Docx, Format::Markdown).unwrap();
-
-        let rendered = fs::read_to_string(&restored).unwrap();
-        assert!(rendered.contains("# Project"));
-        assert!(rendered.contains("**bold**"));
-        assert!(rendered.contains("*italic*"));
-
-        fs::remove_file(markdown).ok();
-        fs::remove_file(document).ok();
-        fs::remove_file(restored).ok();
-    }
-
-    #[test]
-    fn round_trips_markdown_lists_through_docx() {
-        let markdown = unique_temp_path("markdown_docx_lists_input");
-        let document = unique_temp_path("markdown_docx_lists_document");
-        let restored = unique_temp_path("markdown_docx_lists_output");
-        fs::write(
-            &markdown,
-            "- First task\n- Second task\n\n1. First step\n2. Second step\n",
-        )
-        .unwrap();
-
-        convert_file(&markdown, &document, Format::Markdown, Format::Docx).unwrap();
-        convert_file(&document, &restored, Format::Docx, Format::Markdown).unwrap();
-
-        let rendered = fs::read_to_string(&restored).unwrap();
-        assert!(rendered.contains("- First task"));
-        assert!(rendered.contains("- Second task"));
-        assert!(rendered.contains("1. First step"));
-        assert!(rendered.contains("2. Second step"));
-
-        fs::remove_file(markdown).ok();
-        fs::remove_file(document).ok();
-        fs::remove_file(restored).ok();
-    }
-
-    #[test]
-    fn converts_pageref_fields_to_markdown_links() {
-        use std::io::Write;
-        use zip::write::SimpleFileOptions;
-
-        let document = unique_temp_path("pageref_input");
-        let markdown = unique_temp_path("pageref_output");
-        let xml = r#"<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:bookmarkStart w:id="0" w:name="_TocTarget"/><w:r><w:t>Target heading</w:t></w:r></w:p><w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> PAGEREF _TocTarget \h </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>3</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p></w:body></w:document>"#;
-        let file = fs::File::create(&document).unwrap();
-        let mut archive = zip::ZipWriter::new(file);
-        archive
-            .start_file("word/document.xml", SimpleFileOptions::default())
-            .unwrap();
-        archive.write_all(xml.as_bytes()).unwrap();
-        archive.finish().unwrap();
-
-        convert_file(&document, &markdown, Format::Docx, Format::Markdown).unwrap();
-
-        let rendered = fs::read_to_string(&markdown).unwrap();
-        assert!(rendered.contains("<a id=\"_TocTarget\"></a>\n# Target heading"));
-        assert!(rendered.contains("[3](#_TocTarget)"));
-        assert!(!rendered.contains("PAGEREF"));
-
-        fs::remove_file(document).ok();
-        fs::remove_file(markdown).ok();
-    }
-}
+mod tests;
