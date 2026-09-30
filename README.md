@@ -119,7 +119,7 @@ The general command is:
 markoff convert INPUT [--from FORMAT] [--to FORMAT] [-o OUTPUT]
 ```
 
-The source format is detected from the input extension and the target format from `--to` or the output extension. Use `--from` when the source format cannot be inferred. When `-o` is omitted, the converted file is written next to the source file with the target extension. If the destination file already exists, the command fails with an error unless `--overwrite` is given.
+The source format is detected from the input extension and the target format from `--to` or the output extension. Use `--from` when the source format cannot be inferred. When `-o` is omitted, the converted file is written next to the source file with the target extension. If the destination file already exists, the command fails with an error unless `--overwrite` is given. The input file is never overwritten, even with `--overwrite`.
 
 ```powershell
 # CSV to a Markdown table; creates .\report.md
@@ -191,7 +191,7 @@ cargo run -p markoff_cli -- batch .\exports --pattern '*.csv' --to xlsx -o .\wor
 
 As with `convert`, pass `--overwrite` to replace output files that already exist; otherwise a matching existing destination file stops the batch with an error.
 
-The pattern is relative to the supplied directory. The progress bar counts matching files; conversion stops and returns an error when an individual input is unsupported or invalid.
+The pattern is relative to the supplied directory. The progress indicator advances for converted files; conversion stops and returns an error when a matching file cannot be read or an individual input is unsupported or invalid.
 
 ## Graphical application
 
@@ -204,9 +204,9 @@ cargo run -p markoff_cli -- gui
 
 1. Select **Add files** or drag files into the application window.
 2. Choose the desired target format in **Convert to**.
-3. Select **Apply format** to refresh output filenames for queued files.
+3. Output filenames update automatically when you change the target format.
 4. Choose a file in the queue and select **Convert selected**.
-5. Inspect the source and result previews. The converted file is saved beside the original source using the selected target extension.
+5. Inspect the source and result previews. The converted file is saved beside the original source using the selected target extension; hover over its status for the output path or error.
 
 The toolbar also offers **Tables only** for supported document ↔ JSON/YAML/TOML conversions, switches between dark and light themes, and opens build information in **About**. Files are converted one at a time from the selected queue entry; adding the same source path twice does not create a duplicate job.
 

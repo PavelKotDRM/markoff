@@ -61,6 +61,54 @@ fn rejects_existing_output_without_overwrite() {
 }
 
 #[test]
+fn rejects_overwriting_the_input_even_with_overwrite_enabled() {
+    let input = unique_temp_path("same_input_and_output");
+    let original = "# Keep this source\n";
+    fs::write(&input, original).unwrap();
+
+    let request = ConversionRequest {
+        input: input.clone(),
+        output: input.clone(),
+        from: Format::Markdown,
+        to: Format::Html,
+        overwrite: true,
+        csv_delimiter: b',',
+        tables_only: false,
+    };
+    assert!(matches!(
+        convert_document(&request),
+        Err(MarkoffError::InvalidOption { .. })
+    ));
+    assert_eq!(fs::read_to_string(&input).unwrap(), original);
+    fs::remove_file(input).unwrap();
+}
+
+#[test]
+fn rejects_overwriting_the_input_through_an_alias() {
+    let input = unique_temp_path("same_file_alias_input");
+    let alias = unique_temp_path("same_file_alias_output");
+    fs::write(&input, "# Keep this source\n").unwrap();
+    fs::hard_link(&input, &alias).unwrap();
+
+    let request = ConversionRequest {
+        input: input.clone(),
+        output: alias.clone(),
+        from: Format::Markdown,
+        to: Format::Html,
+        overwrite: true,
+        csv_delimiter: b',',
+        tables_only: false,
+    };
+    assert!(matches!(
+        convert_document(&request),
+        Err(MarkoffError::InvalidOption { .. })
+    ));
+    assert_eq!(fs::read_to_string(&input).unwrap(), "# Keep this source\n");
+    fs::remove_file(alias).unwrap();
+    fs::remove_file(input).unwrap();
+}
+
+#[test]
 fn overwrites_existing_output_when_requested() {
     let input = unique_temp_path("overwrite_allowed_input");
     let output = unique_temp_path("overwrite_allowed_output");

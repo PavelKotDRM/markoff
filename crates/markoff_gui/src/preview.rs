@@ -92,10 +92,15 @@ pub(super) fn load_source_preview(input: &Path) -> SourcePreview {
         .unwrap_or_else(|| Path::new("."))
         .to_path_buf();
     match detect_format(input) {
-        Ok(Format::Markdown) => SourcePreview::Markdown {
-            content: read_text_or_error(input),
-            base_dir,
-            _temporary_assets: None,
+        Ok(Format::Markdown) => match std::fs::read_to_string(input) {
+            Ok(content) => SourcePreview::Markdown {
+                content,
+                base_dir,
+                _temporary_assets: None,
+            },
+            Err(error) => {
+                SourcePreview::Text(format!("Unable to read {}: {error}", input.display()))
+            }
         },
         Ok(Format::Json) => structured_tree_preview(input, |source| {
             serde_json::from_str(source).map_err(|error| error.to_string())
@@ -463,10 +468,9 @@ pub(super) fn render_json_tree(ui: &mut egui::Ui, value: &serde_json::Value) {
 }
 
 fn render_json_node(ui: &mut egui::Ui, key: &str, value: &serde_json::Value) {
-    match value {
+    ui.push_id(key, |ui| match value {
         serde_json::Value::Object(map) => {
             egui::CollapsingHeader::new(key)
-                .id_salt(key)
                 .default_open(false)
                 .show(ui, |ui| {
                     for (child_key, child) in map {
@@ -476,7 +480,6 @@ fn render_json_node(ui: &mut egui::Ui, key: &str, value: &serde_json::Value) {
         }
         serde_json::Value::Array(items) => {
             egui::CollapsingHeader::new(format!("{key} [{}]", items.len()))
-                .id_salt(key)
                 .default_open(false)
                 .show(ui, |ui| {
                     for (index, child) in items.iter().enumerate() {
@@ -487,7 +490,7 @@ fn render_json_node(ui: &mut egui::Ui, key: &str, value: &serde_json::Value) {
         scalar => {
             ui.label(format!("{key}: {}", json_scalar_to_string(scalar)));
         }
-    }
+    });
 }
 
 fn json_scalar_to_string(value: &serde_json::Value) -> String {
@@ -603,6 +606,15 @@ mod tests {
             markdown_with_absolute_image_paths(markdown, Path::new("D:/Project/markoff/sample")),
             markdown
         );
+    }
+
+    #[test]
+    fn missing_markdown_is_shown_as_an_error_not_rendered_markdown() {
+        let missing = temporary_path("missing_markdown", "md");
+        let SourcePreview::Text(message) = super::load_source_preview(&missing) else {
+            panic!("expected an explicit read error");
+        };
+        assert!(message.contains("Unable to read"));
     }
 
     #[test]

@@ -143,12 +143,28 @@ impl MarkoffApp {
         }
     }
 
+    fn remove_job(&mut self, index: usize) {
+        self.jobs.remove(index);
+        self.selected = match self.selected {
+            Some(selected) if selected == index => None,
+            Some(selected) if selected > index => Some(selected - 1),
+            other => other,
+        };
+    }
+
     fn convert_selected(&mut self) {
-        let Some(index) = self.selected else {
+        let Some(job) = self.selected.and_then(|index| self.jobs.get_mut(index)) else {
             return;
         };
-        let delimiter = self.csv_delimiter.bytes().next().unwrap_or(b',');
-        let job = &mut self.jobs[index];
+        let delimiter = match self.csv_delimiter.as_bytes() {
+            [delimiter] if delimiter.is_ascii() => *delimiter,
+            _ => {
+                job.status = JobStatus::Failed;
+                job.message = "CSV delimiter must be a single ASCII character.".to_string();
+                job.result_preview = SourcePreview::message(job.message.clone());
+                return;
+            }
+        };
         let result = detect_format(&job.input).and_then(|from| {
             convert_document(&ConversionRequest {
                 input: job.input.clone(),
@@ -193,6 +209,7 @@ impl eframe::App for MarkoffApp {
                 }
                 ui.separator();
                 ui.label("Convert to:");
+                let previous_target = self.target;
                 egui::ComboBox::from_id_salt("target_format")
                     .selected_text(self.target.to_string())
                     .show_ui(ui, |ui| {
@@ -211,7 +228,7 @@ impl eframe::App for MarkoffApp {
                             ui.selectable_value(&mut self.target, format, format.to_string());
                         }
                     });
-                if ui.button("Apply format").clicked() {
+                if self.target != previous_target {
                     self.update_outputs();
                 }
                 ui.checkbox(&mut self.overwrite, "Overwrite existing files");
@@ -288,7 +305,15 @@ impl eframe::App for MarkoffApp {
                                 }
                             });
                             row.col(|ui| {
-                                if ui.small_button(job.status.label()).clicked() {
+                                if ui
+                                    .small_button(job.status.label())
+                                    .on_hover_text(if job.message.is_empty() {
+                                        job.output.display().to_string()
+                                    } else {
+                                        job.message.clone()
+                                    })
+                                    .clicked()
+                                {
                                     remove = Some(index);
                                 }
                             });
@@ -296,8 +321,7 @@ impl eframe::App for MarkoffApp {
                     }
                 });
             if let Some(index) = remove {
-                self.jobs.remove(index);
-                self.selected = self.selected.filter(|selected| *selected != index);
+                self.remove_job(index);
             }
         });
 
@@ -494,5 +518,62 @@ mod tests {
 
         fs::remove_file(markdown).ok();
         fs::remove_file(output).ok();
+    }
+
+    #[test]
+    fn removing_an_earlier_job_preserves_the_selected_file() {
+        let mut app = MarkoffApp::default();
+        let first = temporary_path("first", "md");
+        let selected = temporary_path("selected", "md");
+        let last = temporary_path("last", "md");
+        for path in [&first, &selected, &last] {
+            fs::write(path, "# Preview\n").unwrap();
+            app.add_file(path.clone());
+        }
+        app.selected = Some(1);
+        app.remove_job(0);
+        assert_eq!(app.selected, Some(0));
+        assert_eq!(app.jobs[0].input, selected);
+        app.remove_job(0);
+        assert_eq!(app.selected, None);
+        for path in [first, selected, last] {
+            fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn invalid_csv_delimiter_is_reported_without_writing_output() {
+        let input = temporary_path("delimiter_input", "md");
+        fs::write(&input, "| A |\n| --- |\n| B |\n").unwrap();
+        let mut app = MarkoffApp {
+            target: Format::Csv,
+            csv_delimiter: String::new(),
+            ..MarkoffApp::default()
+        };
+        app.add_file(input.clone());
+        app.convert_selected();
+        assert!(matches!(app.jobs[0].status, JobStatus::Failed));
+        assert!(app.jobs[0].message.contains("delimiter"));
+        assert!(!app.jobs[0].output.exists());
+        fs::remove_file(input).unwrap();
+    }
+
+    #[test]
+    fn changing_target_refreshes_pending_outputs_and_preview() {
+        let input = temporary_path("target_change", "md");
+        fs::write(&input, "# Preview\n").unwrap();
+        let mut app = MarkoffApp::default();
+        app.add_file(input.clone());
+        app.jobs[0].status = JobStatus::Failed;
+        app.jobs[0].message = "previous conversion failed".to_string();
+
+        app.target = Format::Pdf;
+        app.update_outputs();
+
+        assert_eq!(app.jobs[0].output.extension().unwrap(), "pdf");
+        assert!(matches!(app.jobs[0].status, JobStatus::Pending));
+        assert!(app.jobs[0].message.is_empty());
+        assert!(matches!(app.jobs[0].result_preview, SourcePreview::Text(_)));
+        fs::remove_file(input).unwrap();
     }
 }

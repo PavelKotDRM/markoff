@@ -103,7 +103,8 @@ static INTERMEDIATE_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 ///
 /// The input must exist. Missing output directories are created before
 /// conversion. When `tables_only` is enabled, the requested format pair must
-/// be supported by [`supports_tables_only`].
+/// be supported by [`supports_tables_only`]. The output must not refer to the
+/// input file, even when overwriting is enabled.
 ///
 /// # Errors
 ///
@@ -112,7 +113,7 @@ static INTERMEDIATE_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 ///
 /// - [`MarkoffError::InvalidInput`] when the input file does not exist.
 /// - [`MarkoffError::InvalidOption`] when `tables_only` is not supported for
-///   the requested format pair.
+///   the requested format pair, or the output refers to the input file.
 /// - [`MarkoffError::OutputExists`] when overwriting is disabled and the
 ///   destination already exists.
 /// - [`MarkoffError::OutputDirectory`] when a missing destination directory
@@ -123,6 +124,12 @@ pub fn convert_document(request: &ConversionRequest) -> Result<(), MarkoffError>
     if !request.input.exists() {
         return Err(MarkoffError::InvalidInput {
             path: request.input.to_string_lossy().to_string(),
+        });
+    }
+
+    if request.output.exists() && same_file::is_same_file(&request.input, &request.output)? {
+        return Err(MarkoffError::InvalidOption {
+            message: "input and output paths must differ".to_string(),
         });
     }
 
@@ -400,21 +407,31 @@ fn convert_via_markdown_intermediate(
     to_markdown: impl FnOnce(&Path) -> Result<(), MarkoffError>,
     from_markdown: impl FnOnce(&Path) -> Result<(), MarkoffError>,
 ) -> Result<(), MarkoffError> {
-    let markdown = intermediate_path("md");
+    let markdown = intermediate_path("md")?;
     let result = to_markdown(&markdown).and_then(|()| from_markdown(&markdown));
     remove_intermediate_markdown(&markdown);
     result
 }
 
-fn intermediate_path(extension: &str) -> PathBuf {
-    let sequence = INTERMEDIATE_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let directory = std::env::temp_dir().join(format!(
-        "markoff_intermediate_{}_{}",
-        std::process::id(),
-        sequence
-    ));
-    std::fs::create_dir_all(&directory).ok();
-    directory.join(format!("intermediate.{extension}"))
+fn intermediate_path(extension: &str) -> Result<PathBuf, MarkoffError> {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| std::io::Error::other(error.to_string()))?
+        .as_nanos();
+    loop {
+        let sequence = INTERMEDIATE_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let directory = std::env::temp_dir().join(format!(
+            "markoff_intermediate_{}_{}_{}",
+            std::process::id(),
+            nanos,
+            sequence
+        ));
+        match std::fs::create_dir(&directory) {
+            Ok(()) => return Ok(directory.join(format!("intermediate.{extension}"))),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
 }
 
 /// Removes an intermediate file's own temp directory, including any `image`
@@ -424,10 +441,14 @@ fn intermediate_path(extension: &str) -> PathBuf {
 fn remove_intermediate_markdown(markdown: &Path) {
     match markdown.parent() {
         Some(parent) => {
-            std::fs::remove_dir_all(parent).ok();
+            if let Err(error) = std::fs::remove_dir_all(parent) {
+                tracing::warn!(path = %parent.display(), %error, "failed to remove intermediate directory");
+            }
         }
         None => {
-            std::fs::remove_file(markdown).ok();
+            if let Err(error) = std::fs::remove_file(markdown) {
+                tracing::warn!(path = %markdown.display(), %error, "failed to remove intermediate file");
+            }
         }
     }
 }

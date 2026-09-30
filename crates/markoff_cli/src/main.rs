@@ -283,10 +283,22 @@ fn convert_one_with_io(
     Ok(())
 }
 
-fn matching_files(pattern: &str) -> anyhow::Result<impl Iterator<Item = PathBuf>> {
-    Ok(glob::glob(pattern)?
-        .filter_map(Result::ok)
-        .filter(|path| path.is_file()))
+fn matching_files(pattern: &str) -> anyhow::Result<impl Iterator<Item = anyhow::Result<PathBuf>>> {
+    Ok(glob::glob(pattern)?.filter_map(|result| match result {
+        Ok(path) => matching_file(path),
+        Err(error) => Some(Err(error.into())),
+    }))
+}
+
+fn matching_file(path: PathBuf) -> Option<anyhow::Result<PathBuf>> {
+    match std::fs::metadata(&path) {
+        Ok(metadata) if metadata.is_file() => Some(Ok(path)),
+        Ok(_) => None,
+        Err(error) => Some(Err(anyhow::anyhow!(
+            "unable to inspect {}: {error}",
+            path.display()
+        ))),
+    }
 }
 
 fn run_batch(
@@ -304,6 +316,7 @@ fn run_batch(
     progress.set_style(ProgressStyle::with_template("{spinner} {pos} {msg}")?);
 
     for input in inputs {
+        let input = input?;
         let from = detect_format(&input)?;
         let stem = input
             .file_stem()
@@ -386,7 +399,10 @@ fn main() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ConvertOptions, TemporaryFile, convert_one_with_io, matching_files, run_batch};
+    use super::{
+        ConvertOptions, TemporaryFile, convert_one_with_io, matching_file, matching_files,
+        run_batch,
+    };
     use markoff_core::Format;
     use std::io::{self, Cursor, Write};
     use std::path::{Path, PathBuf};
@@ -482,6 +498,13 @@ mod tests {
     }
 
     #[test]
+    fn matching_file_reports_missing_matches_instead_of_skipping_them() {
+        let missing = temporary_paths("missing_match")[0].clone();
+        let error = matching_file(missing.clone()).unwrap().unwrap_err();
+        assert!(error.to_string().contains(&missing.display().to_string()));
+    }
+
+    #[test]
     fn matching_files_preserves_glob_order_and_filters_directories() {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -499,7 +522,10 @@ mod tests {
             .filter(|path| path.is_file())
             .collect::<Vec<_>>();
 
-        let actual = matching_files(&pattern).unwrap().collect::<Vec<_>>();
+        let actual = matching_files(&pattern)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
 
         assert_eq!(actual, expected);
         assert_eq!(actual.len(), 2);
@@ -520,7 +546,10 @@ mod tests {
         std::fs::write(directory.join("second.md"), "# Second\n").unwrap();
 
         let pattern = directory.join("*.md").to_string_lossy().into_owned();
-        let inputs = matching_files(&pattern).unwrap().collect::<Vec<_>>();
+        let inputs = matching_files(&pattern)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
         assert_eq!(inputs.len(), 2);
         let first_output = output
             .join(inputs[0].file_stem().unwrap())
