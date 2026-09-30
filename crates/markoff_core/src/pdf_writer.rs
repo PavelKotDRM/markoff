@@ -19,6 +19,7 @@ const INTERNAL_LINK_PREFIX: &str = "markoff-internal:";
 const CODE_BACKGROUND: PdfColor = PdfColor::new(246, 248, 250, 255);
 const TABLE_HEADER_BACKGROUND: PdfColor = PdfColor::new(235, 240, 246, 255);
 const TABLE_BORDER: PdfColor = PdfColor::new(180, 188, 198, 255);
+const TABLE_SPACE_AFTER: f32 = 16.0;
 const HEADING_COLOR: PdfColor = PdfColor::new(31, 57, 86, 255);
 const LINK_COLOR: PdfColor = PdfColor::new(28, 86, 150, 255);
 

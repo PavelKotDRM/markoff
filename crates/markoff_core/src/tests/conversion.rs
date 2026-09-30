@@ -339,6 +339,165 @@ fn pdf_wraps_formatted_text_and_code_and_preserves_unicode() {
 }
 
 #[test]
+fn pdf_code_text_stays_inside_its_background_across_pages() {
+    use pdfium_bundled::pdfium_render::prelude::{
+        PdfPageObjectCommon, PdfPageObjectType, PdfPageObjectsCommon,
+    };
+
+    let input = unique_temp_path("pdf_code_bounds_input");
+    let output = unique_temp_path("pdf_code_bounds_output");
+    let code = (0..100)
+        .map(|index| format!("code_line_{index:03}"))
+        .chain(std::iter::once("long_code_".repeat(80)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(&input, format!("```\n{code}\n```\n")).unwrap();
+
+    convert_file(&input, &output, Format::Markdown, Format::Pdf).unwrap();
+
+    let pdfium = crate::pdf::bundled_pdfium().unwrap();
+    let pdf = pdfium.load_pdf_from_file(&output, None).unwrap();
+    assert!(pdf.pages().len() > 1);
+    let mut text_count = 0;
+    for index in pdf.pages().as_range() {
+        let page = pdf.pages().get(index).unwrap();
+        let backgrounds = page
+            .objects()
+            .iter()
+            .filter(|object| object.object_type() == PdfPageObjectType::Path)
+            .map(|object| object.bounds().unwrap())
+            .collect::<Vec<_>>();
+        for object in page
+            .objects()
+            .iter()
+            .filter(|object| object.object_type() == PdfPageObjectType::Text)
+        {
+            let text = object.as_text_object().unwrap().text();
+            let bounds = object.bounds().unwrap();
+            text_count += 1;
+            assert!(
+                backgrounds.iter().any(|background| {
+                    bounds.left().value >= background.left().value - 0.5
+                        && bounds.right().value <= background.right().value + 0.5
+                        && bounds.bottom().value >= background.bottom().value - 0.5
+                        && bounds.top().value <= background.top().value + 0.5
+                }),
+                "{text:?} on page {index} escapes the code background: {bounds:?}"
+            );
+        }
+    }
+    assert!(text_count >= 100);
+
+    fs::remove_file(input).ok();
+    fs::remove_file(output).ok();
+}
+
+#[test]
+fn pdf_long_table_cells_stay_inside_page_and_cell() {
+    use pdfium_bundled::pdfium_render::prelude::{
+        PdfPageObjectCommon, PdfPageObjectType, PdfPageObjectsCommon,
+    };
+
+    let input = unique_temp_path("pdf_table_bounds_input");
+    let output = unique_temp_path("pdf_table_bounds_output");
+    fs::write(
+        &input,
+        format!("| Column |\n| --- |\n| {} |\n", "cell".repeat(3000)),
+    )
+    .unwrap();
+    convert_file(&input, &output, Format::Markdown, Format::Pdf).unwrap();
+
+    let pdfium = crate::pdf::bundled_pdfium().unwrap();
+    let pdf = pdfium.load_pdf_from_file(&output, None).unwrap();
+    assert!(pdf.pages().len() > 1);
+    for index in pdf.pages().as_range() {
+        let page = pdf.pages().get(index).unwrap();
+        let cells = page
+            .objects()
+            .iter()
+            .filter(|object| object.object_type() == PdfPageObjectType::Path)
+            .map(|object| object.bounds().unwrap())
+            .collect::<Vec<_>>();
+        for object in page
+            .objects()
+            .iter()
+            .filter(|object| object.object_type() == PdfPageObjectType::Text)
+        {
+            let bounds = object.bounds().unwrap();
+            assert!(
+                bounds.bottom().value >= 42.0,
+                "table text on page {index} crosses the bottom margin: {bounds:?}"
+            );
+            assert!(
+                cells.iter().any(|cell| {
+                    bounds.left().value >= cell.left().value - 0.5
+                        && bounds.right().value <= cell.right().value + 0.5
+                        && bounds.bottom().value >= cell.bottom().value - 0.5
+                        && bounds.top().value <= cell.top().value + 0.5
+                }),
+                "table text on page {index} escapes its cell: {bounds:?}"
+            );
+        }
+    }
+
+    fs::remove_file(input).ok();
+    fs::remove_file(output).ok();
+}
+
+#[test]
+fn pdf_paragraph_after_table_does_not_overlap_the_table() {
+    use pdfium_bundled::pdfium_render::prelude::{
+        PdfPageObjectCommon, PdfPageObjectType, PdfPageObjectsCommon,
+    };
+
+    let input = unique_temp_path("pdf_table_following_paragraph_input");
+    let output = unique_temp_path("pdf_table_following_paragraph_output");
+    fs::write(
+        &input,
+        "| A | B |\n| --- | --- |\n| 1 | 2 |\n\n\
+         Таблица 2. Таблица с длинным текстом\n\n\
+         | C | D |\n| --- | --- |\n| 3 | 4 |\n",
+    )
+    .unwrap();
+    convert_file(&input, &output, Format::Markdown, Format::Pdf).unwrap();
+
+    let pdfium = crate::pdf::bundled_pdfium().unwrap();
+    let pdf = pdfium.load_pdf_from_file(&output, None).unwrap();
+    let page = pdf.pages().get(0).unwrap();
+    let caption = page
+        .objects()
+        .iter()
+        .find(|object| {
+            object.object_type() == PdfPageObjectType::Text
+                && object
+                    .as_text_object()
+                    .is_some_and(|text| text.text().starts_with("Таблица 2."))
+        })
+        .expect("caption text should be present")
+        .bounds()
+        .unwrap();
+    let overlapping_paths = page
+        .objects()
+        .iter()
+        .filter(|object| object.object_type() == PdfPageObjectType::Path)
+        .map(|object| object.bounds().unwrap())
+        .filter(|bounds| {
+            caption.left().value < bounds.right().value
+                && caption.right().value > bounds.left().value
+                && caption.bottom().value < bounds.top().value
+                && caption.top().value > bounds.bottom().value
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        overlapping_paths.is_empty(),
+        "caption overlaps table graphics: {overlapping_paths:?}"
+    );
+
+    fs::remove_file(input).ok();
+    fs::remove_file(output).ok();
+}
+
+#[test]
 fn converts_markdown_syntax_and_navigation_to_rich_pdf() {
     use base64::Engine as _;
 

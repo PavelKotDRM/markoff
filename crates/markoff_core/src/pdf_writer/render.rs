@@ -446,7 +446,7 @@ impl<'a> PdfWriter<'a> {
                 PdfRect::new_from_values(
                     self.cursor_y - line_height + 2.0,
                     left,
-                    self.cursor_y + 3.0,
+                    self.cursor_y + size,
                     left + width,
                 ),
                 None,
@@ -548,7 +548,7 @@ impl<'a> PdfWriter<'a> {
                 line_start += line_count;
             }
         }
-        self.cursor_y -= 8.0;
+        self.cursor_y -= TABLE_SPACE_AFTER;
         Ok(())
     }
 
