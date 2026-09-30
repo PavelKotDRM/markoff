@@ -37,6 +37,7 @@
 //!     overwrite: false,
 //!     csv_delimiter: b',',
 //!     tables_only: false,
+//!     style: None,
 //! };
 //! assert_eq!(request.from, Format::Markdown);
 //! # Ok(())
@@ -77,12 +78,17 @@ mod pdf;
 mod pdf_writer;
 mod pptx;
 mod pptx_reader;
+mod style;
 mod tables;
 mod xlsx;
 mod xml_utils;
 mod zip_utils;
 
 pub use model::{ConversionRequest, Format, MarkoffError, detect_format};
+pub use style::{
+    StyleColor, StylePageOrientation, StylePageSize, StyleTextAlign, StyleThemePreview,
+    default_style_theme_toml, load_style_theme_preview, write_default_style_theme,
+};
 
 use csv_format::{convert_csv_to_markdown, convert_markdown_to_csv};
 use data::{convert_data_to_xlsx, convert_xlsx_to_data};
@@ -100,6 +106,7 @@ use opendocument::{
 use pdf::convert_pdf_to_markdown;
 use pdf_writer::convert_markdown_to_pdf;
 use pptx::{convert_markdown_to_pptx, convert_pptx_to_markdown};
+use style::{DocumentTheme, load_document_theme};
 use xlsx::{convert_markdown_to_xlsx, convert_xlsx_to_markdown};
 
 static INTERMEDIATE_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -143,6 +150,19 @@ pub fn convert_document(request: &ConversionRequest) -> Result<(), MarkoffError>
             message: "--tables-only requires a conversion between a document format and JSON, YAML, or TOML".to_string(),
         });
     }
+    if request.style.is_some()
+        && !matches!(
+            request.to,
+            Format::Pdf | Format::Html | Format::Docx | Format::Odt
+        )
+    {
+        return Err(MarkoffError::InvalidOption {
+            message: format!(
+                "style themes are supported only for PDF, HTML, DOCX, and ODT output, not {}",
+                request.to
+            ),
+        });
+    }
 
     if !request.overwrite && request.output.exists() {
         return Err(MarkoffError::OutputExists {
@@ -178,15 +198,20 @@ fn route_conversion(request: &ConversionRequest) -> Result<(), MarkoffError> {
     }
 }
 
+fn request_theme(request: &ConversionRequest) -> Result<DocumentTheme, MarkoffError> {
+    load_document_theme(request.style.as_deref())
+}
+
 fn route_odt(request: &ConversionRequest) -> Result<(), MarkoffError> {
+    let theme = request_theme(request)?;
     match request.to {
         Format::Markdown => convert_odt_to_markdown(&request.input, &request.output),
         Format::Html | Format::Pdf | Format::Csv | Format::Xlsx | Format::Ods => {
             convert_via_markdown_intermediate(
                 |markdown| convert_odt_to_markdown(&request.input, markdown),
                 |markdown| match request.to {
-                    Format::Html => convert_markdown_to_html(markdown, &request.output),
-                    Format::Pdf => convert_markdown_to_pdf(markdown, &request.output),
+                    Format::Html => convert_markdown_to_html(markdown, &request.output, &theme),
+                    Format::Pdf => convert_markdown_to_pdf(markdown, &request.output, &theme),
                     Format::Csv => {
                         convert_markdown_to_csv(markdown, &request.output, request.csv_delimiter)
                     }
@@ -206,11 +231,12 @@ fn route_odt(request: &ConversionRequest) -> Result<(), MarkoffError> {
 }
 
 fn route_docx(request: &ConversionRequest) -> Result<(), MarkoffError> {
+    let theme = request_theme(request)?;
     match request.to {
         Format::Markdown => convert_docx_to_markdown(&request.input, &request.output),
         Format::Html => convert_via_markdown_intermediate(
             |markdown| convert_docx_to_markdown(&request.input, markdown),
-            |markdown| convert_markdown_to_html(markdown, &request.output),
+            |markdown| convert_markdown_to_html(markdown, &request.output, &theme),
         ),
         Format::Csv | Format::Xlsx => convert_via_markdown_intermediate(
             |markdown| convert_docx_to_markdown(&request.input, markdown),
@@ -229,7 +255,7 @@ fn route_docx(request: &ConversionRequest) -> Result<(), MarkoffError> {
         }
         Format::Pdf => convert_via_markdown_intermediate(
             |markdown| convert_docx_to_markdown(&request.input, markdown),
-            |markdown| convert_markdown_to_pdf(markdown, &request.output),
+            |markdown| convert_markdown_to_pdf(markdown, &request.output, &theme),
         ),
         _ => not_implemented(request),
     }
@@ -248,10 +274,11 @@ fn route_pdf(request: &ConversionRequest) -> Result<(), MarkoffError> {
 }
 
 fn route_markdown(request: &ConversionRequest) -> Result<(), MarkoffError> {
+    let theme = request_theme(request)?;
     match request.to {
-        Format::Docx => convert_markdown_to_docx(&request.input, &request.output),
-        Format::Odt => convert_markdown_to_odt(&request.input, &request.output),
-        Format::Pdf => convert_markdown_to_pdf(&request.input, &request.output),
+        Format::Docx => convert_markdown_to_docx(&request.input, &request.output, &theme),
+        Format::Odt => convert_markdown_to_odt(&request.input, &request.output, &theme),
+        Format::Pdf => convert_markdown_to_pdf(&request.input, &request.output, &theme),
         Format::Json | Format::Yaml | Format::Toml => convert_markdown_to_document(
             &request.input,
             &request.output,
@@ -265,23 +292,24 @@ fn route_markdown(request: &ConversionRequest) -> Result<(), MarkoffError> {
         Format::Ods => convert_markdown_to_ods(&request.input, &request.output),
         Format::Pptx => convert_markdown_to_pptx(&request.input, &request.output),
         Format::Odp => convert_markdown_to_odp(&request.input, &request.output),
-        Format::Html => convert_markdown_to_html(&request.input, &request.output),
+        Format::Html => convert_markdown_to_html(&request.input, &request.output, &theme),
         _ => not_implemented(request),
     }
 }
 
 fn route_csv(request: &ConversionRequest) -> Result<(), MarkoffError> {
+    let theme = request_theme(request)?;
     match request.to {
         Format::Markdown => {
             convert_csv_to_markdown(&request.input, &request.output, request.csv_delimiter)
         }
         Format::Docx => convert_via_markdown_intermediate(
             |markdown| convert_csv_to_markdown(&request.input, markdown, request.csv_delimiter),
-            |markdown| convert_markdown_to_docx(markdown, &request.output),
+            |markdown| convert_markdown_to_docx(markdown, &request.output, &theme),
         ),
         Format::Odt => convert_via_markdown_intermediate(
             |markdown| convert_csv_to_markdown(&request.input, markdown, request.csv_delimiter),
-            |markdown| convert_markdown_to_odt(markdown, &request.output),
+            |markdown| convert_markdown_to_odt(markdown, &request.output, &theme),
         ),
         Format::Xlsx => convert_data_to_xlsx(
             &request.input,
@@ -298,16 +326,17 @@ fn route_csv(request: &ConversionRequest) -> Result<(), MarkoffError> {
 }
 
 fn route_ods(request: &ConversionRequest) -> Result<(), MarkoffError> {
+    let theme = request_theme(request)?;
     match request.to {
         Format::Markdown => convert_ods_to_markdown(&request.input, &request.output),
         Format::Docx | Format::Odt | Format::Html | Format::Pdf => {
             convert_via_markdown_intermediate(
                 |markdown| convert_ods_to_markdown(&request.input, markdown),
                 |markdown| match request.to {
-                    Format::Docx => convert_markdown_to_docx(markdown, &request.output),
-                    Format::Odt => convert_markdown_to_odt(markdown, &request.output),
-                    Format::Html => convert_markdown_to_html(markdown, &request.output),
-                    Format::Pdf => convert_markdown_to_pdf(markdown, &request.output),
+                    Format::Docx => convert_markdown_to_docx(markdown, &request.output, &theme),
+                    Format::Odt => convert_markdown_to_odt(markdown, &request.output, &theme),
+                    Format::Html => convert_markdown_to_html(markdown, &request.output, &theme),
+                    Format::Pdf => convert_markdown_to_pdf(markdown, &request.output, &theme),
                     _ => unreachable!("only Markdown-backed ODS targets reach this branch"),
                 },
             )
@@ -331,11 +360,12 @@ fn route_ods(request: &ConversionRequest) -> Result<(), MarkoffError> {
 }
 
 fn route_xlsx(request: &ConversionRequest) -> Result<(), MarkoffError> {
+    let theme = request_theme(request)?;
     match request.to {
         Format::Markdown => convert_xlsx_to_markdown(&request.input, &request.output),
         Format::Docx => convert_via_markdown_intermediate(
             |markdown| convert_xlsx_to_markdown(&request.input, markdown),
-            |markdown| convert_markdown_to_docx(markdown, &request.output),
+            |markdown| convert_markdown_to_docx(markdown, &request.output, &theme),
         ),
         Format::Ods => convert_via_markdown_intermediate(
             |markdown| convert_xlsx_to_markdown(&request.input, markdown),
@@ -352,6 +382,7 @@ fn route_xlsx(request: &ConversionRequest) -> Result<(), MarkoffError> {
 }
 
 fn route_structured_data(request: &ConversionRequest) -> Result<(), MarkoffError> {
+    let theme = request_theme(request)?;
     match request.to {
         Format::Markdown => convert_document_to_markdown(
             &request.input,
@@ -360,10 +391,10 @@ fn route_structured_data(request: &ConversionRequest) -> Result<(), MarkoffError
             request.tables_only,
         ),
         Format::Docx => convert_structured_via_markdown(request, |markdown| {
-            convert_markdown_to_docx(markdown, &request.output)
+            convert_markdown_to_docx(markdown, &request.output, &theme)
         }),
         Format::Odt => convert_structured_via_markdown(request, |markdown| {
-            convert_markdown_to_odt(markdown, &request.output)
+            convert_markdown_to_odt(markdown, &request.output, &theme)
         }),
         Format::Xlsx => convert_data_to_xlsx(
             &request.input,
@@ -388,9 +419,10 @@ fn route_structured_data(request: &ConversionRequest) -> Result<(), MarkoffError
             &request.output,
             request.from,
             request.tables_only,
+            &theme,
         ),
         Format::Html => convert_structured_via_markdown(request, |markdown| {
-            convert_markdown_to_html(markdown, &request.output)
+            convert_markdown_to_html(markdown, &request.output, &theme)
         }),
         Format::Json | Format::Yaml | Format::Toml if request.from != request.to => {
             convert_structured_data_format(
@@ -605,6 +637,7 @@ where
         overwrite: true,
         csv_delimiter: b',',
         tables_only: false,
+        style: None,
     };
 
     convert_document(&request)

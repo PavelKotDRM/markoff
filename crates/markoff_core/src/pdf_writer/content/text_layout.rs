@@ -122,7 +122,21 @@ pub(in crate::pdf_writer) fn wrap_runs(
     font_size: f32,
     preserve_whitespace: bool,
 ) -> Vec<Vec<TextRun>> {
-    let available_width = available_width.max(1.0);
+    wrap_runs_with_first_line_indent(runs, available_width, 0.0, font_size, preserve_whitespace)
+}
+
+/// Wraps runs while reserving irst_line_indent points at the start of the first line.
+pub(in crate::pdf_writer) fn wrap_runs_with_first_line_indent(
+    runs: &[TextRun],
+    available_width: f32,
+    first_line_indent: f32,
+    font_size: f32,
+    preserve_whitespace: bool,
+) -> Vec<Vec<TextRun>> {
+    let widths = LineWidths {
+        available: available_width.max(1.0),
+        first_line_indent,
+    };
     let mut lines = Vec::<Vec<StyledGrapheme>>::new();
     let mut line = Vec::<StyledGrapheme>::new();
     let mut word = Vec::<StyledGrapheme>::new();
@@ -140,7 +154,7 @@ pub(in crate::pdf_writer) fn wrap_runs(
                 } else {
                     if graphemes_width(&line, font_size)
                         + grapheme_width(grapheme, &styled.style, font_size)
-                        > available_width
+                        > widths.limit(&lines)
                         && !line.is_empty()
                     {
                         lines.push(std::mem::take(&mut line));
@@ -153,7 +167,7 @@ pub(in crate::pdf_writer) fn wrap_runs(
                     &mut lines,
                     &mut word,
                     &mut pending_space,
-                    available_width,
+                    widths,
                     font_size,
                 );
                 lines.push(std::mem::take(&mut line));
@@ -164,7 +178,7 @@ pub(in crate::pdf_writer) fn wrap_runs(
                     &mut lines,
                     &mut word,
                     &mut pending_space,
-                    available_width,
+                    widths,
                     font_size,
                 );
                 if !line.is_empty() {
@@ -180,7 +194,7 @@ pub(in crate::pdf_writer) fn wrap_runs(
         &mut lines,
         &mut word,
         &mut pending_space,
-        available_width,
+        widths,
         font_size,
     );
     if !line.is_empty() || lines.is_empty() {
@@ -194,7 +208,7 @@ fn place_word(
     lines: &mut Vec<Vec<StyledGrapheme>>,
     word: &mut Vec<StyledGrapheme>,
     pending_space: &mut Option<StyledGrapheme>,
-    available_width: f32,
+    widths: LineWidths,
     font_size: f32,
 ) {
     if word.is_empty() {
@@ -207,7 +221,7 @@ fn place_word(
             grapheme_width(&space.text, &space.style, font_size)
         });
     if graphemes_width(line, font_size) + space_width + graphemes_width(word, font_size)
-        > available_width
+        > widths.limit(lines)
         && !line.is_empty()
     {
         lines.push(std::mem::take(line));
@@ -216,7 +230,7 @@ fn place_word(
     if let Some(space) = pending_space.take()
         && !line.is_empty()
         && graphemes_width(line, font_size) + grapheme_width(&space.text, &space.style, font_size)
-            <= available_width
+            <= widths.limit(lines)
     {
         line.push(space);
     }
@@ -224,12 +238,28 @@ fn place_word(
     for grapheme in word.drain(..) {
         if graphemes_width(line, font_size)
             + grapheme_width(&grapheme.text, &grapheme.style, font_size)
-            > available_width
+            > widths.limit(lines)
             && !line.is_empty()
         {
             lines.push(std::mem::take(line));
         }
         line.push(grapheme);
+    }
+}
+
+#[derive(Clone, Copy)]
+struct LineWidths {
+    available: f32,
+    first_line_indent: f32,
+}
+
+impl LineWidths {
+    fn limit(self, lines: &[Vec<StyledGrapheme>]) -> f32 {
+        if lines.is_empty() {
+            (self.available - self.first_line_indent).max(1.0)
+        } else {
+            self.available
+        }
     }
 }
 

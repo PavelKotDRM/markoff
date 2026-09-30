@@ -6,6 +6,10 @@ license = "MIT OR Apache-2.0"
 description = "GUI for markoff"
 publish = false
 
+[[bin]]
+name = "markoff_gui"
+path = "src/main.rs"
+
 [dependencies]
 anyhow = "1.0"
 egui = "0.36"

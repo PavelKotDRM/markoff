@@ -89,6 +89,7 @@ fn tables_only_keeps_table_blocks_when_converting_to_and_from_structured_data() 
         overwrite: true,
         csv_delimiter: b',',
         tables_only: true,
+        style: None,
     })
     .unwrap();
 
@@ -110,6 +111,7 @@ fn tables_only_keeps_table_blocks_when_converting_to_and_from_structured_data() 
         overwrite: true,
         csv_delimiter: b',',
         tables_only: true,
+        style: None,
     })
     .unwrap();
     convert_file(

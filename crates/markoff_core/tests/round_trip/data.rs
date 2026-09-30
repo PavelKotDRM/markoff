@@ -67,6 +67,7 @@ fn csv_supports_a_custom_delimiter() {
         overwrite: true,
         csv_delimiter: b';',
         tables_only: false,
+        style: None,
     })
     .unwrap();
     assert_eq!(
@@ -82,6 +83,7 @@ fn csv_supports_a_custom_delimiter() {
         overwrite: true,
         csv_delimiter: b';',
         tables_only: false,
+        style: None,
     })
     .unwrap();
     assert_eq!(

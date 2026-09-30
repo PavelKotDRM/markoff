@@ -123,6 +123,7 @@ impl Format {
 ///     overwrite: false,
 ///     csv_delimiter: b',',
 ///     tables_only: false,
+///     style: None,
 /// };
 /// assert_eq!(request.to, Format::Html);
 /// ```
@@ -146,6 +147,10 @@ pub struct ConversionRequest {
     /// and the JSON, YAML, or TOML document schema.
     #[serde(default)]
     pub tables_only: bool,
+    /// Optional path to a TOML style theme. When omitted, the built-in
+    /// formatting for the destination format is used.
+    #[serde(default)]
+    pub style: Option<PathBuf>,
 }
 
 /// The default CSV field delimiter (`,`).

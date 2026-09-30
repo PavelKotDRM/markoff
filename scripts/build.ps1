@@ -11,7 +11,7 @@ $artifactsDirectory = Join-Path $repositoryRoot "artifacts"
 $windowsArtifactsDirectory = Join-Path $artifactsDirectory "windows-x86_64"
 $linuxArtifactsDirectory = Join-Path $artifactsDirectory "linux-x86_64"
 $dockerImage = "markoff-linux-builder"
-$binaries = @("markoff_cli", "markoff_gui")
+$binaries = @("markoff", "markoff_gui")
 
 Set-Location $repositoryRoot
 
@@ -45,7 +45,7 @@ function Build-Linux {
         --workdir /workspace `
         --env CARGO_TARGET_DIR=/tmp/markoff-target `
         $dockerImage `
-        bash -c 'cargo build --release -p markoff_cli -p markoff_gui && cp /tmp/markoff-target/release/markoff_cli /tmp/markoff-target/release/markoff_gui /artifacts/linux-x86_64/'
+        bash -c 'cargo build --release -p markoff_cli -p markoff_gui && cp /tmp/markoff-target/release/markoff /tmp/markoff-target/release/markoff_gui /artifacts/linux-x86_64/'
     if ($LASTEXITCODE -ne 0) {
         throw "Linux release build failed."
     }

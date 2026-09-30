@@ -3,6 +3,7 @@ use std::path::Path;
 
 use crate::MarkoffError;
 use crate::error::invalid_data;
+use crate::style::DocumentTheme;
 use crate::tables::parse_markdown_table;
 use crate::zip_utils::write_zip_part;
 
@@ -10,6 +11,7 @@ mod blocks;
 mod footnotes;
 mod hyperlinks;
 mod lists;
+mod theme_styles;
 
 use blocks::{
     docx_code_block, docx_paragraph, docx_table, is_fenced_code_block_start, is_markdown_table_row,
@@ -19,7 +21,11 @@ use footnotes::{extract_footnotes, render_footnotes};
 use hyperlinks::{HyperlinkAllocator, build_heading_bookmarks};
 use lists::{NumberingStyle, parse_markdown_lists};
 
-pub(crate) fn convert_markdown_to_docx(input: &Path, output: &Path) -> Result<(), MarkoffError> {
+pub(crate) fn convert_markdown_to_docx(
+    input: &Path,
+    output: &Path,
+    theme: &DocumentTheme,
+) -> Result<(), MarkoffError> {
     use zip::write::SimpleFileOptions;
 
     let source = std::fs::read_to_string(input)?;
@@ -50,14 +56,19 @@ pub(crate) fn convert_markdown_to_docx(input: &Path, output: &Path) -> Result<()
                 index += 1;
             }
             let rows = parse_markdown_table(&lines[start..index].join("\n"))?;
-            body.push_str(&docx_table(&rows, &footnote_ids, &mut document_hyperlinks));
+            body.push_str(&docx_table(
+                &rows,
+                &footnote_ids,
+                &mut document_hyperlinks,
+                theme,
+            ));
         } else if is_fenced_code_block_start(line) {
             let start = index + 1;
             index += 1;
             while index < lines.len() && !is_fenced_code_block_start(lines[index]) {
                 index += 1;
             }
-            body.push_str(&docx_code_block(&lines[start..index].join("\n")));
+            body.push_str(&docx_code_block(&lines[start..index].join("\n"), theme));
             if index < lines.len() {
                 index += 1;
             }
@@ -96,13 +107,52 @@ pub(crate) fn convert_markdown_to_docx(input: &Path, output: &Path) -> Result<()
                         .get(paragraph_start)
                         .and_then(Option::as_ref),
                     &mut document_hyperlinks,
+                    theme,
                 )?);
             }
             index += 1;
         }
     }
+    if theme.enabled {
+        body = theme_styles::apply_code_character_style(&body, "CodeChar");
+    }
+    let header_part = (theme.enabled && !theme.header_text.is_empty())
+        .then(|| theme_styles::page_text_part("hdr", "Header", &theme.header_text));
+    let footer_part = (theme.enabled && !theme.footer_text.is_empty())
+        .then(|| theme_styles::page_text_part("ftr", "Footer", &theme.footer_text));
+    let section = if theme.enabled {
+        let (page_width, page_height) = theme.page_dimensions_pt();
+        let orientation = if page_width > page_height {
+            " w:orient=\"landscape\""
+        } else {
+            ""
+        };
+        format!(
+            "<w:sectPr>{header_reference}{footer_reference}<w:pgSz w:w=\"{width}\" w:h=\"{height}\"{orientation}/><w:pgMar w:top=\"{top}\" w:right=\"{right}\" w:bottom=\"{bottom}\" w:left=\"{left}\" w:header=\"{header}\" w:footer=\"{footer}\" w:gutter=\"0\"/></w:sectPr>",
+            header_reference = if header_part.is_some() {
+                "<w:headerReference w:type=\"default\" r:id=\"rIdMarkoffHeader\"/>"
+            } else {
+                ""
+            },
+            footer_reference = if footer_part.is_some() {
+                "<w:footerReference w:type=\"default\" r:id=\"rIdMarkoffFooter\"/>"
+            } else {
+                ""
+            },
+            width = (page_width * 20.0).round() as u32,
+            height = (page_height * 20.0).round() as u32,
+            header = (theme.margin_top_pt * 10.0).round() as u32,
+            footer = (theme.margin_bottom_pt * 10.0).round() as u32,
+            top = (theme.margin_top_pt * 20.0).round() as u32,
+            right = (theme.margin_right_pt * 20.0).round() as u32,
+            bottom = (theme.margin_bottom_pt * 20.0).round() as u32,
+            left = (theme.margin_left_pt * 20.0).round() as u32,
+        )
+    } else {
+        "<w:sectPr/>".to_string()
+    };
     let document = format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body>{body}<w:sectPr/></w:body></w:document>"
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body>{body}{section}</w:body></w:document>"
     );
     let content_types = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/><Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/></Types>";
     let mut content_types = content_types.replace(
@@ -134,11 +184,48 @@ pub(crate) fn convert_markdown_to_docx(input: &Path, output: &Path) -> Result<()
             document_hyperlinks.relationship_entries()
         ),
     );
+    if header_part.is_some() {
+        document_relationships = document_relationships.replace(
+            "</Relationships>",
+            "<Relationship Id=\"rIdMarkoffHeader\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/header\" Target=\"header1.xml\"/></Relationships>",
+        );
+        content_types = content_types.replace(
+            "</Types>",
+            "<Override PartName=\"/word/header1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml\"/></Types>",
+        );
+    }
+    if footer_part.is_some() {
+        document_relationships = document_relationships.replace(
+            "</Relationships>",
+            "<Relationship Id=\"rIdMarkoffFooter\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer\" Target=\"footer1.xml\"/></Relationships>",
+        );
+        content_types = content_types.replace(
+            "</Types>",
+            "<Override PartName=\"/word/footer1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml\"/></Types>",
+        );
+    }
+    let level_indent = |level: u32| {
+        if theme.enabled {
+            let step = (theme.list_indent_pt * 20.0).round() as u32;
+            format!(
+                "<w:lvlJc w:val=\"left\"/><w:pPr><w:ind w:left=\"{}\" w:hanging=\"{}\"/></w:pPr>",
+                step * (level + 1),
+                step.min(360)
+            )
+        } else {
+            String::new()
+        }
+    };
+    let bullet = crate::xml_utils::xml_attribute_escape(if theme.enabled {
+        &theme.list_bullet
+    } else {
+        "•"
+    });
     let list_levels = (0..=8)
-        .map(|level| format!("<w:lvl w:ilvl=\"{level}\"><w:start w:val=\"1\"/><w:numFmt w:val=\"bullet\"/><w:lvlText w:val=\"•\"/></w:lvl>"))
+        .map(|level| format!("<w:lvl w:ilvl=\"{level}\"><w:start w:val=\"1\"/><w:numFmt w:val=\"bullet\"/><w:lvlText w:val=\"{bullet}\"/>{}</w:lvl>", level_indent(level)))
         .collect::<String>();
     let ordered_list_levels = (0..=8)
-        .map(|level| format!("<w:lvl w:ilvl=\"{level}\"><w:start w:val=\"1\"/><w:numFmt w:val=\"decimal\"/><w:lvlText w:val=\"%{level_plus_one}.\"/></w:lvl>", level_plus_one = level + 1))
+        .map(|level| format!("<w:lvl w:ilvl=\"{level}\"><w:start w:val=\"1\"/><w:numFmt w:val=\"decimal\"/><w:lvlText w:val=\"%{level_plus_one}.\"/>{}</w:lvl>", level_indent(level), level_plus_one = level + 1))
         .collect::<String>();
     let num_entries = lists
         .definitions
@@ -165,15 +252,27 @@ pub(crate) fn convert_markdown_to_docx(input: &Path, output: &Path) -> Result<()
     let numbering = format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><w:numbering xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:abstractNum w:abstractNumId=\"0\"><w:multiLevelType w:val=\"multilevel\"/>{list_levels}</w:abstractNum><w:abstractNum w:abstractNumId=\"1\"><w:multiLevelType w:val=\"multilevel\"/>{ordered_list_levels}</w:abstractNum>{num_entries}</w:numbering>"
     );
-    let styles = styles_xml();
+    let styles = styles_xml(theme);
 
     let file = std::fs::File::create(output)?;
     let mut archive = zip::ZipWriter::new(file);
     let options = SimpleFileOptions::default();
     let mut footnote_hyperlinks =
         HyperlinkAllocator::new(1, lines.len().saturating_add(1), &heading_anchors);
-    let footnotes_xml =
-        (!footnotes.is_empty()).then(|| render_footnotes(&footnotes, &mut footnote_hyperlinks));
+    let footnotes_xml = (!footnotes.is_empty()).then(|| {
+        if theme.enabled {
+            theme_styles::apply_code_character_style(
+                &render_footnotes(
+                    &footnotes,
+                    &mut footnote_hyperlinks,
+                    "<w:pPr><w:pStyle w:val=\"FootnoteText\"/></w:pPr>",
+                ),
+                "CodeChar",
+            )
+        } else {
+            render_footnotes(&footnotes, &mut footnote_hyperlinks, "")
+        }
+    });
     let footnote_relationships = footnote_hyperlinks.has_relationships().then(|| {
         format!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">{}</Relationships>",
@@ -189,8 +288,14 @@ pub(crate) fn convert_markdown_to_docx(input: &Path, output: &Path) -> Result<()
         ),
         ("word/document.xml", document.as_str()),
         ("word/numbering.xml", numbering.as_str()),
-        ("word/styles.xml", styles),
+        ("word/styles.xml", styles.as_str()),
     ];
+    if let Some(header_part) = &header_part {
+        parts.push(("word/header1.xml", header_part.as_str()));
+    }
+    if let Some(footer_part) = &footer_part {
+        parts.push(("word/footer1.xml", footer_part.as_str()));
+    }
     if let Some(footnotes_xml) = &footnotes_xml {
         parts.push(("word/footnotes.xml", footnotes_xml.as_str()));
     }

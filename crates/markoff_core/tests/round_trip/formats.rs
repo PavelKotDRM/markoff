@@ -1,5 +1,5 @@
 use super::{remove_files, temporary_path};
-use markoff_core::{Format, convert_file};
+use markoff_core::{ConversionRequest, Format, convert_document, convert_file};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
@@ -54,6 +54,297 @@ fn append_package_part(path: &Path, name: &str, data: &[u8]) {
         .unwrap();
     writer.write_all(data).unwrap();
     writer.finish().unwrap();
+}
+
+#[test]
+fn optional_toml_theme_applies_to_document_outputs() {
+    use std::io::Read;
+
+    let markdown = temporary_path("style_theme_input", "md");
+    let theme = temporary_path("style_theme", "toml");
+    let html = temporary_path("style_theme_output", "html");
+    let docx = temporary_path("style_theme_output", "docx");
+    let odt = temporary_path("style_theme_output", "odt");
+    fs::write(
+        &markdown,
+        "# Report\n\nText.\n\n| Name | Score |\n| --- | --- |\n| Ada | 42 |\n",
+    )
+    .unwrap();
+    fs::write(
+        &theme,
+        r##"
+[document]
+font_family = "Aptos"
+font_size_pt = 13
+text_color = "#112233"
+paragraph_spacing_after_pt = 9
+line_height = 1.4
+
+[headings]
+font_family = "Georgia"
+color = "#445566"
+sizes_pt = [28, 22, 18, 15, 13, 11]
+spacing_before_pt = 12
+spacing_after_pt = 7
+
+[page]
+margin_top_pt = 50
+margin_right_pt = 45
+margin_bottom_pt = 55
+margin_left_pt = 40
+
+[table]
+header_background = "#DDEEFF"
+header_color = "#102030"
+border_color = "#708090"
+
+[code]
+font_family = "Cascadia Mono"
+background = "#F0F1F2"
+"##,
+    )
+    .unwrap();
+
+    for (output, format) in [
+        (&html, Format::Html),
+        (&docx, Format::Docx),
+        (&odt, Format::Odt),
+    ] {
+        convert_document(&ConversionRequest {
+            input: markdown.clone(),
+            output: output.clone(),
+            from: Format::Markdown,
+            to: format,
+            overwrite: true,
+            csv_delimiter: b',',
+            tables_only: false,
+            style: Some(theme.clone()),
+        })
+        .unwrap();
+    }
+
+    let html_source = fs::read_to_string(&html).unwrap();
+    assert!(html_source.contains("font-family:\"Aptos\""));
+    assert!(html_source.contains("color:#112233"));
+    assert!(html_source.contains("background:#DDEEFF"));
+
+    let mut docx_archive = zip::ZipArchive::new(fs::File::open(&docx).unwrap()).unwrap();
+    let mut docx_styles = String::new();
+    docx_archive
+        .by_name("word/styles.xml")
+        .unwrap()
+        .read_to_string(&mut docx_styles)
+        .unwrap();
+    assert!(docx_styles.contains("w:ascii=\"Aptos\""));
+    assert!(docx_styles.contains("w:val=\"445566\""));
+    drop(docx_archive);
+
+    let mut odt_archive = zip::ZipArchive::new(fs::File::open(&odt).unwrap()).unwrap();
+    let mut odt_content = String::new();
+    odt_archive
+        .by_name("content.xml")
+        .unwrap()
+        .read_to_string(&mut odt_content)
+        .unwrap();
+    assert!(odt_content.contains("fo:font-size=\"13pt\""));
+    assert!(odt_content.contains("fo:background-color=\"#DDEEFF\""));
+
+    remove_files(&[&markdown, &theme, &html, &docx, &odt]);
+}
+
+fn read_package_text(path: &Path, name: &str) -> String {
+    use std::io::Read;
+
+    let mut archive = zip::ZipArchive::new(fs::File::open(path).unwrap()).unwrap();
+    let mut text = String::new();
+    archive
+        .by_name(name)
+        .unwrap()
+        .read_to_string(&mut text)
+        .unwrap();
+    text
+}
+
+#[test]
+fn extended_theme_settings_reach_every_document_output() {
+    let markdown = temporary_path("extended_theme_input", "md");
+    let theme = temporary_path("extended_theme", "toml");
+    let html = temporary_path("extended_theme_output", "html");
+    let docx = temporary_path("extended_theme_output", "docx");
+    let odt = temporary_path("extended_theme_output", "odt");
+    let pdf = temporary_path("extended_theme_output", "pdf");
+    let restored = temporary_path("extended_theme_restored", "md");
+    fs::write(
+        &markdown,
+        "# Report\n\nText with [a link](https://example.com) and `code`.\n\n> Quoted text.\n\n- first\n- second\n\n| Name | Score |\n| --- | --- |\n| Ada | 42 |\n| Bob | 7 |\n| Eve | 1 |\n\n---\n\n```\nlet x = 1;\n```\n",
+    )
+    .unwrap();
+    fs::write(
+        &theme,
+        r##"
+[document]
+text_align = "justify"
+first_line_indent_pt = 12
+paragraph_spacing_before_pt = 2
+
+[headings]
+level_colors = ["#AA0000", "#00AA00", "#0000AA", "#111111", "#222222", "#333333"]
+bold = false
+italic = true
+
+[page]
+size = "letter"
+orientation = "landscape"
+header_text = "Quarterly report"
+footer_text = "Page {page} of {pages}"
+
+[links]
+color = "#FF6600"
+underline = false
+
+[blockquote]
+text_color = "#555555"
+background = "#FAFAFA"
+border_color = "#CC0000"
+border_width_pt = 3
+indent_pt = 20
+italic = true
+
+[lists]
+indent_pt = 24
+bullet = "–"
+
+[code]
+font_family = "Cascadia Mono"
+font_size_pt = 10
+text_color = "#123123"
+inline_background = "none"
+padding_pt = 6
+
+[table]
+font_size_pt = 9
+border_width_pt = 1
+cell_padding_pt = 5
+stripe_background = "#F5F5F5"
+
+[horizontal_rule]
+color = "#00FF00"
+width_pt = 2
+
+[footnotes]
+font_size_pt = 8
+
+[images]
+max_width_percent = 60
+"##,
+    )
+    .unwrap();
+
+    for (output, format) in [
+        (&html, Format::Html),
+        (&docx, Format::Docx),
+        (&odt, Format::Odt),
+        (&pdf, Format::Pdf),
+    ] {
+        convert_document(&ConversionRequest {
+            input: markdown.clone(),
+            output: output.clone(),
+            from: Format::Markdown,
+            to: format,
+            overwrite: true,
+            csv_delimiter: b',',
+            tables_only: false,
+            style: Some(theme.clone()),
+        })
+        .unwrap();
+    }
+
+    let html_source = fs::read_to_string(&html).unwrap();
+    for expected in [
+        "size:792pt 612pt",
+        "text-align:justify",
+        "text-indent:12pt",
+        "h1{font-family:\"Calibri\";font-size:16pt;color:#AA0000;font-weight:normal;font-style:italic",
+        "a{color:#FF6600;text-decoration:none;}",
+        "border-left:3pt solid #CC0000",
+        "list-style-type:\"– \"",
+        "tbody tr:nth-child(even) td{background:#F5F5F5;}",
+        "hr{border:none;border-top:2pt solid #00FF00;}",
+        "img{max-width:60%",
+        "@bottom-center{content:\"Page \" counter(page) \" of \" counter(pages)",
+    ] {
+        assert!(
+            html_source.contains(expected),
+            "missing {expected:?} in {html_source}"
+        );
+    }
+
+    let document = read_package_text(&docx, "word/document.xml");
+    let styles = read_package_text(&docx, "word/styles.xml");
+    let numbering = read_package_text(&docx, "word/numbering.xml");
+    let footer = read_package_text(&docx, "word/footer1.xml");
+    assert!(document.contains("<w:pgSz w:w=\"15840\" w:h=\"12240\" w:orient=\"landscape\"/>"));
+    assert!(document.contains("<w:headerReference w:type=\"default\""));
+    assert!(document.contains("<w:rStyle w:val=\"CodeChar\"/>"));
+    assert!(document.contains("<w:shd w:val=\"clear\" w:fill=\"F5F5F5\"/>"));
+    assert!(styles.contains("<w:jc w:val=\"both\"/>"));
+    assert!(styles.contains("<w:color w:val=\"FF6600\"/><w:u w:val=\"none\"/>"));
+    assert!(styles.contains("<w:color w:val=\"AA0000\"/>"));
+    assert!(numbering.contains("w:lvlText w:val=\"–\""));
+    assert!(footer.contains("w:instr=\" NUMPAGES \""));
+
+    let odt_content = read_package_text(&odt, "content.xml");
+    let odt_styles = read_package_text(&odt, "styles.xml");
+    assert!(odt_content.contains("fo:text-align=\"justify\""));
+    assert!(odt_content.contains("text:bullet-char=\"–\""));
+    assert!(odt_content.contains("table:style-name=\"TableCellStripe\""));
+    assert!(odt_content.contains("fo:border-left=\"3pt solid #CC0000\""));
+    assert!(odt_styles.contains("fo:page-width=\"792pt\""));
+    assert!(odt_styles.contains("<text:page-count>"));
+    assert_eq!(
+        odt_content.matches("style:name=\"Body\"").count(),
+        1,
+        "theme styles must not be duplicated"
+    );
+
+    let pdf_bytes = fs::read(&pdf).unwrap();
+    assert!(pdf_bytes.starts_with(b"%PDF"));
+
+    for (source, format) in [(&docx, Format::Docx), (&odt, Format::Odt)] {
+        convert_file(source, &restored, format, Format::Markdown).unwrap();
+        let restored_markdown = fs::read_to_string(&restored).unwrap();
+        assert!(
+            restored_markdown.contains("`code`"),
+            "inline code lost after {format:?} round trip: {restored_markdown}"
+        );
+    }
+
+    remove_files(&[&markdown, &theme, &html, &docx, &odt, &pdf, &restored]);
+}
+
+#[test]
+fn invalid_style_theme_is_reported_without_output() {
+    let markdown = temporary_path("invalid_style_input", "md");
+    let theme = temporary_path("invalid_style", "toml");
+    let output = temporary_path("invalid_style_output", "html");
+    fs::write(&markdown, "# Report\n").unwrap();
+    fs::write(&theme, "[document]\ntext_color = \"blue\"\n").unwrap();
+
+    let error = convert_document(&ConversionRequest {
+        input: markdown.clone(),
+        output: output.clone(),
+        from: Format::Markdown,
+        to: Format::Html,
+        overwrite: true,
+        csv_delimiter: b',',
+        tables_only: false,
+        style: Some(theme.clone()),
+    })
+    .unwrap_err();
+    assert!(error.to_string().contains("document.text_color"));
+    assert!(!output.exists());
+
+    remove_files(&[&markdown, &theme, &output]);
 }
 
 #[test]

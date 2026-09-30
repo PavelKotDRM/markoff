@@ -6,6 +6,10 @@ license = "MIT OR Apache-2.0"
 description = "CLI for markoff"
 publish = false
 
+[[bin]]
+name = "markoff"
+path = "src/main.rs"
+
 [dependencies]
 anyhow = "1.0"
 clap = { version = "4.5", features = ["derive", "cargo", "env"] }

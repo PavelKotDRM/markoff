@@ -7,7 +7,7 @@ Docker.
 `markoff` — локальный конвертер документов и структурированных данных. В
 готовом пакете есть два приложения:
 
-- `markoff_cli` — консольная версия для отдельных файлов, конвейеров и
+- `markoff` — консольная версия для отдельных файлов, конвейеров и
   пакетной обработки;
 - `markoff_gui` — графическая версия с очередью файлов и предварительным
   просмотром.
@@ -39,8 +39,8 @@ Docker.
 
 | Платформа | Консольное приложение | Графическое приложение |
 | --- | --- | --- |
-| Windows | `markoff_cli.exe` | `markoff_gui.exe` |
-| Linux | `markoff_cli` | `markoff_gui` |
+| Windows | `markoff.exe` | `markoff_gui.exe` |
+| Linux | `markoff` | `markoff_gui` |
 
 Не переименовывайте файлы во время первого запуска, если хотите использовать
 примеры из этого руководства без изменений. Приложение можно хранить в любом
@@ -74,7 +74,7 @@ Docker.
 3. Проверьте версию консольного приложения:
 
    ```powershell
-   .\markoff_cli.exe --version
+   .\markoff.exe --version
    ```
 
 4. Чтобы открыть графическое приложение, запустите:
@@ -86,14 +86,14 @@ Docker.
    Также GUI можно запустить командой:
 
    ```powershell
-   .\markoff_cli.exe gui
+   .\markoff.exe gui
    ```
 
 При запуске файла из другого каталога укажите полный путь. Если путь содержит
 пробелы, в PowerShell используйте оператор вызова `&`:
 
 ```powershell
-& "C:\Apps\markoff\markoff_cli.exe" --version
+& "C:\Apps\markoff\markoff.exe" --version
 & "C:\Apps\markoff\markoff_gui.exe"
 ```
 
@@ -109,7 +109,7 @@ Docker.
 2. Проверьте версию:
 
    ```bash
-   ./markoff_cli --version
+   ./markoff --version
    ```
 
 3. Запустите GUI:
@@ -121,21 +121,21 @@ Docker.
    Альтернативный способ:
 
    ```bash
-   ./markoff_cli gui
+   ./markoff gui
    ```
 
 Обычно архив сохраняет право на выполнение файлов. Если оно было потеряно
 при копировании, восстановите его один раз:
 
 ```bash
-chmod +x markoff_cli markoff_gui
+chmod +x markoff markoff_gui
 ```
 
 Чтобы запускать CLI из любого каталога, можно добавить каталог с бинарниками в
 `PATH` или указывать путь к файлу явно:
 
 ```bash
-/opt/markoff/markoff_cli --version
+/opt/markoff/markoff --version
 ```
 
 ## 3. Выбор интерфейса
@@ -163,29 +163,29 @@ GUI и CLI используют одно и то же ядро конверта�
 
 ## 4. Использование CLI
 
-В примерах для Windows используется `.\markoff_cli.exe`, а для Linux —
-`./markoff_cli`. Если приложение было добавлено в `PATH`, имя можно заменить
-на `markoff_cli`.
+В примерах для Windows используется `.\markoff.exe`, а для Linux —
+`./markoff`. Если приложение было добавлено в `PATH`, имя можно заменить
+на `markoff`.
 
 ### 4.1. Справка и версия
 
 Получить общую справку:
 
 ```powershell
-.\markoff_cli.exe --help
+.\markoff.exe --help
 ```
 
 Получить справку по отдельной команде:
 
 ```powershell
-.\markoff_cli.exe convert --help
-.\markoff_cli.exe batch --help
+.\markoff.exe convert --help
+.\markoff.exe batch --help
 ```
 
 Проверить версию, commit и сведения о сборке:
 
 ```powershell
-.\markoff_cli.exe --version
+.\markoff.exe --version
 ```
 
 Основные команды:
@@ -204,11 +204,11 @@ GUI и CLI используют одно и то же ядро конверта�
 Общий синтаксис:
 
 ```text
-markoff_cli convert INPUT [--from FORMAT] [--to FORMAT] [-o OUTPUT]
+markoff convert INPUT [--from FORMAT] [--to FORMAT] [-o OUTPUT]
                        [--overwrite] [--delimiter CHAR]
 ```
 
-Для Windows подставьте `.\markoff_cli.exe`, а для Linux — `./markoff_cli`.
+Для Windows подставьте `.\markoff.exe`, а для Linux — `./markoff`.
 
 #### Самый короткий вариант
 
@@ -216,7 +216,7 @@ markoff_cli convert INPUT [--from FORMAT] [--to FORMAT] [-o OUTPUT]
 параметру `--to`:
 
 ```powershell
-.\markoff_cli.exe convert .\report.csv --to md
+.\markoff.exe convert .\report.csv --to md
 ```
 
 Результат будет сохранён рядом с исходным файлом как `.\report.md`.
@@ -224,7 +224,7 @@ markoff_cli convert INPUT [--from FORMAT] [--to FORMAT] [-o OUTPUT]
 #### Явный путь к результату
 
 ```powershell
-.\markoff_cli.exe convert .\notes.md -o .\output\notes.docx
+.\markoff.exe convert .\notes.md -o .\output\notes.docx
 ```
 
 В этом случае формат результата определяется по расширению `docx`. Каталог
@@ -233,7 +233,7 @@ markoff_cli convert INPUT [--from FORMAT] [--to FORMAT] [-o OUTPUT]
 Более наглядный вариант с явным `--to`:
 
 ```powershell
-.\markoff_cli.exe convert .\notes.md --to docx -o .\output\notes.docx
+.\markoff.exe convert .\notes.md --to docx -o .\output\notes.docx
 ```
 
 #### Как выбираются форматы
@@ -250,7 +250,7 @@ markoff_cli convert INPUT [--from FORMAT] [--to FORMAT] [-o OUTPUT]
 Например, файл с нестандартным именем можно преобразовать так:
 
 ```powershell
-.\markoff_cli.exe convert .\incoming.data --from json --to md -o .\incoming.md
+.\markoff.exe convert .\incoming.data --from json --to md -o .\incoming.md
 ```
 
 Имена форматов нечувствительны к регистру. Поддерживаются псевдонимы
@@ -262,14 +262,14 @@ markoff_cli convert INPUT [--from FORMAT] [--to FORMAT] [-o OUTPUT]
 безопасно повторно запускать команду:
 
 ```powershell
-.\markoff_cli.exe convert .\report.csv --to md
+.\markoff.exe convert .\report.csv --to md
 ```
 
 Если `report.md` уже существует, команда завершится ошибкой. Чтобы явно
 разрешить перезапись, добавьте `--overwrite`:
 
 ```powershell
-.\markoff_cli.exe convert .\report.csv --to md --overwrite
+.\markoff.exe convert .\report.csv --to md --overwrite
 ```
 
 В качестве альтернативы укажите новое имя или другой каталог результата.
@@ -279,21 +279,21 @@ markoff_cli convert INPUT [--from FORMAT] [--to FORMAT] [-o OUTPUT]
 #### Word в Markdown
 
 ```powershell
-.\markoff_cli.exe convert .\report.docx --to md -o .\converted\report.md
+.\markoff.exe convert .\report.docx --to md -o .\converted\report.md
 ```
 
 #### PDF в Markdown и документы в PDF
 
 ```powershell
-.\markoff_cli.exe convert .\manual.pdf --to md -o .\converted\manual.md
+.\markoff.exe convert .\manual.pdf --to md -o .\converted\manual.md
 ```
 
 PDF можно создать из Markdown, DOCX или JSON/YAML/TOML:
 
 ```powershell
-.\markoff_cli.exe convert .\notes.md -o .\notes.pdf
-.\markoff_cli.exe convert .\report.docx --to pdf
-.\markoff_cli.exe convert .\report.json --to pdf
+.\markoff.exe convert .\notes.md -o .\notes.pdf
+.\markoff.exe convert .\report.docx --to pdf
+.\markoff.exe convert .\report.json --to pdf
 ```
 
 PDF-экспорт сохраняет поддерживаемое форматирование, таблицы, код, ссылки,
@@ -308,25 +308,25 @@ PDF-экспорт сохраняет поддерживаемое формат�
 #### Markdown в DOCX
 
 ```powershell
-.\markoff_cli.exe convert .\notes.md -o .\notes.docx
+.\markoff.exe convert .\notes.md -o .\notes.docx
 ```
 
 #### CSV в Markdown с разделителем `;`
 
 ```powershell
-.\markoff_cli.exe convert .\export.csv --to md --delimiter ';'
+.\markoff.exe convert .\export.csv --to md --delimiter ';'
 ```
 
 #### CSV в XLSX
 
 ```powershell
-.\markoff_cli.exe convert .\export.csv --to xlsx -o .\workbooks\export.xlsx --delimiter ';'
+.\markoff.exe convert .\export.csv --to xlsx -o .\workbooks\export.xlsx --delimiter ';'
 ```
 
 #### JSON-массив объектов в XLSX
 
 ```powershell
-.\markoff_cli.exe convert .\people.json --to xlsx
+.\markoff.exe convert .\people.json --to xlsx
 ```
 
 Для этого сценария JSON должен быть массивом объектов, например:
@@ -341,7 +341,7 @@ PDF-экспорт сохраняет поддерживаемое формат�
 #### XLSX в JSON
 
 ```powershell
-.\markoff_cli.exe convert .\people.xlsx -o .\people.json
+.\markoff.exe convert .\people.xlsx -o .\people.json
 ```
 
 Если в книге несколько листов, результат содержит объект с именами листов.
@@ -350,20 +350,20 @@ PDF-экспорт сохраняет поддерживаемое формат�
 #### HTML в Markdown
 
 ```powershell
-.\markoff_cli.exe convert .\page.html --to md
+.\markoff.exe convert .\page.html --to md
 ```
 
 #### Презентация PPTX в Markdown
 
 ```powershell
-.\markoff_cli.exe convert .\slides.pptx --to md
+.\markoff.exe convert .\slides.pptx --to md
 ```
 
 #### Markdown в HTML или PPTX
 
 ```powershell
-.\markoff_cli.exe convert .\article.md -o .\article.html
-.\markoff_cli.exe convert .\slides.md -o .\slides.pptx
+.\markoff.exe convert .\article.md -o .\article.html
+.\markoff.exe convert .\slides.md -o .\slides.pptx
 ```
 
 ### 4.4. Стандартный ввод и вывод
@@ -380,13 +380,13 @@ DOCX, ODT, XLSX/XLSM, ODS, PDF, PPTX и ODP нельзя передавать ч
 
 ```powershell
 Get-Content -Raw .\data.json |
-    .\markoff_cli.exe convert - --from json --to yaml -o -
+    .\markoff.exe convert - --from json --to yaml -o -
 ```
 
 Пример для Linux:
 
 ```bash
-cat ./data.json | ./markoff_cli convert - --from json --to yaml -o -
+cat ./data.json | ./markoff convert - --from json --to yaml -o -
 ```
 
 При чтении из stdin параметр `--from` обязателен, потому что у входного потока
@@ -395,14 +395,14 @@ cat ./data.json | ./markoff_cli convert - --from json --to yaml -o -
 
 ```powershell
 Get-Content -Raw .\table.csv |
-    .\markoff_cli.exe convert - --from csv --to md -o -
+    .\markoff.exe convert - --from csv --to md -o -
 ```
 
 Потоковый режим удобен для конвейеров:
 
 ```powershell
 Get-Content -Raw .\source.md |
-    .\markoff_cli.exe convert - --from md --to html -o .\result.html
+    .\markoff.exe convert - --from md --to html -o .\result.html
 ```
 
 ### 4.5. Пакетная обработка
@@ -410,7 +410,7 @@ Get-Content -Raw .\source.md |
 Общий синтаксис:
 
 ```text
-markoff_cli batch DIRECTORY --pattern GLOB --to FORMAT
+markoff batch DIRECTORY --pattern GLOB --to FORMAT
                        -o OUTPUT_DIRECTORY
                        [--overwrite] [--delimiter CHAR]
 ```
@@ -418,7 +418,7 @@ markoff_cli batch DIRECTORY --pattern GLOB --to FORMAT
 Пример: преобразовать все DOCX из каталога `documents` в Markdown:
 
 ```powershell
-.\markoff_cli.exe batch .\documents --pattern '*.docx' --to md -o .\converted
+.\markoff.exe batch .\documents --pattern '*.docx' --to md -o .\converted
 ```
 
 Для каждого входного файла создаётся файл с тем же базовым именем в каталоге
@@ -428,24 +428,24 @@ markoff_cli batch DIRECTORY --pattern GLOB --to FORMAT
 Рекурсивный шаблон можно задать явно:
 
 ```powershell
-.\markoff_cli.exe batch .\documents --pattern '**\*.docx' --to md -o .\converted
+.\markoff.exe batch .\documents --pattern '**\*.docx' --to md -o .\converted
 ```
 
 В Linux используйте разделители пути текущей оболочки:
 
 ```bash
-./markoff_cli batch ./documents --pattern '*.docx' --to md -o ./converted
+./markoff batch ./documents --pattern '*.docx' --to md -o ./converted
 ```
 
 Полезные примеры:
 
 ```powershell
 # CSV с разделителем ;
-.\markoff_cli.exe batch .\exports --pattern '*.csv' --to xlsx `
+.\markoff.exe batch .\exports --pattern '*.csv' --to xlsx `
     -o .\workbooks --delimiter ';'
 
 # Перезаписать уже существующие Markdown-файлы
-.\markoff_cli.exe batch .\documents --pattern '*.docx' --to md `
+.\markoff.exe batch .\documents --pattern '*.docx' --to md `
     -o .\converted --overwrite
 ```
 
@@ -465,19 +465,19 @@ markoff_cli batch DIRECTORY --pattern GLOB --to FORMAT
 По умолчанию используется запятая:
 
 ```powershell
-.\markoff_cli.exe convert .\comma.csv --to md
+.\markoff.exe convert .\comma.csv --to md
 ```
 
 Для CSV с точкой с запятой:
 
 ```powershell
-.\markoff_cli.exe convert .\semicolon.csv --to md --delimiter ';'
+.\markoff.exe convert .\semicolon.csv --to md --delimiter ';'
 ```
 
 Для TSV используется специальное значение `tab`:
 
 ```powershell
-.\markoff_cli.exe convert .\table.tsv --to md --delimiter tab
+.\markoff.exe convert .\table.tsv --to md --delimiter tab
 ```
 
 `--delimiter` принимает один ASCII-символ или слово `tab`. Параметр действует
@@ -518,8 +518,12 @@ markoff_cli batch DIRECTORY --pattern GLOB --to FORMAT
    блоки. При несовместимой паре форматов переключатель отключён.
 7. Для CSV установите один символ в поле **CSV delimiter:**. По умолчанию
    используется `,`; для обычного CSV с разделителем `;` укажите `;`.
-8. Нажмите **Convert selected**.
-9. В центральной области переключайтесь между вкладками **Source** и
+8. Для PDF, HTML, DOCX или ODT при необходимости нажмите
+   **Style → Choose...** и выберите TOML-тему или **Style → New...**, чтобы
+   сохранить шаблон со значениями по умолчанию. Кнопка **Preview** открывает
+   предварительный просмотр темы, а **Clear** возвращает стандартное оформление.
+9. Нажмите **Convert selected**.
+10. В центральной области переключайтесь между вкладками **Source** и
    **Result**, чтобы просмотреть исходное содержимое и результат.
 
 Файл сохраняется рядом с исходным. Например, для
@@ -557,7 +561,7 @@ PDF также можно добавить как входной файл; дл�
 текстового слоя потребуется OCR во внешнем инструменте.
 
 ```powershell
-.\markoff_cli.exe convert .\manual.pdf --to md
+.\markoff.exe convert .\manual.pdf --to md
 ```
 
 В GUI доступны также:
@@ -566,7 +570,170 @@ PDF также можно добавить как входной файл; дл�
 - **About** — версия, commit, ветка, время сборки, целевая платформа и
   используемый графический renderer.
 
-### 5.4. Статусы очереди и предварительный просмотр
+### 5.4. Управление стилями и предварительный просмотр темы
+
+Дополнительная тема оформления поддерживается для выходных форматов PDF, HTML,
+DOCX и ODT. Она необязательна: если файл темы не выбран и `--style` не указан,
+Markoff использует прежнее встроенное оформление выбранного формата.
+
+В GUI:
+
+1. Выберите PDF, HTML, DOCX или ODT в поле **Convert to:**.
+2. Нажмите **Choose...** рядом с полем **Style:**.
+3. Выберите файл с расширением `.toml`.
+4. Окно **Style preview** откроется автоматически.
+5. После изменения TOML-файла нажмите **Preview**, чтобы перечитать его с диска.
+6. Нажмите **Clear**, чтобы отключить тему и вернуться к стандартному оформлению.
+
+#### Создание шаблона темы со значениями по умолчанию
+
+Чтобы не писать тему с нуля, создайте шаблон, в котором перечислены все
+параметры с их значениями по умолчанию и комментариями:
+
+- в GUI нажмите **Export template...** на панели инструментов. Кнопка
+  доступна при любом целевом формате: она только сохраняет файл шаблона и
+  показывает под панелью путь к нему (или причину ошибки), не меняя выбранную
+  тему;
+- в GUI для PDF, HTML, DOCX или ODT можно также нажать **Style → New...**:
+  шаблон сохраняется, сразу выбирается как текущая тема и открывается в
+  **Style preview**;
+- в CLI выполните:
+
+```powershell
+.\markoff.exe style-template -o .\corporate.toml
+.\markoff.exe style-template -o .\corporate.toml --overwrite
+```
+
+Без `-o` (или с `-o -`) шаблон выводится в stdout. Для сохранения в файл
+используйте `-o`: перенаправление `>` в Windows PowerShell 5 записывает UTF-16,
+а тема должна быть в UTF-8. Существующий файл
+заменяется только с `--overwrite`; диалог сохранения GUI сам запрашивает
+подтверждение замены.
+
+Откройте файл в редакторе, измените нужные значения и нажмите **Preview**, чтобы
+увидеть результат. Строки, которые не нужны, можно удалить: пропущенные
+параметры получают те же значения по умолчанию. Эти значения относятся к
+теме; без выбранной темы каждый формат по-прежнему использует своё встроенное
+оформление (например, PDF без темы использует более крупные заголовки).
+
+Окно **Style preview** показывает:
+
+- размер и ориентацию страницы, поля, верхний и нижний колонтитулы
+  (`{page}`/`{pages}` подставляются как пример номеров);
+- заголовки уровней 1–6 с размерами, цветами по уровням, жирностью и курсивом;
+- основной текст с выравниванием, отступом первой строки, ссылкой и
+  inline-кодом;
+- цитату с цветом, фоном, полосой слева, отступом и курсивом;
+- маркированный список с заданным маркером и отступом уровня;
+- блок кода с размером, цветом текста, фоном и внутренним отступом;
+- таблицу с заголовком, границами, отступами ячеек и чередованием строк;
+- горизонтальную линию, размер текста сносок и ограничение ширины изображений;
+- таблицу всех вычисленных значений темы.
+
+GUI использует собственные шрифты для отрисовки окна, поэтому названия
+`font_family`, `headings.font_family` и `code.font_family` показываются как
+параметры, но не загружают произвольный системный шрифт в само окно. Эти
+семейства применяются в создаваемых HTML, DOCX и ODT. PDF использует
+комплектные Unicode-шрифты, но применяет все остальные параметры темы.
+
+Ту же тему можно передать через CLI:
+
+```powershell
+.\markoff.exe convert .\report.md --to pdf --style .\corporate.toml
+.\markoff.exe batch .\documents --pattern "*.md" --to docx `
+  --output .\converted --style .\corporate.toml
+```
+
+Полный пример находится в
+[`docs/examples/style-theme.toml`](../examples/style-theme.toml).
+
+#### Структура TOML-темы
+
+Ниже фрагмент примера; полный список ключей со значениями по умолчанию выводит
+`markoff style-template`.
+
+```toml
+[document]
+font_family = "Aptos"
+font_size_pt = 11
+text_align = "justify"
+first_line_indent_pt = 14
+
+[headings]
+level_colors = ["#1F4E79", "#1F4E79", "#2E75B6", "#2E75B6", "#404040", "#404040"]
+sizes_pt = [26, 20, 16, 14, 12, 11]
+
+[page]
+size = "A4"
+orientation = "portrait"
+footer_text = "Page {page} of {pages}"
+
+[blockquote]
+background = "#F3F6F9"
+border_color = "#2E75B6"
+italic = true
+
+[table]
+stripe_background = "#F7FAFC"
+```
+
+| Секция | Параметр | Значение (по умолчанию) |
+| --- | --- | --- |
+| `document` | `font_family` | Семейство основного шрифта (`Calibri`) |
+| `document` | `font_size_pt` | Размер основного текста, > 0 (`11`) |
+| `document` | `text_color` | Цвет текста `#RRGGBB` (`#000000`) |
+| `document` | `paragraph_spacing_before_pt` | Интервал перед абзацем, ≥ 0 (`0`) |
+| `document` | `paragraph_spacing_after_pt` | Интервал после абзаца, ≥ 0 (`8`) |
+| `document` | `line_height` | Множитель высоты строки, > 0 (`1.2`) |
+| `document` | `text_align` | `left`, `center`, `right` или `justify` (`left`) |
+| `document` | `first_line_indent_pt` | Отступ первой строки обычного абзаца, ≥ 0 (`0`) |
+| `headings` | `font_family` | Семейство шрифта заголовков (`Calibri`) |
+| `headings` | `color` | Цвет всех уровней (`#1F4E79`) |
+| `headings` | `level_colors` | Необязательно: шесть цветов H1–H6, заменяют `color` |
+| `headings` | `sizes_pt` | Ровно шесть размеров H1–H6 (`[16, 14, 12, 11, 10, 9]`) |
+| `headings` | `spacing_before_pt` / `spacing_after_pt` | Интервалы вокруг заголовка (`10` / `6`) |
+| `headings` | `bold` / `italic` | Жирность и курсив (`true` / `false`) |
+| `page` | `size` | `A3`, `A4`, `A5`, `Letter` или `Legal` (`A4`) |
+| `page` | `orientation` | `portrait` или `landscape` (`portrait`) |
+| `page` | `margin_top_pt`, `margin_right_pt`, `margin_bottom_pt`, `margin_left_pt` | Поля страницы (`42`) |
+| `page` | `header_text` / `footer_text` | Текст колонтитулов, `{page}` — номер, `{pages}` — число страниц (пусто) |
+| `page` | `header_footer_font_size_pt` | Размер текста колонтитулов (`9`) |
+| `links` | `color` / `underline` | Цвет и подчёркивание ссылок (`#0563C1` / `true`) |
+| `blockquote` | `text_color` | Цвет текста цитаты (`#404040`) |
+| `blockquote` | `background` | Фон цитаты или `none` (`none`) |
+| `blockquote` | `border_color` / `border_width_pt` | Полоса слева (`#B3B3B3` / `1.5`) |
+| `blockquote` | `indent_pt` / `italic` | Отступ и курсив (`14` / `false`) |
+| `lists` | `indent_pt` | Отступ каждого уровня вложенности (`18`) |
+| `lists` | `bullet` | Маркер ненумерованного списка, 1–4 символа (`•`) |
+| `code` | `font_family` | Моноширинный шрифт (`Consolas`) |
+| `code` | `font_size_pt` / `text_color` | Размер и цвет кода (`9.5` / `#333333`) |
+| `code` | `background` | Фон блока кода (`#F6F8FA`) |
+| `code` | `inline_background` | Фон inline-кода или `none` (`#F6F8FA`) |
+| `code` | `padding_pt` | Внутренний отступ блока кода (`7`) |
+| `table` | `font_size_pt` | Размер текста таблицы (`9.5`) |
+| `table` | `header_background` / `header_color` | Фон и цвет строки заголовка (`#EBF0F6` / `#000000`) |
+| `table` | `border_color` / `border_width_pt` | Границы ячеек (`#B4BCC6` / `0.5`) |
+| `table` | `cell_padding_pt` | Отступ текста от границы ячейки (`4`) |
+| `table` | `stripe_background` | Фон каждой второй строки тела или `none` (`none`) |
+| `horizontal_rule` | `color` / `width_pt` | Цвет и толщина линии `---` (`#B4BCC6` / `0.7`) |
+| `footnotes` | `font_size_pt` | Размер текста сносок (`9`) |
+| `images` | `max_width_percent` | Максимальная ширина изображения, 1–100 % ширины текста (`100`) |
+
+Ограничения форматов:
+
+- `images.max_width_percent` действует в PDF и HTML: DOCX и ODT, создаваемые
+  Markoff, не встраивают изображения;
+- в HTML размер страницы, поля и колонтитулы задаются через CSS `@page` и
+  видны при печати или сохранении в PDF из браузера;
+- в DOCX и ODT `{page}`/`{pages}` становятся полями номера страницы и числа
+  страниц, которые обновляет текстовый редактор.
+
+Все секции и параметры необязательны. Неуказанные параметры получают
+стандартные значения. Неизвестное имя параметра, цвет не в формате `#RRGGBB`,
+пустое имя шрифта, отрицательный интервал или неположительный размер приводят
+к явной ошибке. Ошибка также отображается в окне **Style preview**.
+
+### 5.5. Статусы очереди и предварительный просмотр документа
 
 В очереди отображаются имя файла и статус:
 
@@ -679,12 +846,12 @@ PDF также можно добавить как входной файл; дл�
 Такой файл можно преобразовать обратно:
 
 ```powershell
-.\markoff_cli.exe convert .\report.md -o .\report.json
-.\markoff_cli.exe convert .\report.json -o .\restored.md
+.\markoff.exe convert .\report.md -o .\report.json
+.\markoff.exe convert .\report.json -o .\restored.md
 
 # Сохранить в JSON только таблицы из DOCX и восстановить только их в DOCX
-.\markoff_cli.exe convert .\report.docx --to json --tables-only
-.\markoff_cli.exe convert .\report.json --to docx --tables-only
+.\markoff.exe convert .\report.docx --to json --tables-only
+.\markoff.exe convert .\report.json --to docx --tables-only
 ```
 
 Определения сносок хранятся отдельными блоками `footnote_definition`, а
@@ -734,7 +901,7 @@ JSON/YAML/TOML.
 2. Запустите:
 
    ```powershell
-   .\markoff_cli.exe convert .\report.docx --to md `
+   .\markoff.exe convert .\report.docx --to md `
        -o .\converted\report.md
    ```
 
@@ -748,20 +915,20 @@ JSON/YAML/TOML.
 Для CSV с разделителем `;`:
 
 ```powershell
-.\markoff_cli.exe convert .\sales.csv --to xlsx `
+.\markoff.exe convert .\sales.csv --to xlsx `
     -o .\reports\sales.xlsx --delimiter ';'
 ```
 
 Результат можно открыть в Excel или преобразовать обратно в CSV/JSON:
 
 ```powershell
-.\markoff_cli.exe convert .\reports\sales.xlsx -o .\reports\sales.json
+.\markoff.exe convert .\reports\sales.xlsx -o .\reports\sales.json
 ```
 
 ### 7.3. Преобразование Markdown-документа в Word
 
 ```powershell
-.\markoff_cli.exe convert .\specification.md `
+.\markoff.exe convert .\specification.md `
     -o .\deliverables\specification.docx
 ```
 
@@ -779,7 +946,7 @@ JSON/YAML/TOML.
 ### 7.4. Пакетная обработка документов
 
 ```powershell
-.\markoff_cli.exe batch .\incoming --pattern '*.docx' --to md `
+.\markoff.exe batch .\incoming --pattern '*.docx' --to md `
     -o .\converted
 ```
 
@@ -792,20 +959,20 @@ JSON/YAML/TOML.
 
 ```powershell
 Get-Content -Raw .\config.json |
-    .\markoff_cli.exe convert - --from json --to yaml -o .\config.yaml
+    .\markoff.exe convert - --from json --to yaml -o .\config.yaml
 ```
 
 Если нужно только вывести результат на экран:
 
 ```powershell
 Get-Content -Raw .\config.json |
-    .\markoff_cli.exe convert - --from json --to yaml -o -
+    .\markoff.exe convert - --from json --to yaml -o -
 ```
 
 ### 7.6. Обработка презентации
 
 ```powershell
-.\markoff_cli.exe convert .\presentation.pptx --to md `
+.\markoff.exe convert .\presentation.pptx --to md `
     -o .\text\presentation.md
 ```
 
@@ -887,7 +1054,7 @@ Get-Content -Raw .\config.json |
 перезапись:
 
 ```powershell
-.\markoff_cli.exe convert .\input.md --to html `
+.\markoff.exe convert .\input.md --to html `
     -o .\output.html --overwrite
 ```
 
@@ -899,7 +1066,7 @@ Get-Content -Raw .\config.json |
 
 ```powershell
 Get-Content -Raw .\input.json |
-    .\markoff_cli.exe convert - --from json --to md -o -
+    .\markoff.exe convert - --from json --to md -o -
 ```
 
 ### `specify --to or an output path with a known extension`
@@ -908,7 +1075,7 @@ CLI не смог определить формат результата. Доб
 расширение в `-o`:
 
 ```powershell
-.\markoff_cli.exe convert .\input.data --from json `
+.\markoff.exe convert .\input.data --from json `
     --to yaml -o .\output.yaml
 ```
 
@@ -938,7 +1105,7 @@ CLI не смог определить формат результата. Доб
 2. запущена графическая сессия X11 или Wayland;
 3. доступны системные библиотеки выбранного графического окружения.
 
-Если графическая среда недоступна, используйте `./markoff_cli` для
+Если графическая среда недоступна, используйте `./markoff` для
 конвертации через командную строку.
 
 ### В Markdown не отображаются изображения
@@ -959,13 +1126,13 @@ CLI не смог определить формат результата. Доб
 
 ```powershell
 # Версия
-.\markoff_cli.exe --version
+.\markoff.exe --version
 
 # Один файл
-.\markoff_cli.exe convert .\input.docx --to md -o .\output\input.md
+.\markoff.exe convert .\input.docx --to md -o .\output\input.md
 
 # Пакетная обработка
-.\markoff_cli.exe batch .\documents --pattern '*.docx' --to md `
+.\markoff.exe batch .\documents --pattern '*.docx' --to md `
     -o .\converted
 
 # GUI
@@ -976,13 +1143,13 @@ CLI не смог определить формат результата. Доб
 
 ```bash
 # Версия
-./markoff_cli --version
+./markoff --version
 
 # Один файл
-./markoff_cli convert ./input.docx --to md -o ./output/input.md
+./markoff convert ./input.docx --to md -o ./output/input.md
 
 # Пакетная обработка
-./markoff_cli batch ./documents --pattern '*.docx' --to md -o ./converted
+./markoff batch ./documents --pattern '*.docx' --to md -o ./converted
 
 # GUI
 ./markoff_gui

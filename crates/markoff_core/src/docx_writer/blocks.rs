@@ -5,7 +5,13 @@ use super::hyperlinks::{Bookmark, HyperlinkAllocator};
 use super::lists::ListParagraph;
 use crate::MarkoffError;
 use crate::docx_inline::{markdown_code_block_to_docx_runs, markdown_list_item};
+use crate::style::DocumentTheme;
 use crate::xml_utils::xml_attribute_escape;
+
+use super::theme_styles::{
+    apply_code_character_style, points_to_border_eighths, points_to_half_points, points_to_twips,
+    themed_styles_xml,
+};
 
 pub(super) fn is_markdown_table_row(line: &str) -> bool {
     let line = line.trim();
@@ -23,8 +29,44 @@ pub(super) fn is_fenced_code_block_start(line: &str) -> bool {
     line.trim_start().starts_with("```")
 }
 
-pub(super) fn styles_xml() -> &'static str {
-    "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><w:styles xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii=\"Calibri\" w:hAnsi=\"Calibri\" w:cs=\"Calibri\"/><w:sz w:val=\"22\"/><w:szCs w:val=\"22\"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:after=\"160\"/></w:pPr></w:pPrDefault></w:docDefaults><w:style w:type=\"paragraph\" w:default=\"1\" w:styleId=\"Normal\"><w:name w:val=\"Normal\"/><w:qFormat/></w:style><w:style w:type=\"paragraph\" w:styleId=\"Heading1\"><w:name w:val=\"heading 1\"/><w:basedOn w:val=\"Normal\"/><w:next w:val=\"Normal\"/><w:uiPriority w:val=\"9\"/><w:qFormat/><w:pPr><w:keepNext/><w:keepLines/><w:spacing w:before=\"240\" w:after=\"120\"/></w:pPr><w:rPr><w:b/><w:color w:val=\"1F4E79\"/><w:sz w:val=\"32\"/><w:szCs w:val=\"32\"/></w:rPr></w:style><w:style w:type=\"paragraph\" w:styleId=\"Heading2\"><w:name w:val=\"heading 2\"/><w:basedOn w:val=\"Normal\"/><w:next w:val=\"Normal\"/><w:uiPriority w:val=\"9\"/><w:qFormat/><w:pPr><w:keepNext/><w:keepLines/><w:spacing w:before=\"200\" w:after=\"100\"/></w:pPr><w:rPr><w:b/><w:color w:val=\"2F5496\"/><w:sz w:val=\"28\"/><w:szCs w:val=\"28\"/></w:rPr></w:style><w:style w:type=\"paragraph\" w:styleId=\"Heading3\"><w:name w:val=\"heading 3\"/><w:basedOn w:val=\"Normal\"/><w:next w:val=\"Normal\"/><w:uiPriority w:val=\"9\"/><w:qFormat/><w:pPr><w:keepNext/><w:keepLines/><w:spacing w:before=\"160\" w:after=\"80\"/></w:pPr><w:rPr><w:b/><w:color w:val=\"5B9BD5\"/><w:sz w:val=\"24\"/><w:szCs w:val=\"24\"/></w:rPr></w:style><w:style w:type=\"paragraph\" w:styleId=\"Heading4\"><w:name w:val=\"heading 4\"/><w:basedOn w:val=\"Normal\"/><w:next w:val=\"Normal\"/><w:uiPriority w:val=\"9\"/><w:qFormat/><w:pPr><w:keepNext/><w:keepLines/><w:spacing w:before=\"120\" w:after=\"60\"/></w:pPr><w:rPr><w:b/><w:color w:val=\"5B9BD5\"/><w:sz w:val=\"22\"/><w:szCs w:val=\"22\"/></w:rPr></w:style><w:style w:type=\"paragraph\" w:styleId=\"Heading5\"><w:name w:val=\"heading 5\"/><w:basedOn w:val=\"Normal\"/><w:next w:val=\"Normal\"/><w:uiPriority w:val=\"9\"/><w:qFormat/><w:pPr><w:keepNext/><w:keepLines/><w:spacing w:before=\"100\" w:after=\"50\"/></w:pPr><w:rPr><w:b/><w:color w:val=\"5B9BD5\"/><w:sz w:val=\"20\"/><w:szCs w:val=\"20\"/></w:rPr></w:style><w:style w:type=\"paragraph\" w:styleId=\"Heading6\"><w:name w:val=\"heading 6\"/><w:basedOn w:val=\"Normal\"/><w:next w:val=\"Normal\"/><w:uiPriority w:val=\"9\"/><w:qFormat/><w:pPr><w:keepNext/><w:keepLines/><w:spacing w:before=\"80\" w:after=\"40\"/></w:pPr><w:rPr><w:b/><w:color w:val=\"5B9BD5\"/><w:sz w:val=\"18\"/><w:szCs w:val=\"18\"/></w:rPr></w:style><w:style w:type=\"paragraph\" w:styleId=\"Quote\"><w:name w:val=\"Quote\"/><w:basedOn w:val=\"Normal\"/><w:next w:val=\"Normal\"/><w:qFormat/><w:pPr><w:ind w:left=\"720\" w:right=\"720\"/></w:pPr><w:rPr><w:i/><w:color w:val=\"666666\"/></w:rPr></w:style><w:style w:type=\"paragraph\" w:styleId=\"CodeBlock\"><w:name w:val=\"Code Block\"/><w:basedOn w:val=\"Normal\"/><w:next w:val=\"Normal\"/><w:pPr><w:spacing w:before=\"80\" w:after=\"80\"/></w:pPr><w:rPr><w:rFonts w:ascii=\"Consolas\" w:hAnsi=\"Consolas\" w:cs=\"Consolas\"/><w:sz w:val=\"20\"/><w:szCs w:val=\"20\"/></w:rPr></w:style><w:style w:type=\"character\" w:styleId=\"Hyperlink\"><w:name w:val=\"Hyperlink\"/><w:uiPriority w:val=\"99\"/><w:unhideWhenUsed/><w:rPr><w:color w:val=\"0563C1\"/><w:u w:val=\"single\"/></w:rPr></w:style></w:styles>"
+pub(super) fn styles_xml(theme: &DocumentTheme) -> String {
+    if theme.enabled {
+        return themed_styles_xml(theme);
+    }
+    let headings = theme
+        .heading_sizes_pt
+        .iter()
+        .enumerate()
+        .map(|(index, configured_size)| {
+            let default_sizes = [16.0, 14.0, 12.0, 11.0, 10.0, 9.0];
+            let default_before = [12.0, 10.0, 8.0, 6.0, 5.0, 4.0];
+            let default_after = [6.0, 5.0, 4.0, 3.0, 2.5, 2.0];
+            let default_colors = ["1F4E79", "2F5496", "5B9BD5", "5B9BD5", "5B9BD5", "5B9BD5"];
+            let size = if theme.enabled {
+                *configured_size
+            } else {
+                default_sizes[index]
+            };
+            format!(
+            "<w:style w:type=\"paragraph\" w:styleId=\"Heading{level}\"><w:name w:val=\"heading {level}\"/><w:basedOn w:val=\"Normal\"/><w:next w:val=\"Normal\"/><w:qFormat/><w:pPr><w:keepNext/><w:keepLines/><w:spacing w:before=\"{before}\" w:after=\"{after}\"/></w:pPr><w:rPr><w:rFonts w:ascii=\"{font}\" w:hAnsi=\"{font}\" w:cs=\"{font}\"/><w:b/><w:color w:val=\"{color}\"/><w:sz w:val=\"{size}\"/><w:szCs w:val=\"{size}\"/></w:rPr></w:style>",
+            level = index + 1,
+            before = points_to_twips(if theme.enabled { theme.heading_spacing_before_pt } else { default_before[index] }),
+            after = points_to_twips(if theme.enabled { theme.heading_spacing_after_pt } else { default_after[index] }),
+            font = xml_attribute_escape(&theme.heading_font_family),
+            color = if theme.enabled { theme.heading_color.hex() } else { default_colors[index].to_string() },
+            size = points_to_half_points(size),
+        )
+        })
+        .collect::<String>();
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><w:styles xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii=\"{body_font}\" w:hAnsi=\"{body_font}\" w:cs=\"{body_font}\"/><w:color w:val=\"{body_color}\"/><w:sz w:val=\"{body_size}\"/><w:szCs w:val=\"{body_size}\"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:after=\"{paragraph_after}\" w:line=\"{line_height}\" w:lineRule=\"auto\"/></w:pPr></w:pPrDefault></w:docDefaults><w:style w:type=\"paragraph\" w:default=\"1\" w:styleId=\"Normal\"><w:name w:val=\"Normal\"/><w:qFormat/></w:style>{headings}<w:style w:type=\"paragraph\" w:styleId=\"Quote\"><w:name w:val=\"Quote\"/><w:basedOn w:val=\"Normal\"/><w:next w:val=\"Normal\"/><w:qFormat/><w:pPr><w:ind w:left=\"720\" w:right=\"720\"/></w:pPr><w:rPr><w:i/></w:rPr></w:style><w:style w:type=\"paragraph\" w:styleId=\"CodeBlock\"><w:name w:val=\"Code Block\"/><w:basedOn w:val=\"Normal\"/><w:next w:val=\"Normal\"/><w:rPr><w:rFonts w:ascii=\"{code_font}\" w:hAnsi=\"{code_font}\" w:cs=\"{code_font}\"/></w:rPr></w:style><w:style w:type=\"character\" w:styleId=\"Hyperlink\"><w:name w:val=\"Hyperlink\"/><w:rPr><w:color w:val=\"0563C1\"/><w:u w:val=\"single\"/></w:rPr></w:style></w:styles>",
+        body_font = xml_attribute_escape(&theme.font_family),
+        body_color = theme.text_color.hex(),
+        body_size = points_to_half_points(theme.font_size_pt),
+        paragraph_after = points_to_twips(theme.paragraph_spacing_after_pt),
+        line_height = (theme.line_height * 240.0).round() as u32,
+        code_font = xml_attribute_escape(&theme.code_font_family),
+    )
 }
 
 pub(super) fn docx_paragraph(
@@ -33,13 +75,30 @@ pub(super) fn docx_paragraph(
     list_item: Option<ListParagraph>,
     bookmark: Option<&Bookmark>,
     hyperlinks: &mut HyperlinkAllocator,
+    theme: &DocumentTheme,
 ) -> Result<String, MarkoffError> {
     let heading_level = line
         .chars()
         .take_while(|character| *character == '#')
         .count();
-    let (style, content) = if line.trim() == "---" {
+    let (style, content) = if line.trim() == "---" && theme.enabled {
+        (
+            format!(
+                "<w:pPr><w:pBdr><w:bottom w:val=\"single\" w:sz=\"{}\" w:space=\"1\" w:color=\"{}\"/></w:pBdr></w:pPr>",
+                points_to_border_eighths(theme.rule_width_pt),
+                theme.rule_color.hex()
+            ),
+            "",
+        )
+    } else if line.trim() == "---" {
         ("<w:pPr><w:pBdr><w:bottom w:val=\"single\" w:sz=\"6\" w:space=\"1\" w:color=\"auto\"/></w:pBdr></w:pPr>".to_string(), "")
+    } else if let Some(content) = line.strip_prefix("> ")
+        && theme.enabled
+    {
+        (
+            "<w:pPr><w:pStyle w:val=\"Quote\"/></w:pPr>".to_string(),
+            content,
+        )
     } else if let Some(content) = line.strip_prefix("> ") {
         (
             "<w:pPr><w:pStyle w:val=\"Quote\"/><w:ind w:left=\"720\"/></w:pPr>".to_string(),
@@ -85,9 +144,20 @@ pub(super) fn docx_paragraph(
     Ok(format!("<w:p>{style}{content}</w:p>"))
 }
 
-pub(super) fn docx_code_block(value: &str) -> String {
+pub(super) fn docx_code_block(value: &str, theme: &DocumentTheme) -> String {
+    if theme.enabled {
+        return format!(
+            "<w:p><w:pPr><w:pStyle w:val=\"CodeBlock\"/></w:pPr>{}</w:p>",
+            apply_code_character_style(&markdown_code_block_to_docx_runs(value), "CodeBlockChar")
+        );
+    }
     format!(
-        "<w:p><w:pPr><w:pStyle w:val=\"CodeBlock\"/><w:shd w:val=\"clear\" w:fill=\"F2F2F2\"/><w:ind w:left=\"360\"/></w:pPr>{}</w:p>",
+        "<w:p><w:pPr><w:pStyle w:val=\"CodeBlock\"/><w:shd w:val=\"clear\" w:fill=\"{}\"/><w:ind w:left=\"360\"/></w:pPr>{}</w:p>",
+        if theme.enabled {
+            theme.code_background.hex()
+        } else {
+            "F2F2F2".to_string()
+        },
         markdown_code_block_to_docx_runs(value)
     )
 }
@@ -96,6 +166,7 @@ pub(super) fn docx_table(
     rows: &[Vec<String>],
     footnote_ids: &HashMap<&str, usize>,
     hyperlinks: &mut HyperlinkAllocator,
+    theme: &DocumentTheme,
 ) -> String {
     let column_count = rows.iter().map(Vec::len).max().unwrap_or(0);
     if column_count == 0 {
@@ -111,13 +182,35 @@ pub(super) fn docx_table(
             let cells = (0..column_count)
                 .map(|column_index| {
                     let cell = row.get(column_index).map_or("", String::as_str);
-                    let shading = if row_index == 0 {
-                        "<w:shd w:val=\"clear\" w:fill=\"D9EAF7\"/>"
+                    let stripe = theme
+                        .table_stripe_background
+                        .filter(|_| theme.enabled && row_index >= 2 && row_index % 2 == 0);
+                    let shading = if let Some(stripe) = stripe {
+                        format!("<w:shd w:val=\"clear\" w:fill=\"{}\"/>", stripe.hex())
+                    } else if row_index == 0 {
+                        format!(
+                            "<w:shd w:val=\"clear\" w:fill=\"{}\"/>",
+                            if theme.enabled {
+                                theme.table_header_background.hex()
+                            } else {
+                                "D9EAF7".to_string()
+                            }
+                        )
                     } else {
-                        ""
+                        String::new()
+                    };
+                    let header_text = if row_index == 0 && theme.enabled {
+                        format!(
+                            "<w:pPr><w:pStyle w:val=\"TableHeader\"/><w:rPr><w:b/><w:color w:val=\"{}\"/></w:rPr></w:pPr>",
+                            theme.table_header_color.hex()
+                        )
+                    } else if theme.enabled {
+                        "<w:pPr><w:pStyle w:val=\"TableText\"/></w:pPr>".to_string()
+                    } else {
+                        String::new()
                     };
                     format!(
-                        "<w:tc><w:tcPr><w:tcW w:w=\"2400\" w:type=\"dxa\"/>{shading}</w:tcPr><w:p>{}</w:p></w:tc>",
+                        "<w:tc><w:tcPr><w:tcW w:w=\"2400\" w:type=\"dxa\"/>{shading}</w:tcPr><w:p>{header_text}{}</w:p></w:tc>",
                         markdown_inline_to_docx_runs_with_footnotes(
                             cell,
                             footnote_ids,
@@ -134,7 +227,23 @@ pub(super) fn docx_table(
             format!("<w:tr>{header}{cells}</w:tr>")
         })
         .collect::<String>();
+    let (border_size, cell_margins) = if theme.enabled {
+        let padding = points_to_twips(theme.table_cell_padding_pt);
+        (
+            points_to_border_eighths(theme.table_border_width_pt),
+            format!(
+                "<w:tblCellMar><w:top w:w=\"{padding}\" w:type=\"dxa\"/><w:left w:w=\"{padding}\" w:type=\"dxa\"/><w:bottom w:w=\"{padding}\" w:type=\"dxa\"/><w:right w:w=\"{padding}\" w:type=\"dxa\"/></w:tblCellMar>"
+            ),
+        )
+    } else {
+        (4, String::new())
+    };
     format!(
-        "<w:tbl><w:tblPr><w:tblW w:w=\"0\" w:type=\"auto\"/><w:tblLayout w:type=\"autofit\"/><w:tblBorders><w:top w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"B7C9D6\"/><w:left w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"B7C9D6\"/><w:bottom w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"B7C9D6\"/><w:right w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"B7C9D6\"/><w:insideH w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"B7C9D6\"/><w:insideV w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"B7C9D6\"/></w:tblBorders></w:tblPr><w:tblGrid>{grid}</w:tblGrid>{rows}</w:tbl>"
+        "<w:tbl><w:tblPr><w:tblW w:w=\"0\" w:type=\"auto\"/><w:tblLayout w:type=\"autofit\"/><w:tblBorders><w:top w:val=\"single\" w:sz=\"{border_size}\" w:space=\"0\" w:color=\"{border}\"/><w:left w:val=\"single\" w:sz=\"{border_size}\" w:space=\"0\" w:color=\"{border}\"/><w:bottom w:val=\"single\" w:sz=\"{border_size}\" w:space=\"0\" w:color=\"{border}\"/><w:right w:val=\"single\" w:sz=\"{border_size}\" w:space=\"0\" w:color=\"{border}\"/><w:insideH w:val=\"single\" w:sz=\"{border_size}\" w:space=\"0\" w:color=\"{border}\"/><w:insideV w:val=\"single\" w:sz=\"{border_size}\" w:space=\"0\" w:color=\"{border}\"/></w:tblBorders>{cell_margins}</w:tblPr><w:tblGrid>{grid}</w:tblGrid>{rows}</w:tbl>",
+        border = if theme.enabled {
+            theme.table_border_color.hex()
+        } else {
+            "B7C9D6".to_string()
+        },
     )
 }

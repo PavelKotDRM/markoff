@@ -1,3 +1,4 @@
+use super::super::pdf_color;
 use super::super::*;
 use super::inline::{
     append_inline_content, append_inline_content_with_prefix, inline_plain_text,
@@ -5,14 +6,51 @@ use super::inline::{
 };
 use crate::document_model::Block;
 use crate::error::invalid_data;
+use crate::style::StyleTextAlign;
 use base64::Engine as _;
+
+/// Nesting information that controls how a block is laid out.
+#[derive(Clone, Copy, Default)]
+pub(in crate::pdf_writer) struct BlockContext {
+    indent: f32,
+    quote_depth: usize,
+    in_list: bool,
+    in_footnote: bool,
+}
+
+impl BlockContext {
+    fn indented(self, extra: f32) -> Self {
+        Self {
+            indent: self.indent + extra,
+            ..self
+        }
+    }
+
+    fn quoted(self, theme: &DocumentTheme) -> Self {
+        Self {
+            indent: self.indent + theme.quote_indent_pt,
+            quote_depth: self.quote_depth + 1,
+            ..self
+        }
+    }
+
+    fn listed(self, extra: f32) -> Self {
+        Self {
+            indent: self.indent + extra,
+            in_list: true,
+            ..self
+        }
+    }
+}
 
 pub(in crate::pdf_writer) fn append_blocks(
     blocks: &[Block],
-    indent: f32,
-    quote_depth: usize,
+    context: BlockContext,
     output: &mut Vec<PdfElement>,
+    theme: &DocumentTheme,
 ) -> Result<(), MarkoffError> {
+    let indent = context.indent;
+    let quote_depth = context.quote_depth;
     for block in blocks {
         match block {
             Block::Heading {
@@ -22,18 +60,28 @@ pub(in crate::pdf_writer) fn append_blocks(
             } => {
                 let title = inline_plain_text(content, text.as_deref())?;
                 let style = InlineStyle {
-                    bold: true,
+                    bold: theme.heading_bold,
+                    italic: theme.heading_italic,
                     ..InlineStyle::default()
                 };
                 let options = ParagraphOptions {
-                    font_size: heading_font_size(*level),
+                    font_size: if theme.enabled {
+                        theme.heading_size_for(*level)
+                    } else {
+                        heading_font_size(*level)
+                    },
                     indent,
-                    space_before: 10.0,
-                    space_after: 6.0,
+                    space_before: theme.heading_spacing_before_pt,
+                    space_after: theme.heading_spacing_after_pt,
+                    first_line_indent: 0.0,
                     preserve_whitespace: false,
                     quote_depth,
                     alignment: TextAlignment::Left,
-                    color: HEADING_COLOR,
+                    color: if theme.enabled {
+                        pdf_color(theme.heading_color_for(*level))
+                    } else {
+                        PdfColor::new(31, 57, 86, 255)
+                    },
                     heading: Some((*level, title)),
                 };
                 append_inline_content(content, text.as_deref(), style, options, output)?;
@@ -48,19 +96,19 @@ pub(in crate::pdf_writer) fn append_blocks(
                 let marker = if *ordered {
                     format!("{}. ", number.unwrap_or(1))
                 } else {
-                    "• ".to_string()
+                    format!("{} ", theme.list_bullet)
                 };
                 let prefix = TextRun {
                     text: marker,
                     style: InlineStyle::default(),
                 };
-                let extra_indent = *level as f32 * 18.0;
-                let options = paragraph_options(indent + extra_indent, quote_depth);
+                let item_context = context.listed(*level as f32 * theme.list_indent_pt);
+                let options = paragraph_options(item_context, theme);
                 append_inline_content_with_prefix(
                     content,
                     text.as_deref(),
                     vec![prefix],
-                    InlineStyle::default(),
+                    body_style(item_context, theme),
                     options,
                     output,
                 )?;
@@ -76,9 +124,9 @@ pub(in crate::pdf_writer) fn append_blocks(
                     let marker = if *ordered {
                         format!("{number}.")
                     } else {
-                        "•".to_string()
+                        theme.list_bullet.clone()
                     };
-                    append_list_item(&item.blocks, &marker, indent, quote_depth, output)?;
+                    append_list_item(&item.blocks, &marker, context, output, theme)?;
                     next_number = number.saturating_add(1);
                 }
             }
@@ -124,6 +172,7 @@ pub(in crate::pdf_writer) fn append_blocks(
                     indent,
                     space_before: 2.0,
                     space_after: 8.0,
+                    first_line_indent: 0.0,
                     preserve_whitespace: false,
                     quote_depth,
                     alignment: TextAlignment::Center,
@@ -133,27 +182,33 @@ pub(in crate::pdf_writer) fn append_blocks(
                 append_inline_content(&[], Some(text), style, options, output)?;
             }
             Block::Quote { text, blocks } => {
+                let quote_context = context.quoted(theme);
                 if blocks.is_empty() {
-                    let options = ParagraphOptions {
-                        font_size: 11.0,
-                        indent: indent + 14.0,
-                        space_before: 0.0,
-                        space_after: 6.0,
-                        preserve_whitespace: false,
-                        quote_depth: quote_depth + 1,
-                        alignment: TextAlignment::Left,
-                        color: PdfColor::GREY_20,
-                        heading: None,
+                    let options = if theme.enabled {
+                        paragraph_options(quote_context, theme)
+                    } else {
+                        ParagraphOptions {
+                            font_size: 11.0,
+                            indent: quote_context.indent,
+                            space_before: 0.0,
+                            space_after: 6.0,
+                            first_line_indent: 0.0,
+                            preserve_whitespace: false,
+                            quote_depth: quote_context.quote_depth,
+                            alignment: TextAlignment::Left,
+                            color: PdfColor::GREY_20,
+                            heading: None,
+                        }
                     };
                     append_inline_content(
                         &[],
                         text.as_deref(),
-                        InlineStyle::default(),
+                        body_style(quote_context, theme),
                         options,
                         output,
                     )?;
                 } else {
-                    append_blocks(blocks, indent + 14.0, quote_depth + 1, output)?;
+                    append_blocks(blocks, quote_context, output, theme)?;
                 }
             }
             Block::HorizontalRule => {
@@ -175,11 +230,11 @@ pub(in crate::pdf_writer) fn append_blocks(
                 }));
             }
             Block::Paragraph { text, content } => {
-                let options = paragraph_options(indent, quote_depth);
+                let options = paragraph_options(context, theme);
                 append_inline_content(
                     content,
                     text.as_deref(),
-                    InlineStyle::default(),
+                    body_style(context, theme),
                     options,
                     output,
                 )?;
@@ -191,10 +246,11 @@ pub(in crate::pdf_writer) fn append_blocks(
                     ..InlineStyle::default()
                 };
                 let options = ParagraphOptions {
-                    font_size: 9.0,
+                    font_size: theme.footnote_font_size_pt,
                     indent: indent + 8.0,
                     space_before: 3.0,
                     space_after: 2.0,
+                    first_line_indent: 0.0,
                     preserve_whitespace: false,
                     quote_depth,
                     alignment: TextAlignment::Left,
@@ -202,14 +258,18 @@ pub(in crate::pdf_writer) fn append_blocks(
                     heading: None,
                 };
                 append_inline_content(&[], Some(&format!("[^{label}]")), style, options, output)?;
-                append_blocks(blocks, indent + 18.0, quote_depth, output)?;
+                let footnote_context = BlockContext {
+                    in_footnote: true,
+                    ..context.indented(18.0)
+                };
+                append_blocks(blocks, footnote_context, output, theme)?;
             }
             Block::Html { html } => {
-                let options = paragraph_options(indent, quote_depth);
+                let options = paragraph_options(context, theme);
                 append_inline_content(
                     &[],
                     Some(&strip_html_tags(html)),
-                    InlineStyle::default(),
+                    body_style(context, theme),
                     options,
                     output,
                 )?;
@@ -222,16 +282,21 @@ pub(in crate::pdf_writer) fn append_blocks(
 fn append_list_item(
     blocks: &[Block],
     marker: &str,
-    indent: f32,
-    quote_depth: usize,
+    context: BlockContext,
     output: &mut Vec<PdfElement>,
+    theme: &DocumentTheme,
 ) -> Result<(), MarkoffError> {
+    let item_context = BlockContext {
+        in_list: true,
+        ..context
+    };
+    let nested_context = context.listed(theme.list_indent_pt);
     let Some((first, rest)) = blocks.split_first() else {
         append_inline_content(
             &[],
             Some(marker),
             InlineStyle::default(),
-            paragraph_options(indent, quote_depth),
+            paragraph_options(item_context, theme),
             output,
         )?;
         return Ok(());
@@ -243,8 +308,8 @@ fn append_list_item(
                 content,
                 text.as_deref(),
                 vec![plain_run(&format!("{marker} "))],
-                InlineStyle::default(),
-                paragraph_options(indent, quote_depth),
+                body_style(item_context, theme),
+                paragraph_options(item_context, theme),
                 output,
             )?;
         }
@@ -253,30 +318,55 @@ fn append_list_item(
                 &[],
                 Some(marker),
                 InlineStyle::default(),
-                paragraph_options(indent, quote_depth),
+                paragraph_options(item_context, theme),
                 output,
             )?;
-            append_blocks(
-                std::slice::from_ref(first),
-                indent + 18.0,
-                quote_depth,
-                output,
-            )?;
+            append_blocks(std::slice::from_ref(first), nested_context, output, theme)?;
         }
     }
-    append_blocks(rest, indent + 18.0, quote_depth, output)
+    append_blocks(rest, nested_context, output, theme)
 }
 
-fn paragraph_options(indent: f32, quote_depth: usize) -> ParagraphOptions {
+fn body_style(context: BlockContext, theme: &DocumentTheme) -> InlineStyle {
+    InlineStyle {
+        italic: theme.enabled && context.quote_depth > 0 && theme.quote_italic,
+        ..InlineStyle::default()
+    }
+}
+
+fn paragraph_options(context: BlockContext, theme: &DocumentTheme) -> ParagraphOptions {
+    let plain_body = context.quote_depth == 0 && !context.in_list && !context.in_footnote;
     ParagraphOptions {
-        font_size: 11.0,
-        indent,
-        space_before: 0.0,
-        space_after: 6.0,
+        font_size: if theme.enabled && context.in_footnote {
+            theme.footnote_font_size_pt
+        } else {
+            theme.font_size_pt
+        },
+        indent: context.indent,
+        space_before: theme.paragraph_spacing_before_pt,
+        space_after: if theme.enabled {
+            theme.paragraph_spacing_after_pt
+        } else {
+            6.0
+        },
+        first_line_indent: if plain_body {
+            theme.first_line_indent_pt
+        } else {
+            0.0
+        },
         preserve_whitespace: false,
-        quote_depth,
-        alignment: TextAlignment::Left,
-        color: PdfColor::BLACK,
+        quote_depth: context.quote_depth,
+        alignment: match theme.text_align {
+            StyleTextAlign::Left => TextAlignment::Left,
+            StyleTextAlign::Center => TextAlignment::Center,
+            StyleTextAlign::Right => TextAlignment::Right,
+            StyleTextAlign::Justify => TextAlignment::Justify,
+        },
+        color: if theme.enabled && context.quote_depth > 0 {
+            pdf_color(theme.quote_text_color)
+        } else {
+            pdf_color(theme.text_color)
+        },
         heading: None,
     }
 }

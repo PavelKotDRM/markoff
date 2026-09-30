@@ -1,22 +1,22 @@
 # Краткая справка по командам markoff
 
 Эта страница содержит компактный список команд и параметров готового
-консольного приложения `markoff_cli`.
+консольного приложения `markoff`.
 
 В примерах для Windows используется:
 
 ```powershell
-.\markoff_cli.exe
+.\markoff.exe
 ```
 
 В Linux используется:
 
 ```bash
-./markoff_cli
+./markoff
 ```
 
 Если каталог с приложением добавлен в `PATH`, имя исполняемого файла можно
-сократить до `markoff_cli`.
+сократить до `markoff`.
 
 Подробное руководство с пошаговыми сценариями находится в
 [README.ru.md](README.ru.md).
@@ -34,16 +34,16 @@
 ### Справка и версия
 
 ```powershell
-.\markoff_cli.exe --help
-.\markoff_cli.exe --version
+.\markoff.exe --help
+.\markoff.exe --version
 ```
 
 Справка по конкретной команде:
 
 ```powershell
-.\markoff_cli.exe convert --help
-.\markoff_cli.exe batch --help
-.\markoff_cli.exe gui --help
+.\markoff.exe convert --help
+.\markoff.exe batch --help
+.\markoff.exe gui --help
 ```
 
 При запуске без подкоманды CLI выводит подсказку. Для преобразования нужно
@@ -54,7 +54,7 @@
 ### Синтаксис
 
 ```text
-markoff_cli convert INPUT [--from FORMAT] [--to FORMAT]
+markoff convert INPUT [--from FORMAT] [--to FORMAT]
                          [-o OUTPUT] [--overwrite]
                          [--tables-only] [--delimiter CHAR]
 ```
@@ -91,42 +91,42 @@ markoff_cli convert INPUT [--from FORMAT] [--to FORMAT]
 
 ```powershell
 # CSV -> Markdown; результат: .\report.md
-.\markoff_cli.exe convert .\report.csv --to md
+.\markoff.exe convert .\report.csv --to md
 
 # Markdown -> DOCX с явным путём
-.\markoff_cli.exe convert .\notes.md -o .\output\notes.docx
+.\markoff.exe convert .\notes.md -o .\output\notes.docx
 
 # DOCX -> Markdown с перезаписью результата
-.\markoff_cli.exe convert .\report.docx --to md --overwrite
+.\markoff.exe convert .\report.docx --to md --overwrite
 
 # Markdown или DOCX -> PDF
-.\markoff_cli.exe convert .\notes.md -o .\notes.pdf
-.\markoff_cli.exe convert .\report.docx --to pdf
+.\markoff.exe convert .\notes.md -o .\notes.pdf
+.\markoff.exe convert .\report.docx --to pdf
 
 # JSON/YAML/TOML -> PDF
-.\markoff_cli.exe convert .\report.json --to pdf
+.\markoff.exe convert .\report.json --to pdf
 
 # Файл с нестандартным расширением
-.\markoff_cli.exe convert .\input.data --from json --to yaml `
+.\markoff.exe convert .\input.data --from json --to yaml `
     -o .\output.yaml
 
 # CSV с разделителем ;
-.\markoff_cli.exe convert .\table.csv --to xlsx --delimiter ';'
+.\markoff.exe convert .\table.csv --to xlsx --delimiter ';'
 
 # TSV
-.\markoff_cli.exe convert .\table.tsv --to md --delimiter tab
+.\markoff.exe convert .\table.tsv --to md --delimiter tab
 
 # Извлечь из DOCX только таблицы в JSON
-.\markoff_cli.exe convert .\report.docx --to json --tables-only
+.\markoff.exe convert .\report.docx --to json --tables-only
 
 # Восстановить DOCX только из табличных блоков JSON
-.\markoff_cli.exe convert .\report.json --to docx --tables-only
+.\markoff.exe convert .\report.json --to docx --tables-only
 ```
 
 Linux-вариант той же команды:
 
 ```bash
-./markoff_cli convert ./report.csv --to md
+./markoff convert ./report.csv --to md
 ```
 
 ## `batch` — пакетное преобразование
@@ -134,7 +134,7 @@ Linux-вариант той же команды:
 ### Синтаксис
 
 ```text
-markoff_cli batch DIRECTORY --pattern GLOB --to FORMAT
+markoff batch DIRECTORY --pattern GLOB --to FORMAT
                        -o OUTPUT_DIRECTORY
                        [--overwrite] [--tables-only] [--delimiter CHAR]
 ```
@@ -156,26 +156,26 @@ markoff_cli batch DIRECTORY --pattern GLOB --to FORMAT
 
 ```powershell
 # Все DOCX из каталога documents -> converted/*.md
-.\markoff_cli.exe batch .\documents --pattern '*.docx' --to md `
+.\markoff.exe batch .\documents --pattern '*.docx' --to md `
     -o .\converted
 
 # Все CSV -> XLSX с разделителем ;
-.\markoff_cli.exe batch .\exports --pattern '*.csv' --to xlsx `
+.\markoff.exe batch .\exports --pattern '*.csv' --to xlsx `
     -o .\workbooks --delimiter ';'
 
 # Рекурсивный поиск DOCX
-.\markoff_cli.exe batch .\documents --pattern '**\*.docx' --to md `
+.\markoff.exe batch .\documents --pattern '**\*.docx' --to md `
     -o .\converted
 
 # Перезаписать уже существующие результаты
-.\markoff_cli.exe batch .\documents --pattern '*.docx' --to md `
+.\markoff.exe batch .\documents --pattern '*.docx' --to md `
     -o .\converted --overwrite
 ```
 
 Linux-вариант:
 
 ```bash
-./markoff_cli batch ./documents --pattern '*.docx' --to md -o ./converted
+./markoff batch ./documents --pattern '*.docx' --to md -o ./converted
 ```
 
 Шаблон применяется относительно `DIRECTORY`. Результаты записываются прямо в
@@ -189,13 +189,13 @@ Linux-вариант:
 ### Синтаксис
 
 ```text
-markoff_cli gui
+markoff gui
 ```
 
 Команда не имеет дополнительных параметров приложения:
 
 ```powershell
-.\markoff_cli.exe gui
+.\markoff.exe gui
 ```
 
 Можно запустить GUI напрямую:
@@ -207,7 +207,7 @@ markoff_cli gui
 В Linux:
 
 ```bash
-./markoff_cli gui
+./markoff gui
 ./markoff_gui
 ```
 
@@ -231,6 +231,35 @@ markoff_cli gui
 | PowerPoint | `pptx` |
 | OpenDocument Presentation | `odp` |
 | HTML | `html`, `htm` |
+
+### Необязательная тема оформления
+
+Для выходных PDF, HTML, DOCX и ODT можно передать TOML-файл:
+
+```powershell
+markoff convert report.md --to pdf --style docs\examples\style-theme.toml
+markoff batch documents --pattern "*.md" --to docx -o converted --style corporate.toml
+```
+
+Если `--style` не указан, используется стандартное оформление Markoff.
+Неизвестные свойства, неверные цвета и недопустимые размеры возвращают явную
+ошибку.
+
+Шаблон со всеми параметрами и значениями по умолчанию создаётся командой
+`style-template`:
+
+```powershell
+markoff style-template -o corporate.toml
+markoff style-template -o corporate.toml --overwrite
+```
+
+| Параметр | Назначение |
+| --- | --- |
+| `-o, --output <FILE>` | Путь к создаваемому TOML-файлу; без него или с `-` шаблон выводится в stdout |
+| `--overwrite` | Разрешить замену существующего файла; без флага возвращается ошибка |
+
+Каждый параметр в шаблоне снабжён комментарием. Ненужные строки можно удалить:
+пропущенные свойства получают те же значения по умолчанию.
 
 Основные реализованные направления:
 
@@ -268,13 +297,13 @@ PowerShell:
 
 ```powershell
 Get-Content -Raw .\data.json |
-    .\markoff_cli.exe convert - --from json --to yaml -o -
+    .\markoff.exe convert - --from json --to yaml -o -
 ```
 
 Linux:
 
 ```bash
-cat ./data.json | ./markoff_cli convert - --from json --to yaml -o -
+cat ./data.json | ./markoff convert - --from json --to yaml -o -
 ```
 
 DOCX, ODT, XLSX/XLSM, ODS, PDF, PPTX и ODP через stdin/stdout не обрабатываются.
@@ -286,7 +315,7 @@ DOCX, ODT, XLSX/XLSM, ODS, PDF, PPTX и ODP через stdin/stdout не обр�
 Без этого параметра существующий файл назначения защищён от перезаписи:
 
 ```powershell
-.\markoff_cli.exe convert .\source.md --to html `
+.\markoff.exe convert .\source.md --to html `
     -o .\result.html --overwrite
 ```
 
@@ -295,14 +324,14 @@ DOCX, ODT, XLSX/XLSM, ODS, PDF, PPTX и ODP через stdin/stdout не обр�
 Значение по умолчанию — запятая:
 
 ```powershell
-.\markoff_cli.exe convert .\source.csv --to md
+.\markoff.exe convert .\source.csv --to md
 ```
 
 Допустимы один ASCII-символ и специальное значение `tab`:
 
 ```powershell
-.\markoff_cli.exe convert .\source.csv --to md --delimiter ';'
-.\markoff_cli.exe convert .\source.tsv --to md --delimiter tab
+.\markoff.exe convert .\source.csv --to md --delimiter ';'
+.\markoff.exe convert .\source.tsv --to md --delimiter tab
 ```
 
 Параметр применяется и к `convert`, и к `batch`.
@@ -313,13 +342,13 @@ DOCX, ODT, XLSX/XLSM, ODS, PDF, PPTX и ODP через stdin/stdout не обр�
 поддерживаемому формату, например:
 
 ```powershell
-.\markoff_cli.exe convert .\source.md -o .\result.docx
+.\markoff.exe convert .\source.md -o .\result.docx
 ```
 
 Если расширение не указано или неизвестно, добавьте `--to`:
 
 ```powershell
-.\markoff_cli.exe convert .\source.data --from json --to md `
+.\markoff.exe convert .\source.data --from json --to md `
     -o .\result.md
 ```
 
@@ -339,10 +368,10 @@ DOCX, ODT, XLSX/XLSM, ODS, PDF, PPTX и ODP через stdin/stdout не обр�
 ## Минимальная памятка
 
 ```text
-markoff_cli --help
-markoff_cli --version
-markoff_cli convert INPUT --to FORMAT
-markoff_cli convert INPUT -o OUTPUT
-markoff_cli batch DIRECTORY --pattern GLOB --to FORMAT -o OUTPUT_DIRECTORY
-markoff_cli gui
+markoff --help
+markoff --version
+markoff convert INPUT --to FORMAT
+markoff convert INPUT -o OUTPUT
+markoff batch DIRECTORY --pattern GLOB --to FORMAT -o OUTPUT_DIRECTORY
+markoff gui
 ```

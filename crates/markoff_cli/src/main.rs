@@ -28,7 +28,7 @@ const BUILD_INFO: &str = concat!(
     long_version = BUILD_INFO,
     about = "Bi-directional Office <-> Markdown converter",
     long_about = "Convert Office documents, Markdown, structured data files, and PDF.",
-    after_help = "FORMATS:\n  docx, odt, pdf, md/markdown, xlsx/xlsm, ods, json, csv, yaml/yml, toml,\n  pptx, odp, html/htm\n  PDF input converts to Markdown, JSON, YAML, or TOML for documents with\n  a text layer. PDF output is available from Markdown, DOCX, ODT, JSON, YAML,\n  and TOML; supported formatting, tables, code, links, footnotes, bookmarks,\n  and raster images are rendered. Internal links and HTTP(S)/mailto/tel links\n  are clickable; content is reflowed onto A4 pages.\n  PPTX/ODP presentations convert slide titles and body text/bullets to and\n  from Markdown headings/lists; shape layout, images, and speaker notes are\n  not preserved. ODT preserves supported document structure and inline styles.\n  ODS converts Markdown tables and workbook sheets.\n  HTML converts to and from Markdown (headings, emphasis, links, images,\n  lists, blockquotes, code blocks, and tables); page layout/CSS and scripts\n  are not preserved.\n  JSON/YAML/TOML document schemas preserve structure (headings, lists,\n  tables, footnotes, images as base64), not just tables. Other valid\n  JSON/YAML/TOML values are printed as source code in PDF.\n  DOCX/PDF images are extracted into an 'image/' folder next to Markdown\n  output, or embedded as base64 in JSON/YAML/TOML output.\n\nOPTIONS (convert/batch):\n  --overwrite         Overwrite the output file(s) if they already exist;\n                      otherwise an error is raised when the destination\n                      exists.\n  --delimiter <CHAR>  CSV field delimiter: a single character, or 'tab'.\n                      Defaults to ','.\n\nSTREAMING:\n  Use '-' as INPUT or --output to read/write stdin/stdout. Streaming supports\n  text formats only: Markdown, JSON, CSV, YAML, TOML, and HTML.\n\nEXAMPLES:\n  markoff convert report.csv --to md\n  markoff convert report.pdf --to md\n  markoff convert report.md -o report.odt\n  markoff convert workbook.ods --to md\n  markoff convert report.md -o report.pdf\n  markoff convert report.docx --to pdf\n  markoff convert report.json --to pdf\n  markoff convert report.md -o report.docx --overwrite\n  markoff convert report.tsv --to md --delimiter tab\n  markoff convert slides.odp --to md\n  markoff convert report.md -o page.html\n  markoff convert - --from json --to yaml -o -\n  markoff batch documents --pattern '*.odt' --to md -o converted\n  markoff batch documents --pattern '*.docx' --to md -o converted --overwrite"
+    after_help = "FORMATS:\n  docx, odt, pdf, md/markdown, xlsx/xlsm, ods, json, csv, yaml/yml, toml,\n  pptx, odp, html/htm\n  PDF input converts to Markdown, JSON, YAML, or TOML for documents with\n  a text layer. PDF output is available from Markdown, DOCX, ODT, JSON, YAML,\n  and TOML; supported formatting, tables, code, links, footnotes, bookmarks,\n  and raster images are rendered. Internal links and HTTP(S)/mailto/tel links\n  are clickable; content is reflowed onto A4 pages.\n  PPTX/ODP presentations convert slide titles and body text/bullets to and\n  from Markdown headings/lists; shape layout, images, and speaker notes are\n  not preserved. ODT preserves supported document structure and inline styles.\n  ODS converts Markdown tables and workbook sheets.\n  HTML converts to and from Markdown (headings, emphasis, links, images,\n  lists, blockquotes, code blocks, and tables); page layout/CSS and scripts\n  are not preserved.\n  JSON/YAML/TOML document schemas preserve structure (headings, lists,\n  tables, footnotes, images as base64), not just tables. Other valid\n  JSON/YAML/TOML values are printed as source code in PDF.\n  DOCX/PDF images are extracted into an 'image/' folder next to Markdown\n  output, or embedded as base64 in JSON/YAML/TOML output.\n\nOPTIONS (convert/batch):\n  --overwrite         Overwrite the output file(s) if they already exist;\n                      otherwise an error is raised when the destination\n                      exists.\n  --delimiter <CHAR>  CSV field delimiter: a single character, or 'tab'.\n                      Defaults to ','.\n  --style <FILE>      Optional TOML style theme for PDF, HTML, DOCX, and ODT\n                      output. Omitted properties use default values.\n\nSTYLE TEMPLATE:\n  markoff style-template -o theme.toml writes an editable theme with every\n  setting and its default value. Without -o it prints to stdout.\n\nSTREAMING:\n  Use '-' as INPUT or --output to read/write stdin/stdout. Streaming supports\n  text formats only: Markdown, JSON, CSV, YAML, TOML, and HTML.\n\nEXAMPLES:\n  markoff convert report.csv --to md\n  markoff convert report.pdf --to md\n  markoff convert report.md -o report.odt\n  markoff convert workbook.ods --to md\n  markoff convert report.md -o report.pdf\n  markoff convert report.docx --to pdf\n  markoff convert report.json --to pdf\n  markoff convert report.md -o report.docx --overwrite\n  markoff convert report.tsv --to md --delimiter tab\n  markoff convert slides.odp --to md\n  markoff convert report.md -o page.html\n  markoff style-template -o theme.toml\n  markoff convert report.md -o report.pdf --style theme.toml\n  markoff convert - --from json --to yaml -o -\n  markoff batch documents --pattern '*.odt' --to md -o converted\n  markoff batch documents --pattern '*.docx' --to md -o converted --overwrite"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -60,6 +60,9 @@ enum Commands {
         /// CSV field delimiter (single character, or 'tab'). Defaults to ','.
         #[arg(long, value_name = "CHAR")]
         delimiter: Option<String>,
+        /// TOML style theme for PDF, HTML, DOCX, or ODT output.
+        #[arg(long, value_name = "FILE")]
+        style: Option<PathBuf>,
     },
     /// Convert all matching files in a directory.
     Batch {
@@ -84,9 +87,35 @@ enum Commands {
         /// CSV field delimiter (single character, or 'tab'). Defaults to ','.
         #[arg(long, value_name = "CHAR")]
         delimiter: Option<String>,
+        /// TOML style theme for PDF, HTML, DOCX, or ODT output.
+        #[arg(long, value_name = "FILE")]
+        style: Option<PathBuf>,
+    },
+    /// Write an editable TOML style theme filled with default values.
+    StyleTemplate {
+        /// Destination TOML file. Prints to stdout when omitted or '-'.
+        #[arg(short, long, value_name = "FILE")]
+        output: Option<PathBuf>,
+        /// Overwrite the destination file if it already exists.
+        #[arg(long)]
+        overwrite: bool,
     },
     /// Run the graphical application.
     Gui,
+}
+
+fn write_style_template(
+    output: Option<&Path>,
+    overwrite: bool,
+    stdout: &mut dyn Write,
+) -> anyhow::Result<()> {
+    match output {
+        Some(path) if path != Path::new("-") => {
+            markoff_core::write_default_style_theme(path, overwrite)?;
+        }
+        _ => stdout.write_all(markoff_core::default_style_theme_toml().as_bytes())?,
+    }
+    Ok(())
 }
 
 fn parse_format_spec(spec: &str) -> Result<Format, MarkoffError> {
@@ -193,6 +222,7 @@ struct ConvertOptions<'a> {
     overwrite: bool,
     delimiter: u8,
     tables_only: bool,
+    style: Option<&'a Path>,
 }
 
 fn convert_one(options: ConvertOptions<'_>) -> anyhow::Result<()> {
@@ -217,6 +247,7 @@ fn convert_one_with_io(
         overwrite,
         delimiter,
         tables_only,
+        style,
     } = options;
 
     let from = match from {
@@ -273,6 +304,7 @@ fn convert_one_with_io(
         overwrite: overwrite || writes_stdout,
         csv_delimiter: delimiter,
         tables_only,
+        style: style.map(Path::to_path_buf),
     })?;
     if writes_stdout {
         let rendered = std::fs::read_to_string(&destination)?;
@@ -301,15 +333,28 @@ fn matching_file(path: PathBuf) -> Option<anyhow::Result<PathBuf>> {
     }
 }
 
-fn run_batch(
-    directory: &Path,
-    pattern: &str,
-    output: &Path,
+struct BatchOptions<'a> {
+    directory: &'a Path,
+    pattern: &'a str,
+    output: &'a Path,
     to: Format,
     overwrite: bool,
     delimiter: u8,
     tables_only: bool,
-) -> anyhow::Result<()> {
+    style: Option<&'a Path>,
+}
+
+fn run_batch(options: BatchOptions<'_>) -> anyhow::Result<()> {
+    let BatchOptions {
+        directory,
+        pattern,
+        output,
+        to,
+        overwrite,
+        delimiter,
+        tables_only,
+        style,
+    } = options;
     let pattern = directory.join(pattern).to_string_lossy().to_string();
     let inputs = matching_files(&pattern)?;
     let progress = ProgressBar::new_spinner();
@@ -331,6 +376,7 @@ fn run_batch(
             overwrite,
             csv_delimiter: delimiter,
             tables_only,
+            style: style.map(Path::to_path_buf),
         })?;
         progress.inc(1);
     }
@@ -354,6 +400,7 @@ fn main() -> anyhow::Result<()> {
             overwrite,
             tables_only,
             delimiter,
+            style,
         }) => {
             convert_one(ConvertOptions {
                 input: &input,
@@ -363,6 +410,7 @@ fn main() -> anyhow::Result<()> {
                 overwrite,
                 delimiter: parse_delimiter(delimiter.as_deref())?,
                 tables_only,
+                style: style.as_deref(),
             })?;
         }
         Some(Commands::Batch {
@@ -373,16 +421,21 @@ fn main() -> anyhow::Result<()> {
             overwrite,
             tables_only,
             delimiter,
+            style,
         }) => {
-            run_batch(
-                &directory,
-                &pattern,
-                &output,
-                parse_format_spec(&to)?,
+            run_batch(BatchOptions {
+                directory: &directory,
+                pattern: &pattern,
+                output: &output,
+                to: parse_format_spec(&to)?,
                 overwrite,
-                parse_delimiter(delimiter.as_deref())?,
+                delimiter: parse_delimiter(delimiter.as_deref())?,
                 tables_only,
-            )?;
+                style: style.as_deref(),
+            })?;
+        }
+        Some(Commands::StyleTemplate { output, overwrite }) => {
+            write_style_template(output.as_deref(), overwrite, &mut std::io::stdout().lock())?;
         }
         Some(Commands::Gui) => {
             markoff_gui::run().map_err(|error| anyhow::anyhow!(error.to_string()))?;
@@ -400,9 +453,10 @@ fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ConvertOptions, TemporaryFile, convert_one_with_io, matching_file, matching_files,
-        run_batch,
+        BatchOptions, Cli, Commands, ConvertOptions, TemporaryFile, convert_one_with_io,
+        matching_file, matching_files, run_batch, write_style_template,
     };
+    use clap::Parser;
     use markoff_core::Format;
     use std::io::{self, Cursor, Write};
     use std::path::{Path, PathBuf};
@@ -431,6 +485,47 @@ mod tests {
         }
     }
 
+    #[test]
+    fn convert_accepts_optional_style_theme() {
+        let cli = Cli::try_parse_from([
+            "markoff",
+            "convert",
+            "report.md",
+            "--to",
+            "pdf",
+            "--style",
+            "corporate.toml",
+        ])
+        .unwrap();
+        let Some(Commands::Convert { style, .. }) = cli.command else {
+            panic!("expected convert command");
+        };
+        assert_eq!(style, Some(PathBuf::from("corporate.toml")));
+    }
+
+    #[test]
+    fn style_template_writes_default_theme_to_stdout_or_file() {
+        let cli = Cli::try_parse_from(["markoff", "style-template", "-o", "theme.toml"]).unwrap();
+        let Some(Commands::StyleTemplate { output, overwrite }) = cli.command else {
+            panic!("expected style-template command");
+        };
+        assert_eq!(output, Some(PathBuf::from("theme.toml")));
+        assert!(!overwrite);
+
+        let mut stdout = Vec::new();
+        write_style_template(None, false, &mut stdout).unwrap();
+        let template = String::from_utf8(stdout).unwrap();
+        assert_eq!(template, markoff_core::default_style_theme_toml());
+
+        let [path, _] = temporary_paths("style_template");
+        let path = path.with_extension("toml");
+        write_style_template(Some(&path), false, &mut io::sink()).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), template);
+        assert!(write_style_template(Some(&path), false, &mut io::sink()).is_err());
+        write_style_template(Some(&path), true, &mut io::sink()).unwrap();
+        std::fs::remove_file(path).unwrap();
+    }
+
     fn stream_conversion_options() -> ConvertOptions<'static> {
         ConvertOptions {
             input: Path::new("-"),
@@ -440,6 +535,7 @@ mod tests {
             overwrite: false,
             delimiter: b',',
             tables_only: false,
+            style: None,
         }
     }
 
@@ -559,15 +655,16 @@ mod tests {
             .with_extension("json");
         std::fs::write(&first_output, "preserve existing output").unwrap();
 
-        let result = run_batch(
-            &directory,
-            "*.md",
-            &output,
-            Format::Json,
-            false,
-            b',',
-            false,
-        );
+        let result = run_batch(BatchOptions {
+            directory: &directory,
+            pattern: "*.md",
+            output: &output,
+            to: Format::Json,
+            overwrite: false,
+            delimiter: b',',
+            tables_only: false,
+            style: None,
+        });
 
         assert!(result.is_err());
         assert_eq!(

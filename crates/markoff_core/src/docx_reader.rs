@@ -280,6 +280,13 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                             .map(|target| format!("external:{target}"))
                     };
                 }
+                "rStyle" => {
+                    if attribute_value(&event, "val")?
+                        .is_some_and(|value| value == "CodeChar" || value == "CodeBlockChar")
+                    {
+                        run_properties.code = true;
+                    }
+                }
                 "rFonts" => {
                     run_properties.code = event.attributes().flatten().any(|attribute| {
                         attribute.key.local_name().as_ref() == "ascii"

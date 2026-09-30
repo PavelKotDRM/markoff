@@ -1,5 +1,6 @@
 use crate::MarkoffError;
 use crate::document_model::{Document, TableAlignment};
+use crate::style::{DocumentTheme, Rgb};
 use pdfium_bundled::pdfium_render::prelude::{
     PdfColor, PdfDocument, PdfFontToken, PdfPage, Pdfium,
 };
@@ -11,16 +12,8 @@ mod navigation;
 mod render;
 use std::sync::Arc;
 
-const PDF_MARGIN_LEFT: f32 = 42.0;
-const PDF_MARGIN_RIGHT: f32 = 42.0;
-const PDF_MARGIN_TOP: f32 = 42.0;
-const PDF_MARGIN_BOTTOM: f32 = 42.0;
 const INTERNAL_LINK_PREFIX: &str = "markoff-internal:";
-const CODE_BACKGROUND: PdfColor = PdfColor::new(246, 248, 250, 255);
-const TABLE_HEADER_BACKGROUND: PdfColor = PdfColor::new(235, 240, 246, 255);
-const TABLE_BORDER: PdfColor = PdfColor::new(180, 188, 198, 255);
 const TABLE_SPACE_AFTER: f32 = 16.0;
-const HEADING_COLOR: PdfColor = PdfColor::new(31, 57, 86, 255);
 const LINK_COLOR: PdfColor = PdfColor::new(28, 86, 150, 255);
 
 #[derive(Clone, Default, PartialEq, Eq)]
@@ -54,6 +47,7 @@ struct ParagraphOptions {
     indent: f32,
     space_before: f32,
     space_after: f32,
+    first_line_indent: f32,
     preserve_whitespace: bool,
     quote_depth: usize,
     alignment: TextAlignment,
@@ -65,6 +59,8 @@ struct ParagraphOptions {
 enum TextAlignment {
     Left,
     Center,
+    Right,
+    Justify,
 }
 
 struct PdfParagraph {
@@ -132,29 +128,44 @@ struct PdfWriter<'a> {
     anchors: HashMap<String, usize>,
     heading_slugs: HashMap<String, usize>,
     has_internal_links: bool,
+    theme: DocumentTheme,
 }
 
-pub(crate) fn convert_markdown_to_pdf(input: &Path, output: &Path) -> Result<(), MarkoffError> {
+pub(crate) fn convert_markdown_to_pdf(
+    input: &Path,
+    output: &Path,
+    theme: &DocumentTheme,
+) -> Result<(), MarkoffError> {
     let source = std::fs::read_to_string(input)?;
     let base_dir = input
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
     let document = crate::document::parse_markdown_document(&source, base_dir)?;
-    write_document_to_pdf(&document, output)
+    write_document_to_pdf(&document, output, theme)
 }
 
 pub(crate) fn write_document_to_pdf(
     document: &Document,
     output: &Path,
+    theme: &DocumentTheme,
 ) -> Result<(), MarkoffError> {
     let mut elements = Vec::new();
-    content::append_blocks(&document.blocks, 0.0, 0, &mut elements)?;
+    content::append_blocks(
+        &document.blocks,
+        content::BlockContext::default(),
+        &mut elements,
+        theme,
+    )?;
 
     let pdfium = crate::pdf::bundled_pdfium()?;
-    let mut writer = PdfWriter::new(pdfium)?;
+    let mut writer = PdfWriter::new(pdfium, theme)?;
     for element in elements {
         writer.write_element(element)?;
     }
     writer.finish(output)
+}
+
+pub(super) fn pdf_color(color: Rgb) -> PdfColor {
+    PdfColor::new(color.red, color.green, color.blue, 255)
 }

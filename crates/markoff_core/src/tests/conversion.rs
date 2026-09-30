@@ -51,6 +51,7 @@ fn rejects_existing_output_without_overwrite() {
         overwrite: false,
         csv_delimiter: b',',
         tables_only: false,
+        style: None,
     };
 
     assert!(matches!(
@@ -77,6 +78,7 @@ fn rejects_overwriting_the_input_even_with_overwrite_enabled() {
         overwrite: true,
         csv_delimiter: b',',
         tables_only: false,
+        style: None,
     };
     assert!(matches!(
         convert_document(&request),
@@ -101,6 +103,7 @@ fn rejects_overwriting_the_input_through_an_alias() {
         overwrite: true,
         csv_delimiter: b',',
         tables_only: false,
+        style: None,
     };
     assert!(matches!(
         convert_document(&request),
@@ -126,6 +129,7 @@ fn overwrites_existing_output_when_requested() {
         overwrite: true,
         csv_delimiter: b',',
         tables_only: false,
+        style: None,
     };
 
     convert_document(&request).unwrap();
@@ -772,6 +776,7 @@ fn converts_only_table_blocks_from_structured_data_to_pdf() {
         overwrite: false,
         csv_delimiter: b',',
         tables_only: true,
+        style: None,
     };
 
     convert_document(&request).unwrap();

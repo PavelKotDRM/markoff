@@ -53,10 +53,10 @@ jobs:
       - name: Package Windows binaries
         if: runner.os == 'Windows'
         shell: pwsh
-        run: Compress-Archive -Path target/release/markoff_cli.exe,target/release/markoff_gui.exe -DestinationPath ${{ matrix.archive }}
+        run: Compress-Archive -Path target/release/markoff.exe,target/release/markoff_gui.exe -DestinationPath ${{ matrix.archive }}
       - name: Package Linux binaries
         if: runner.os == 'Linux'
-        run: tar -czf ${{ matrix.archive }} -C target/release markoff_cli markoff_gui
+        run: tar -czf ${{ matrix.archive }} -C target/release markoff markoff_gui
       - uses: softprops/action-gh-release@v3
         with:
           files: ${{ matrix.archive }}

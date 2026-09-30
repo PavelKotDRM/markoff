@@ -13,7 +13,7 @@ fn converts_markdown_to_html_and_back() {
     )
     .unwrap();
 
-    convert_markdown_to_html(&markdown_in, &html).unwrap();
+    convert_markdown_to_html(&markdown_in, &html, &crate::style::DocumentTheme::default()).unwrap();
     let rendered_html = fs::read_to_string(&html).unwrap();
     assert!(rendered_html.contains("<h1>Title</h1>"));
     assert!(rendered_html.contains("<strong>bold</strong>"));

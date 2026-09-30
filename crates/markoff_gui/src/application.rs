@@ -8,8 +8,11 @@ use std::path::PathBuf;
 
 #[path = "preview.rs"]
 mod preview;
+#[path = "style_preview.rs"]
+mod style_preview;
 
 use preview::{SourcePreview, load_source_preview, render_preview};
+use style_preview::{StylePreviewState, show_style_preview};
 
 const BUILD_INFO: &str = concat!(
     "Version: ",
@@ -95,8 +98,17 @@ struct MarkoffApp {
     overwrite: bool,
     tables_only: bool,
     csv_delimiter: String,
+    style: Option<PathBuf>,
+    style_preview: Option<StylePreviewState>,
+    show_style_preview: bool,
+    style_notice: Option<StyleNotice>,
     markdown_cache: CommonMarkCache,
     preview_pane: PreviewPane,
+}
+
+enum StyleNotice {
+    Exported(PathBuf),
+    Failed(String),
 }
 
 impl Default for MarkoffApp {
@@ -110,6 +122,10 @@ impl Default for MarkoffApp {
             overwrite: false,
             tables_only: false,
             csv_delimiter: ",".to_string(),
+            style: None,
+            style_preview: None,
+            show_style_preview: false,
+            style_notice: None,
             markdown_cache: CommonMarkCache::default(),
             preview_pane: PreviewPane::Source,
         }
@@ -175,6 +191,7 @@ impl MarkoffApp {
                 overwrite: self.overwrite,
                 csv_delimiter: delimiter,
                 tables_only: self.tables_only,
+                style: self.style.clone(),
             })
         });
         match result {
@@ -189,6 +206,38 @@ impl MarkoffApp {
                 job.result_preview = SourcePreview::message(job.message.clone());
             }
         }
+    }
+
+    fn preview_style(&mut self) {
+        let Some(path) = self.style.as_deref() else {
+            return;
+        };
+        self.style_preview = Some(StylePreviewState::load(path));
+        self.show_style_preview = true;
+    }
+
+    fn export_style_template(&mut self, path: PathBuf) {
+        self.style_notice = Some(match markoff_core::write_default_style_theme(&path, true) {
+            Ok(()) => StyleNotice::Exported(path),
+            Err(error) => StyleNotice::Failed(format!(
+                "Unable to export style template to {}: {error}",
+                path.display()
+            )),
+        });
+    }
+
+    fn create_default_style(&mut self, path: PathBuf) {
+        self.show_style_preview = true;
+        if let Err(error) = markoff_core::write_default_style_theme(&path, true) {
+            self.style_preview = Some(StylePreviewState::Error {
+                path,
+                message: format!("unable to create default style theme: {error}"),
+            });
+            return;
+        }
+        self.style_preview = Some(StylePreviewState::load(&path));
+        self.style = Some(path);
+        self.update_outputs();
     }
 }
 
@@ -256,6 +305,73 @@ impl eframe::App for MarkoffApp {
                         .desired_width(20.0)
                         .char_limit(1),
                 );
+                ui.separator();
+                ui.label("Style:");
+                let style_supported = matches!(
+                    self.target,
+                    Format::Pdf | Format::Html | Format::Docx | Format::Odt
+                );
+                ui.add_enabled_ui(style_supported, |ui| {
+                    let label = self
+                        .style
+                        .as_ref()
+                        .and_then(|path| path.file_name())
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("Default");
+                    ui.label(label);
+                    if ui.button("Choose...").clicked()
+                        && let Some(path) = rfd::FileDialog::new()
+                            .add_filter("TOML theme", &["toml"])
+                            .pick_file()
+                    {
+                        self.style_preview = Some(StylePreviewState::load(&path));
+                        self.style = Some(path);
+                        self.show_style_preview = true;
+                        self.update_outputs();
+                    }
+                    if ui
+                        .button("New...")
+                        .on_hover_text(
+                            "Save an editable TOML theme with every setting at its default value.",
+                        )
+                        .clicked()
+                        && let Some(path) = rfd::FileDialog::new()
+                            .add_filter("TOML theme", &["toml"])
+                            .set_file_name("style-theme.toml")
+                            .save_file()
+                    {
+                        self.create_default_style(path);
+                    }
+                    if ui
+                        .add_enabled(self.style.is_some(), egui::Button::new("Preview"))
+                        .clicked()
+                    {
+                        self.preview_style();
+                    }
+                    if ui
+                        .add_enabled(self.style.is_some(), egui::Button::new("Clear"))
+                        .clicked()
+                    {
+                        self.style = None;
+                        self.style_preview = None;
+                        self.show_style_preview = false;
+                        self.update_outputs();
+                    }
+                });
+                if ui
+                    .button("Export template...")
+                    .on_hover_text(
+                        "Save a TOML style template with every setting at its default value \
+                         and a comment, for editing in a text editor.",
+                    )
+                    .clicked()
+                    && let Some(path) = rfd::FileDialog::new()
+                        .add_filter("TOML theme", &["toml"])
+                        .set_file_name("style-theme.toml")
+                        .save_file()
+                {
+                    self.export_style_template(path);
+                }
                 if ui.button("Convert selected").clicked() {
                     self.convert_selected();
                 }
@@ -274,6 +390,23 @@ impl eframe::App for MarkoffApp {
                     self.show_about = true;
                 }
             });
+            let mut dismiss_notice = false;
+            if let Some(notice) = &self.style_notice {
+                ui.horizontal_wrapped(|ui| {
+                    match notice {
+                        StyleNotice::Exported(path) => {
+                            ui.label(format!("Style template saved to {}", path.display()));
+                        }
+                        StyleNotice::Failed(message) => {
+                            ui.colored_label(ui.visuals().error_fg_color, message);
+                        }
+                    }
+                    dismiss_notice = ui.small_button("Dismiss").clicked();
+                });
+            }
+            if dismiss_notice {
+                self.style_notice = None;
+            }
         });
 
         egui::Panel::left("queue").resizable(true).show(ui, |ui| {
@@ -396,12 +529,20 @@ impl eframe::App for MarkoffApp {
                     ui.monospace(format!("{BUILD_INFO}\nRenderer: {RENDERER}"));
                 });
         }
+        if self.show_style_preview
+            && let Some(state) = self.style_preview.as_ref()
+        {
+            show_style_preview(ui.ctx(), &mut self.show_style_preview, state);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{JobStatus, MarkoffApp, PreviewPane, SourcePreview, load_source_preview};
+    use super::{
+        JobStatus, MarkoffApp, PreviewPane, SourcePreview, StyleNotice, StylePreviewState,
+        load_source_preview,
+    };
     use markoff_core::{Format, convert_file};
     use std::fs;
     use std::path::PathBuf;
@@ -462,6 +603,121 @@ mod tests {
 
         fs::remove_file(markdown).ok();
         fs::remove_file(output).ok();
+    }
+
+    #[test]
+    fn applies_selected_style_theme_in_gui() {
+        let markdown = temporary_path("style_input", "md");
+        let theme = temporary_path("style_theme", "toml");
+        fs::write(&markdown, "# Styled\n\nText.\n").unwrap();
+        fs::write(
+            &theme,
+            "[document]\nfont_family = \"Georgia\"\ntext_color = \"#123456\"\n",
+        )
+        .unwrap();
+
+        let mut app = MarkoffApp {
+            target: Format::Html,
+            style: Some(theme.clone()),
+            ..MarkoffApp::default()
+        };
+        app.add_file(markdown.clone());
+        let output = app.jobs[0].output.clone();
+        app.convert_selected();
+
+        assert!(matches!(app.jobs[0].status, JobStatus::Success));
+        let html = fs::read_to_string(&output).unwrap();
+        assert!(html.contains("font-family:\"Georgia\""));
+        assert!(html.contains("color:#123456"));
+
+        fs::remove_file(markdown).ok();
+        fs::remove_file(theme).ok();
+        fs::remove_file(output).ok();
+    }
+
+    #[test]
+    fn exports_style_template_without_selecting_it() {
+        let theme = temporary_path("export_style", "toml");
+        let mut app = MarkoffApp::default();
+
+        app.export_style_template(theme.clone());
+
+        assert!(matches!(
+            &app.style_notice,
+            Some(StyleNotice::Exported(path)) if path == &theme
+        ));
+        assert!(app.style.is_none());
+        assert_eq!(
+            fs::read_to_string(&theme).unwrap(),
+            markoff_core::default_style_theme_toml()
+        );
+
+        let blocked = theme.with_extension("dir");
+        fs::create_dir_all(&blocked).unwrap();
+        app.export_style_template(blocked.clone());
+        assert!(matches!(app.style_notice, Some(StyleNotice::Failed(_))));
+
+        fs::remove_file(theme).ok();
+        fs::remove_dir(blocked).ok();
+    }
+
+    #[test]
+    fn creates_default_style_theme_in_gui() {
+        let theme = temporary_path("default_style", "toml");
+        let mut app = MarkoffApp::default();
+
+        app.create_default_style(theme.clone());
+
+        assert_eq!(app.style.as_ref(), Some(&theme));
+        assert!(app.show_style_preview);
+        assert!(matches!(
+            app.style_preview,
+            Some(StylePreviewState::Loaded { .. })
+        ));
+        assert_eq!(
+            fs::read_to_string(&theme).unwrap(),
+            markoff_core::default_style_theme_toml()
+        );
+
+        fs::remove_file(theme).ok();
+    }
+
+    #[test]
+    fn loads_selected_theme_for_style_preview() {
+        let theme = temporary_path("style_preview", "toml");
+        fs::write(
+            &theme,
+            "[document]\nfont_family = \"Georgia\"\nfont_size_pt = 14\ntext_color = \"#123456\"\n",
+        )
+        .unwrap();
+        let mut app = MarkoffApp {
+            style: Some(theme.clone()),
+            ..MarkoffApp::default()
+        };
+
+        app.preview_style();
+
+        assert!(app.show_style_preview);
+        let Some(StylePreviewState::Loaded {
+            path,
+            theme: preview,
+        }) = app.style_preview.as_ref()
+        else {
+            panic!("expected a loaded style preview");
+        };
+        assert_eq!(path, &theme);
+        assert_eq!(preview.font_family, "Georgia");
+        assert_eq!(preview.font_size_pt, 14.0);
+        assert_eq!(
+            (
+                preview.text_color.red,
+                preview.text_color.green,
+                preview.text_color.blue
+            ),
+            (0x12, 0x34, 0x56)
+        );
+
+        fs::remove_file(theme).unwrap();
     }
 
     #[test]

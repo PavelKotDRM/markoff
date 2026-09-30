@@ -1,0 +1,77 @@
+# Example Markoff style theme. Every section and key is optional.
+# Generate a template with all defaults and comments:
+#   markoff style-template -o theme.toml
+
+[document]
+font_family = "Aptos"
+font_size_pt = 11
+text_color = "#202124"
+paragraph_spacing_before_pt = 0
+paragraph_spacing_after_pt = 8
+line_height = 1.4
+text_align = "justify"
+first_line_indent_pt = 14
+
+[headings]
+font_family = "Aptos Display"
+color = "#1F4E79"
+level_colors = ["#1F4E79", "#1F4E79", "#2E75B6", "#2E75B6", "#404040", "#404040"]
+sizes_pt = [26, 20, 16, 14, 12, 11]
+spacing_before_pt = 12
+spacing_after_pt = 6
+bold = true
+italic = false
+
+[page]
+size = "A4"
+orientation = "portrait"
+margin_top_pt = 56
+margin_right_pt = 50
+margin_bottom_pt = 56
+margin_left_pt = 50
+header_text = "Markoff report"
+footer_text = "Page {page} of {pages}"
+header_footer_font_size_pt = 9
+
+[links]
+color = "#0563C1"
+underline = true
+
+[blockquote]
+text_color = "#404040"
+background = "#F3F6F9"
+border_color = "#2E75B6"
+border_width_pt = 2
+indent_pt = 16
+italic = true
+
+[lists]
+indent_pt = 18
+bullet = "–"
+
+[code]
+font_family = "Cascadia Mono"
+font_size_pt = 9.5
+text_color = "#24292F"
+background = "#F2F2F2"
+inline_background = "#EFF1F3"
+padding_pt = 7
+
+[table]
+font_size_pt = 9.5
+header_background = "#D9EAF7"
+header_color = "#102030"
+border_color = "#B7C9D6"
+border_width_pt = 0.5
+cell_padding_pt = 4
+stripe_background = "#F7FAFC"
+
+[horizontal_rule]
+color = "#B7C9D6"
+width_pt = 1
+
+[footnotes]
+font_size_pt = 9
+
+[images]
+max_width_percent = 90

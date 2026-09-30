@@ -71,7 +71,7 @@ Run the test suite before using a locally built version:
 cargo test --workspace
 ```
 
-The commands below use `cargo run` during development. A release build is created with `cargo build --release`; its executable is available at `target/release/markoff_cli` (or `markoff_cli.exe` on Windows).
+The commands below use `cargo run` during development. A release build is created with `cargo build --release`; the CLI executable is `target/release/markoff` (or `markoff.exe` on Windows) and the GUI executable is `target/release/markoff_gui` (`markoff_gui.exe`). The Cargo package names stay `markoff_cli` and `markoff_gui`, so `-p markoff_cli` selects the CLI package; the executable names are set by the `[[bin]]` sections in each crate's `Cargo.toml`.
 
 PDF import and export use `pdfium-render`. The matching Pdfium native library is downloaded and embedded at build time, adding roughly 30 MB to each application binary. On first PDF conversion it is extracted to the user's cache; no network access or separately installed Pdfium library is required at runtime. PDF output embeds fonts with Cyrillic support and renders supported document structure, formatting, links, code, tables, footnotes, and raster images.
 
@@ -91,19 +91,19 @@ cargo build --release -p markoff_cli
 In PowerShell, run the executable from the repository root with its relative path:
 
 ```powershell
-.\target\release\markoff_cli.exe --help
-.\target\release\markoff_cli.exe --version
-.\target\release\markoff_cli.exe convert .\report.csv --to md
+.\target\release\markoff.exe --help
+.\target\release\markoff.exe --version
+.\target\release\markoff.exe convert .\report.csv --to md
 ```
 
-To call `markoff_cli.exe` from any directory, copy it to a directory already listed in the `PATH` environment variable, or add `target\release` to `PATH` for the current PowerShell session:
+To call `markoff.exe` from any directory, copy it to a directory already listed in the `PATH` environment variable, or add `target\release` to `PATH` for the current PowerShell session:
 
 ```powershell
 $env:Path += ";$PWD\target\release"
-markoff_cli.exe convert .\report.csv --to md
+markoff.exe convert .\report.csv --to md
 ```
 
-On Linux and macOS, use `./target/release/markoff_cli` instead. The commands in the following sections show the development form with `cargo run`; replace `cargo run -p markoff_cli --` with the executable path to run the same command from the compiled application.
+On Linux and macOS, use `./target/release/markoff` instead. The commands in the following sections show the development form with `cargo run`; replace `cargo run -p markoff_cli --` with the executable path to run the same command from the compiled application.
 
 ## Command line
 
@@ -219,6 +219,33 @@ cargo run -p markoff_cli -- gui
 5. Inspect the source and result previews. The converted file is saved beside the original source using the selected target extension; hover over its status for the output path or error.
 
 The toolbar also offers **Tables only** for supported document ↔ JSON/YAML/TOML conversions, switches between dark and light themes, and opens build information in **About**. Files are converted one at a time from the selected queue entry; adding the same source path twice does not create a duplicate job.
+
+PDF, HTML, DOCX, and ODT output can optionally use a TOML style theme:
+
+```powershell
+markoff convert report.md --to pdf --style docs\examples\style-theme.toml
+```
+
+The same file can be selected with **Style → Choose...** in the GUI.
+To start from an editable template containing every setting with its default
+value and a comment, run `markoff style-template -o theme.toml` (omit `-o` to
+print to stdout; add `--overwrite` to replace an existing file). In the GUI,
+**Export template...** saves the template for any target format without
+changing the selected theme, while **Style → New...** saves it, selects it, and
+opens the preview.
+**Preview** opens a sample with the page size, margins, header/footer, H1–H6
+headings, body text, a link, inline code, a quote, a list, a code block, a
+striped table, a horizontal rule, and all resolved values; it also reloads a
+theme edited on disk.
+**Clear** restores the built-in formatting. If no theme is selected, each
+format keeps its existing built-in formatting. Themes
+control body text (font, size, color, spacing, line height, alignment,
+first-line indent), headings (font, per-level colors and sizes, spacing, bold,
+italic), the page (size, orientation, margins, header/footer text with
+{page}/{pages}), links, blockquotes, lists, code, tables (including striped
+rows), horizontal rules, footnotes, and image width. PDF embeds its bundled
+Unicode fonts, so font-family names affect HTML, DOCX, and ODT; image width
+applies to PDF and HTML, and HTML page settings apply when printing.
 
 ## Format behavior and limitations
 

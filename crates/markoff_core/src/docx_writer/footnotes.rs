@@ -176,6 +176,7 @@ fn markdown_inline_to_docx_runs_without_breaks(
 pub(super) fn render_footnotes(
     footnotes: &[Footnote],
     hyperlinks: &mut HyperlinkAllocator,
+    paragraph_properties: &str,
 ) -> String {
     let entries = footnotes
         .iter()
@@ -187,7 +188,7 @@ pub(super) fn render_footnotes(
                 .map(|paragraph| {
                     let mut resolve = |destination: &str| hyperlinks.resolve(destination);
                     format!(
-                        "<w:p>{}</w:p>",
+                        "<w:p>{paragraph_properties}{}</w:p>",
                         markdown_inline_to_docx_runs_with_links(
                             &paragraph.join("\n"),
                             &mut resolve

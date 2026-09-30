@@ -3,6 +3,7 @@ use crate::document::parse_markdown_document;
 use crate::document_model::{Block, Inline, ListItem};
 use crate::error::invalid_data;
 use crate::pptx::markdown_inline_to_plain_text;
+use crate::style::{DocumentTheme, PageTextSegment, StyleTextAlign};
 use crate::tables::{markdown_table_from_rows, parse_markdown_tables};
 use crate::xlsx::CellValue;
 use crate::xml_utils::{attribute_value, xml_attribute_escape, xml_escape};
@@ -31,7 +32,11 @@ struct OpenDocumentPayload {
     package: String,
 }
 
-pub(crate) fn convert_markdown_to_odt(input: &Path, output: &Path) -> Result<(), MarkoffError> {
+pub(crate) fn convert_markdown_to_odt(
+    input: &Path,
+    output: &Path,
+    theme: &DocumentTheme,
+) -> Result<(), MarkoffError> {
     let source = std::fs::read_to_string(input)?;
     let (source, payload) = split_open_document_payload(&source)?;
     if restore_unchanged_package(source, payload.as_ref(), Format::Odt, output)? {
@@ -46,9 +51,23 @@ pub(crate) fn convert_markdown_to_odt(input: &Path, output: &Path) -> Result<(),
         .unwrap_or_else(|| Path::new("."));
     let document = parse_markdown_document(source, base_dir)?;
     let mut body = String::new();
-    render_odt_blocks(&document.blocks, &mut body)?;
-    let content = odf_document("text", &body, ODT_AUTOMATIC_STYLES);
-    write_odf_package(output, ODT_MIME, &content)
+    let context = OdtContext {
+        paragraph_style: "Body",
+        stripe_rows: theme.enabled && theme.table_stripe_background.is_some(),
+    };
+    render_odt_blocks(&document.blocks, context, &mut body)?;
+    let automatic_styles = if theme.enabled {
+        odt_automatic_styles(theme)
+    } else {
+        format!("{ODT_DEFAULT_STYLES}{ODT_SHARED_STYLES}")
+    };
+    let content = odf_document("text", &body, &automatic_styles);
+    let styles = if theme.enabled {
+        odt_styles(theme)
+    } else {
+        ODF_STYLES.to_string()
+    };
+    write_odf_package(output, ODT_MIME, &content, &styles)
 }
 
 pub(crate) fn convert_odt_to_markdown(input: &Path, output: &Path) -> Result<(), MarkoffError> {
@@ -151,7 +170,7 @@ fn write_ods_value_sheets(
         body.push_str("</table:table>");
     }
     let content = odf_document("spreadsheet", &body, "");
-    write_odf_package(output, ODS_MIME, &content)
+    write_odf_package(output, ODS_MIME, &content, ODF_STYLES)
 }
 
 pub(crate) fn convert_ods_to_markdown(input: &Path, output: &Path) -> Result<(), MarkoffError> {
@@ -212,7 +231,7 @@ pub(crate) fn convert_markdown_to_odp(input: &Path, output: &Path) -> Result<(),
         body.push_str("</draw:text-box></draw:frame></draw:page>");
     }
     let content = odf_document("presentation", &body, ODP_AUTOMATIC_STYLES);
-    write_odf_package(output, ODP_MIME, &content)
+    write_odf_package(output, ODP_MIME, &content, ODF_STYLES)
 }
 
 pub(crate) fn convert_odp_to_markdown(input: &Path, output: &Path) -> Result<(), MarkoffError> {
@@ -559,7 +578,12 @@ fn rewrite_package(package: &[u8], output: &Path, content_xml: &str) -> Result<(
     Ok(())
 }
 
-fn write_odf_package(output: &Path, mime_type: &str, content: &str) -> Result<(), MarkoffError> {
+fn write_odf_package(
+    output: &Path,
+    mime_type: &str,
+    content: &str,
+    styles: &str,
+) -> Result<(), MarkoffError> {
     let file = std::fs::File::create(output)?;
     let mut archive = zip::ZipWriter::new(file);
     let stored = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
@@ -571,7 +595,7 @@ fn write_odf_package(output: &Path, mime_type: &str, content: &str) -> Result<()
     let compressed =
         SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
     write_odf_part(&mut archive, compressed, "content.xml", content)?;
-    write_odf_part(&mut archive, compressed, "styles.xml", ODF_STYLES)?;
+    write_odf_part(&mut archive, compressed, "styles.xml", styles)?;
     write_odf_part(&mut archive, compressed, "meta.xml", ODF_META)?;
     let manifest = format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?><manifest:manifest xmlns:manifest=\"urn:oasis:names:tc:opendocument:xmlns:manifest:1.0\" manifest:version=\"1.3\"><manifest:file-entry manifest:full-path=\"/\" manifest:media-type=\"{mime_type}\"/><manifest:file-entry manifest:full-path=\"content.xml\" manifest:media-type=\"text/xml\"/><manifest:file-entry manifest:full-path=\"styles.xml\" manifest:media-type=\"text/xml\"/><manifest:file-entry manifest:full-path=\"meta.xml\" manifest:media-type=\"text/xml\"/></manifest:manifest>"
@@ -621,7 +645,37 @@ fn odf_document(kind: &str, body: &str, automatic_styles: &str) -> String {
     )
 }
 
-fn render_odt_blocks(blocks: &[Block], output: &mut String) -> Result<(), MarkoffError> {
+/// Paragraph style and table options inherited by nested ODT blocks.
+#[derive(Clone, Copy)]
+struct OdtContext {
+    paragraph_style: &'static str,
+    stripe_rows: bool,
+}
+
+impl OdtContext {
+    fn with_paragraph_style(self, paragraph_style: &'static str) -> Self {
+        Self {
+            paragraph_style,
+            ..self
+        }
+    }
+}
+
+fn table_cell_style(context: OdtContext, row_index: usize) -> &'static str {
+    if row_index == 0 {
+        "TableHeader"
+    } else if context.stripe_rows && row_index.is_multiple_of(2) {
+        "TableCellStripe"
+    } else {
+        "TableCell"
+    }
+}
+
+fn render_odt_blocks(
+    blocks: &[Block],
+    context: OdtContext,
+    output: &mut String,
+) -> Result<(), MarkoffError> {
     for block in blocks {
         match block {
             Block::Heading {
@@ -629,19 +683,24 @@ fn render_odt_blocks(blocks: &[Block], output: &mut String) -> Result<(), Markof
                 text,
                 content,
             } => {
+                let level = (*level).clamp(1, 6);
                 output.push_str(&format!(
-                    "<text:h text:outline-level=\"{}\">",
-                    (*level).clamp(1, 6)
+                    "<text:h text:outline-level=\"{level}\" text:style-name=\"Heading{level}\">"
                 ));
                 render_odt_content(content, text.as_deref(), output)?;
                 output.push_str("</text:h>");
             }
             Block::Paragraph { text, content } => {
-                output.push_str("<text:p>");
+                output.push_str(&format!(
+                    "<text:p text:style-name=\"{}\">",
+                    context.paragraph_style
+                ));
                 render_odt_content(content, text.as_deref(), output)?;
                 output.push_str("</text:p>");
             }
-            Block::List { ordered, items, .. } => render_odt_list(*ordered, items, output)?,
+            Block::List { ordered, items, .. } => {
+                render_odt_list(*ordered, items, context, output)?
+            }
             Block::ListItem {
                 ordered,
                 text,
@@ -653,30 +712,32 @@ fn render_odt_blocks(blocks: &[Block], output: &mut String) -> Result<(), Markof
                 } else {
                     "<text:list text:style-name=\"Bullet\">"
                 });
-                output.push_str("<text:list-item><text:p>");
+                output.push_str("<text:list-item><text:p text:style-name=\"ListParagraph\">");
                 render_odt_content(content, text.as_deref(), output)?;
                 output.push_str("</text:p></text:list-item></text:list>");
             }
             Block::Table { rows, cells, .. } => {
                 output.push_str("<table:table table:name=\"Table\">");
                 if cells.is_empty() {
-                    for row in rows.as_deref().unwrap_or_default() {
+                    for (row_index, row) in rows.as_deref().unwrap_or_default().iter().enumerate() {
                         output.push_str("<table:table-row>");
                         for cell in row {
                             output.push_str(&format!(
-                                "<table:table-cell office:value-type=\"string\"><text:p>{}</text:p></table:table-cell>",
+                                "<table:table-cell table:style-name=\"{}\" office:value-type=\"string\"><text:p text:style-name=\"TableText\">{}</text:p></table:table-cell>",
+                                table_cell_style(context, row_index),
                                 xml_escape(cell)
                             ));
                         }
                         output.push_str("</table:table-row>");
                     }
                 } else {
-                    for row in cells {
+                    for (row_index, row) in cells.iter().enumerate() {
                         output.push_str("<table:table-row>");
                         for cell in row {
-                            output.push_str(
-                                "<table:table-cell office:value-type=\"string\"><text:p>",
-                            );
+                            output.push_str(&format!(
+                                "<table:table-cell table:style-name=\"{}\" office:value-type=\"string\"><text:p text:style-name=\"TableText\">",
+                                table_cell_style(context, row_index)
+                            ));
                             render_odt_content(cell, None, output)?;
                             output.push_str("</text:p></table:table-cell>");
                         }
@@ -696,11 +757,11 @@ fn render_odt_blocks(blocks: &[Block], output: &mut String) -> Result<(), Markof
                 );
                 if blocks.is_empty() {
                     output.push_str(&format!(
-                        "<text:p>{}</text:p>",
+                        "<text:p text:style-name=\"Quote\">{}</text:p>",
                         xml_escape(text.as_deref().unwrap_or_default())
                     ));
                 } else {
-                    render_odt_blocks(blocks, output)?;
+                    render_odt_blocks(blocks, context.with_paragraph_style("Quote"), output)?;
                 }
                 output.push_str("</text:section>");
             }
@@ -712,14 +773,18 @@ fn render_odt_blocks(blocks: &[Block], output: &mut String) -> Result<(), Markof
                 xml_escape(text)
             )),
             Block::FootnoteDefinition { label, blocks } => {
-                output.push_str(&format!("<text:p>[^{}]: ", xml_escape(label)));
+                let footnote_context = context.with_paragraph_style("Footnote");
+                output.push_str(&format!(
+                    "<text:p text:style-name=\"Footnote\">[^{}]: ",
+                    xml_escape(label)
+                ));
                 if let Some(Block::Paragraph { text, content }) = blocks.first() {
                     render_odt_content(content, text.as_deref(), output)?;
                     output.push_str("</text:p>");
-                    render_odt_blocks(&blocks[1..], output)?;
+                    render_odt_blocks(&blocks[1..], footnote_context, output)?;
                 } else {
                     output.push_str("</text:p>");
-                    render_odt_blocks(blocks, output)?;
+                    render_odt_blocks(blocks, footnote_context, output)?;
                 }
             }
             Block::Image { alt, .. } => {
@@ -736,6 +801,7 @@ fn render_odt_blocks(blocks: &[Block], output: &mut String) -> Result<(), Markof
 fn render_odt_list(
     ordered: bool,
     items: &[ListItem],
+    context: OdtContext,
     output: &mut String,
 ) -> Result<(), MarkoffError> {
     output.push_str(if ordered {
@@ -745,7 +811,11 @@ fn render_odt_list(
     });
     for item in items {
         output.push_str("<text:list-item>");
-        render_odt_blocks(&item.blocks, output)?;
+        render_odt_blocks(
+            &item.blocks,
+            context.with_paragraph_style("ListParagraph"),
+            output,
+        )?;
         output.push_str("</text:list-item>");
     }
     output.push_str("</text:list>");
@@ -789,7 +859,7 @@ fn render_odt_content(
                 ..
             } => {
                 output.push_str(&format!(
-                    "<text:a xlink:href=\"{}\">",
+                    "<text:a xlink:type=\"simple\" xlink:href=\"{}\" text:style-name=\"Link\">",
                     xml_attribute_escape(destination)
                 ));
                 render_odt_content(content, None, output)?;
@@ -929,11 +999,12 @@ fn odt_to_markdown(xml: &str) -> Result<String, MarkoffError> {
                 }
                 "span" => {
                     let style = attribute_value(&tag, "style-name")?.unwrap_or_default();
-                    let (opening, closing) =
-                        state.style_markers.get(&style).cloned().unwrap_or_else(|| {
-                            let (opening, closing) = odt_style_markers(&style);
-                            (opening.to_string(), closing.to_string())
-                        });
+                    let (named_opening, named_closing) = odt_style_markers(&style);
+                    let (opening, closing) = if named_opening.is_empty() {
+                        state.style_markers.get(&style).cloned().unwrap_or_default()
+                    } else {
+                        (named_opening.to_string(), named_closing.to_string())
+                    };
                     state.text.push_str(&opening);
                     state.spans.push(closing);
                 }
@@ -1383,20 +1454,207 @@ fn odp_to_markdown(xml: &str) -> Result<String, MarkoffError> {
     Ok(rendered)
 }
 
-const ODT_AUTOMATIC_STYLES: &str = r#"
+fn odt_text_align(align: StyleTextAlign) -> &'static str {
+    match align {
+        StyleTextAlign::Left => "start",
+        StyleTextAlign::Center => "center",
+        StyleTextAlign::Right => "end",
+        StyleTextAlign::Justify => "justify",
+    }
+}
+
+fn odt_background(color: Option<crate::style::StyleColor>) -> String {
+    color
+        .map(|color| format!(" fo:background-color=\"{}\"", color.css()))
+        .unwrap_or_default()
+}
+
+fn odt_list_levels(theme: &DocumentTheme, ordered: bool) -> String {
+    (1..=10)
+        .map(|level| {
+            let alignment = format!(
+                "<style:list-level-properties text:list-level-position-and-space-mode=\"label-alignment\"><style:list-level-label-alignment text:label-followed-by=\"listtab\" text:list-tab-stop-position=\"{margin}pt\" fo:text-indent=\"-{hanging}pt\" fo:margin-left=\"{margin}pt\"/></style:list-level-properties>",
+                margin = theme.list_indent_pt * level as f32,
+                hanging = theme.list_indent_pt.min(18.0),
+            );
+            if ordered {
+                format!(
+                    "<text:list-level-style-number text:level=\"{level}\" style:num-suffix=\".\" style:num-format=\"1\">{alignment}</text:list-level-style-number>"
+                )
+            } else {
+                format!(
+                    "<text:list-level-style-bullet text:level=\"{level}\" text:bullet-char=\"{}\">{alignment}</text:list-level-style-bullet>",
+                    xml_attribute_escape(&theme.list_bullet)
+                )
+            }
+        })
+        .collect()
+}
+
+fn odt_automatic_styles(theme: &DocumentTheme) -> String {
+    let align = odt_text_align(theme.text_align);
+    let paragraph_spacing = format!(
+        "fo:margin-top=\"{}pt\" fo:margin-bottom=\"{}pt\"",
+        theme.paragraph_spacing_before_pt, theme.paragraph_spacing_after_pt
+    );
+    let headings = (1..=6u8)
+        .map(|level| format!(
+            "<style:style style:name=\"Heading{level}\" style:family=\"paragraph\"><style:paragraph-properties fo:margin-top=\"{before}pt\" fo:margin-bottom=\"{after}pt\" fo:text-align=\"start\" fo:text-indent=\"0pt\" fo:keep-with-next=\"always\"/><style:text-properties style:font-name=\"{font}\" fo:font-size=\"{size}pt\" fo:font-weight=\"{weight}\" fo:font-style=\"{slant}\" fo:color=\"{color}\"/></style:style>",
+            before = theme.heading_spacing_before_pt,
+            after = theme.heading_spacing_after_pt,
+            font = xml_attribute_escape(&theme.heading_font_family),
+            size = theme.heading_size_for(level),
+            weight = if theme.heading_bold { "bold" } else { "normal" },
+            slant = if theme.heading_italic { "italic" } else { "normal" },
+            color = theme.heading_color_for(level).css(),
+        ))
+        .collect::<String>();
+    let paragraphs = format!(
+        "<style:style style:name=\"Body\" style:family=\"paragraph\"><style:paragraph-properties {paragraph_spacing} fo:text-align=\"{align}\" fo:text-indent=\"{first_line}pt\"/></style:style>\
+<style:style style:name=\"ListParagraph\" style:family=\"paragraph\"><style:paragraph-properties {paragraph_spacing} fo:text-align=\"{align}\"/></style:style>\
+<style:style style:name=\"Quote\" style:family=\"paragraph\"><style:paragraph-properties {paragraph_spacing} fo:text-align=\"{align}\" fo:text-indent=\"0pt\" fo:padding-left=\"{quote_padding}pt\" fo:border-left=\"{quote_border_width}pt solid {quote_border}\"{quote_background}/><style:text-properties fo:color=\"{quote_color}\" fo:font-style=\"{quote_slant}\"/></style:style>\
+<style:style style:name=\"QuoteSection\" style:family=\"section\"><style:section-properties fo:margin-left=\"{quote_margin}pt\"/></style:style>\
+<style:style style:name=\"Footnote\" style:family=\"paragraph\"><style:paragraph-properties {paragraph_spacing} fo:text-indent=\"0pt\"/><style:text-properties fo:font-size=\"{footnote_size}pt\"/></style:style>\
+<style:style style:name=\"TableText\" style:family=\"paragraph\"><style:paragraph-properties fo:margin-top=\"0pt\" fo:margin-bottom=\"0pt\" fo:text-indent=\"0pt\"/><style:text-properties fo:font-size=\"{table_size}pt\"/></style:style>\
+<style:style style:name=\"CodeBlock\" style:family=\"paragraph\"><style:paragraph-properties fo:margin-top=\"0pt\" fo:margin-bottom=\"{paragraph_after}pt\" fo:text-align=\"start\" fo:text-indent=\"0pt\" fo:padding=\"{code_padding}pt\" fo:background-color=\"{code_background}\"/><style:text-properties style:font-name=\"{code_font}\" fo:font-size=\"{code_size}pt\" fo:color=\"{code_color}\"/></style:style>\
+<style:style style:name=\"HorizontalRule\" style:family=\"paragraph\"><style:paragraph-properties fo:border-bottom=\"{rule_width}pt solid {rule_color}\"/></style:style>\
+<style:style style:name=\"Code\" style:family=\"text\"><style:text-properties style:font-name=\"{code_font}\" fo:font-size=\"{code_size}pt\" fo:color=\"{code_color}\"{inline_background}/></style:style>\
+<style:style style:name=\"Link\" style:family=\"text\"><style:text-properties fo:color=\"{link_color}\" style:text-underline-style=\"{link_underline}\"/></style:style>\
+<style:style style:name=\"TableCell\" style:family=\"table-cell\"><style:table-cell-properties fo:border=\"{border_width}pt solid {border}\" fo:padding=\"{cell_padding}pt\"/></style:style>\
+<style:style style:name=\"TableCellStripe\" style:family=\"table-cell\"><style:table-cell-properties fo:border=\"{border_width}pt solid {border}\" fo:padding=\"{cell_padding}pt\"{stripe}/></style:style>\
+<style:style style:name=\"TableHeader\" style:family=\"table-cell\"><style:table-cell-properties fo:border=\"{border_width}pt solid {border}\" fo:background-color=\"{header_background}\" fo:padding=\"{cell_padding}pt\"/><style:text-properties fo:color=\"{header_color}\" fo:font-weight=\"bold\"/></style:style>\
+<text:list-style style:name=\"Bullet\">{bullet_levels}</text:list-style>\
+<text:list-style style:name=\"Number\">{number_levels}</text:list-style>",
+        first_line = theme.first_line_indent_pt,
+        quote_padding = theme.quote_indent_pt / 2.0,
+        quote_margin = theme.quote_indent_pt / 2.0,
+        quote_border_width = theme.quote_border_width_pt,
+        quote_border = theme.quote_border_color.css(),
+        quote_background = odt_background(theme.quote_background),
+        quote_color = theme.quote_text_color.css(),
+        quote_slant = if theme.quote_italic {
+            "italic"
+        } else {
+            "normal"
+        },
+        footnote_size = theme.footnote_font_size_pt,
+        table_size = theme.table_font_size_pt,
+        paragraph_after = theme.paragraph_spacing_after_pt,
+        code_padding = theme.code_padding_pt,
+        code_background = theme.code_background.css(),
+        code_font = xml_attribute_escape(&theme.code_font_family),
+        code_size = theme.code_font_size_pt,
+        code_color = theme.code_text_color.css(),
+        inline_background = odt_background(theme.code_inline_background),
+        rule_width = theme.rule_width_pt,
+        rule_color = theme.rule_color.css(),
+        link_color = theme.link_color.css(),
+        link_underline = if theme.link_underline {
+            "solid"
+        } else {
+            "none"
+        },
+        border_width = theme.table_border_width_pt,
+        border = theme.table_border_color.css(),
+        cell_padding = theme.table_cell_padding_pt,
+        stripe = odt_background(theme.table_stripe_background),
+        header_background = theme.table_header_background.css(),
+        header_color = theme.table_header_color.css(),
+        bullet_levels = odt_list_levels(theme, false),
+        number_levels = odt_list_levels(theme, true),
+    );
+    format!("{paragraphs}{headings}{ODT_SHARED_STYLES}")
+}
+
+fn odt_page_text(text: &str) -> String {
+    crate::style::page_field_segments(text)
+        .into_iter()
+        .map(|segment| match segment {
+            PageTextSegment::Text(text) => xml_escape(text),
+            PageTextSegment::Page => {
+                "<text:page-number text:select-page=\"current\">1</text:page-number>".to_string()
+            }
+            PageTextSegment::Pages => "<text:page-count>1</text:page-count>".to_string(),
+        })
+        .collect()
+}
+
+fn odt_styles(theme: &DocumentTheme) -> String {
+    let (page_width, page_height) = theme.page_dimensions_pt();
+    let header_style = if theme.header_text.is_empty() {
+        String::new()
+    } else {
+        "<style:header-style><style:header-footer-properties fo:min-height=\"0pt\" fo:margin-bottom=\"6pt\"/></style:header-style>".to_string()
+    };
+    let footer_style = if theme.footer_text.is_empty() {
+        String::new()
+    } else {
+        "<style:footer-style><style:header-footer-properties fo:min-height=\"0pt\" fo:margin-top=\"6pt\"/></style:footer-style>".to_string()
+    };
+    let header = if theme.header_text.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "<style:header><text:p text:style-name=\"HeaderFooter\">{}</text:p></style:header>",
+            odt_page_text(&theme.header_text)
+        )
+    };
+    let footer = if theme.footer_text.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "<style:footer><text:p text:style-name=\"HeaderFooter\">{}</text:p></style:footer>",
+            odt_page_text(&theme.footer_text)
+        )
+    };
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><office:document-styles xmlns:office=\"urn:oasis:names:tc:opendocument:xmlns:office:1.0\" xmlns:style=\"urn:oasis:names:tc:opendocument:xmlns:style:1.0\" xmlns:text=\"urn:oasis:names:tc:opendocument:xmlns:text:1.0\" xmlns:fo=\"urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0\" xmlns:svg=\"urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0\" office:version=\"1.3\"><office:font-face-decls><style:font-face style:name=\"{body_font}\" svg:font-family=\"{body_font}\"/><style:font-face style:name=\"{heading_font}\" svg:font-family=\"{heading_font}\"/><style:font-face style:name=\"{code_font}\" svg:font-family=\"{code_font}\"/></office:font-face-decls><office:styles><style:default-style style:family=\"paragraph\"><style:paragraph-properties fo:line-height=\"{line_height}%\"/><style:text-properties style:font-name=\"{body_font}\" fo:font-size=\"{body_size}pt\" fo:color=\"{body_color}\"/></style:default-style><style:style style:name=\"HeaderFooter\" style:family=\"paragraph\"><style:paragraph-properties fo:text-align=\"center\" fo:margin-top=\"0pt\" fo:margin-bottom=\"0pt\"/><style:text-properties fo:font-size=\"{page_text_size}pt\"/></style:style></office:styles><office:automatic-styles><style:page-layout style:name=\"PageLayout\"><style:page-layout-properties fo:page-width=\"{page_width}pt\" fo:page-height=\"{page_height}pt\" style:print-orientation=\"{orientation}\" fo:margin-top=\"{top}pt\" fo:margin-right=\"{right}pt\" fo:margin-bottom=\"{bottom}pt\" fo:margin-left=\"{left}pt\"/>{header_style}{footer_style}</style:page-layout></office:automatic-styles><office:master-styles><style:master-page style:name=\"Standard\" style:page-layout-name=\"PageLayout\">{header}{footer}</style:master-page></office:master-styles></office:document-styles>",
+        body_font = xml_attribute_escape(&theme.font_family),
+        heading_font = xml_attribute_escape(&theme.heading_font_family),
+        code_font = xml_attribute_escape(&theme.code_font_family),
+        line_height = theme.line_height * 100.0,
+        body_size = theme.font_size_pt,
+        body_color = theme.text_color.css(),
+        page_text_size = theme.header_footer_font_size_pt,
+        orientation = theme.page_orientation.name(),
+        top = theme.margin_top_pt,
+        right = theme.margin_right_pt,
+        bottom = theme.margin_bottom_pt,
+        left = theme.margin_left_pt,
+    )
+}
+
+/// Styles that a theme replaces; kept minimal so unthemed output stays unchanged.
+const ODT_DEFAULT_STYLES: &str = r#"
+<style:style style:name="Body" style:family="paragraph"/>
+<style:style style:name="ListParagraph" style:family="paragraph"/>
+<style:style style:name="Quote" style:family="paragraph"/>
+<style:style style:name="Footnote" style:family="paragraph"/>
+<style:style style:name="TableText" style:family="paragraph"/>
+<style:style style:name="Heading1" style:family="paragraph"/>
+<style:style style:name="Heading2" style:family="paragraph"/>
+<style:style style:name="Heading3" style:family="paragraph"/>
+<style:style style:name="Heading4" style:family="paragraph"/>
+<style:style style:name="Heading5" style:family="paragraph"/>
+<style:style style:name="Heading6" style:family="paragraph"/>
+<style:style style:name="Link" style:family="text"/>
+<style:style style:name="Code" style:family="text"><style:text-properties style:font-name="Liberation Mono"/></style:style>
+<style:style style:name="CodeBlock" style:family="paragraph"><style:text-properties style:font-name="Liberation Mono"/></style:style>
+<style:style style:name="QuoteSection" style:family="section"/>
+<style:style style:name="HorizontalRule" style:family="paragraph"><style:paragraph-properties fo:border-bottom="0.02cm solid #000000"/></style:style>
+<text:list-style style:name="Bullet"><text:list-level-style-bullet text:level="1" text:bullet-char="•"/></text:list-style>
+<text:list-style style:name="Number"><text:list-level-style-number text:level="1" style:num-format="1"/></text:list-style>
+"#;
+
+/// Character styles that do not depend on a theme.
+const ODT_SHARED_STYLES: &str = r#"
 <style:style style:name="Bold" style:family="text"><style:text-properties fo:font-weight="bold"/></style:style>
 <style:style style:name="Italic" style:family="text"><style:text-properties fo:font-style="italic"/></style:style>
 <style:style style:name="Strike" style:family="text"><style:text-properties style:text-line-through-style="solid"/></style:style>
 <style:style style:name="Underline" style:family="text"><style:text-properties style:text-underline-style="solid"/></style:style>
 <style:style style:name="Superscript" style:family="text"><style:text-properties style:text-position="super 58%"/></style:style>
 <style:style style:name="Subscript" style:family="text"><style:text-properties style:text-position="sub 58%"/></style:style>
-<style:style style:name="Code" style:family="text"><style:text-properties style:font-name="Liberation Mono"/></style:style>
-<style:style style:name="CodeBlock" style:family="paragraph"><style:text-properties style:font-name="Liberation Mono"/></style:style>
-<style:style style:name="QuoteSection" style:family="section"/>
-<style:style style:name="HorizontalRule" style:family="paragraph"><style:paragraph-properties fo:border-bottom="0.02cm solid #000000"/></style:style>
 <style:style style:name="Math" style:family="paragraph"><style:paragraph-properties fo:text-align="center"/></style:style>
-<text:list-style style:name="Bullet"><text:list-level-style-bullet text:level="1" text:bullet-char="•"/></text:list-style>
-<text:list-style style:name="Number"><text:list-level-style-number text:level="1" style:num-format="1"/></text:list-style>
 "#;
 
 const ODP_AUTOMATIC_STYLES: &str = r#"

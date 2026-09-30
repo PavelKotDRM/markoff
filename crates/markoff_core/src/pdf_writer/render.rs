@@ -1,7 +1,8 @@
 use super::content::{
     estimate_run_width, normalize_anchor, reorder_runs_for_display, slugify, uses_emoji_font,
-    wrap_runs,
+    wrap_runs, wrap_runs_with_first_line_indent,
 };
+use super::pdf_color;
 use super::*;
 use crate::error::invalid_data;
 use base64::Engine as _;
@@ -64,8 +65,64 @@ fn split_runs_by_font(runs: &[TextRun]) -> Vec<TextRun> {
     output
 }
 
+#[derive(Clone, Copy, Default)]
+struct RunLayout {
+    code_block: bool,
+    word_spacing: f32,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TableRowKind {
+    Header,
+    Body,
+    Striped,
+}
+
+impl TableRowKind {
+    fn for_index(row_index: usize) -> Self {
+        match row_index {
+            0 => Self::Header,
+            index if index % 2 == 0 => Self::Striped,
+            _ => Self::Body,
+        }
+    }
+}
+
+fn split_runs_after_spaces(runs: Vec<TextRun>) -> Vec<TextRun> {
+    let mut output = Vec::with_capacity(runs.len());
+    for run in runs {
+        let mut rest = run.text.as_str();
+        while let Some(position) = rest.find(' ') {
+            let (piece, tail) = rest.split_at(position + 1);
+            output.push(TextRun {
+                text: piece.to_string(),
+                style: run.style.clone(),
+            });
+            rest = tail;
+        }
+        if !rest.is_empty() {
+            output.push(TextRun {
+                text: rest.to_string(),
+                style: run.style.clone(),
+            });
+        }
+    }
+    output
+}
+
+fn paper_size(theme: &DocumentTheme) -> PdfPagePaperSize {
+    let (width, height) = theme.page_dimensions_pt();
+    if theme.page_size == crate::style::StylePageSize::A4
+        && theme.page_orientation == crate::style::StylePageOrientation::Portrait
+    {
+        PdfPagePaperSize::a4()
+    } else {
+        PdfPagePaperSize::new_custom(PdfPoints::new(width), PdfPoints::new(height))
+    }
+}
+
 impl<'a> PdfWriter<'a> {
-    pub(super) fn new(pdfium: &'a Pdfium) -> Result<Self, MarkoffError> {
+    pub(super) fn new(pdfium: &'a Pdfium, theme: &DocumentTheme) -> Result<Self, MarkoffError> {
         let mut document = pdfium.create_new_pdf().map_err(invalid_data)?;
         let body_font = document
             .fonts_mut()
@@ -89,7 +146,7 @@ impl<'a> PdfWriter<'a> {
             .map_err(invalid_data)?;
         let mut page = document
             .pages_mut()
-            .create_page_at_end(PdfPagePaperSize::a4())
+            .create_page_at_end(paper_size(theme))
             .map_err(invalid_data)?;
         page.set_content_regeneration_strategy(PdfPageContentRegenerationStrategy::Manual);
         let page_width = page.width().value;
@@ -101,7 +158,7 @@ impl<'a> PdfWriter<'a> {
             page_width,
             page_height,
             page_index: 0,
-            cursor_y: page_height - PDF_MARGIN_TOP,
+            cursor_y: page_height - theme.margin_top_pt,
             body_font,
             body_bold_font,
             body_italic_font,
@@ -111,6 +168,7 @@ impl<'a> PdfWriter<'a> {
             anchors: HashMap::new(),
             heading_slugs: HashMap::new(),
             has_internal_links: false,
+            theme: theme.clone(),
         })
     }
 
@@ -132,19 +190,19 @@ impl<'a> PdfWriter<'a> {
         let mut page = self
             .document
             .pages_mut()
-            .create_page_at_end(PdfPagePaperSize::a4())
+            .create_page_at_end(paper_size(&self.theme))
             .map_err(invalid_data)?;
         page.set_content_regeneration_strategy(PdfPageContentRegenerationStrategy::Manual);
         self.page_width = page.width().value;
         self.page_height = page.height().value;
-        self.cursor_y = self.page_height - PDF_MARGIN_TOP;
+        self.cursor_y = self.page_height - self.theme.margin_top_pt;
         self.page_index += 1;
         self.page = Some(page);
         Ok(())
     }
 
     fn ensure_space(&mut self, height: f32) -> Result<(), MarkoffError> {
-        if self.cursor_y - height < PDF_MARGIN_BOTTOM {
+        if self.cursor_y - height < self.theme.margin_bottom_pt {
             self.next_page()?;
         }
         Ok(())
@@ -160,11 +218,18 @@ impl<'a> PdfWriter<'a> {
             PdfElement::Image(image) => self.write_image(image),
             PdfElement::HorizontalRule { indent } => {
                 self.ensure_space(16.0)?;
-                let left = PDF_MARGIN_LEFT + indent;
-                let right = self.page_width - PDF_MARGIN_RIGHT;
-                let y = self.cursor_y - 5.0;
-                self.draw_line(left, y, right, y, TABLE_BORDER, PdfPoints::new(0.7))?;
-                self.cursor_y -= 14.0;
+                let left = self.theme.margin_left_pt + indent;
+                let right = self.page_width - self.theme.margin_right_pt;
+                let y = self.cursor_y + 3.0;
+                self.draw_line(
+                    left,
+                    y,
+                    right,
+                    y,
+                    pdf_color(self.theme.rule_color),
+                    PdfPoints::new(self.theme.rule_width_pt),
+                )?;
+                self.cursor_y -= 12.0 + self.theme.rule_width_pt;
                 Ok(())
             }
             PdfElement::Anchor(name) => {
@@ -177,15 +242,31 @@ impl<'a> PdfWriter<'a> {
 
     fn write_paragraph(&mut self, paragraph: PdfParagraph) -> Result<(), MarkoffError> {
         self.cursor_y -= paragraph.options.space_before;
-        let available_width =
-            self.page_width - PDF_MARGIN_LEFT - PDF_MARGIN_RIGHT - paragraph.options.indent;
-        let lines = wrap_runs(
+        let available_width = self.page_width
+            - self.theme.margin_left_pt
+            - self.theme.margin_right_pt
+            - paragraph.options.indent;
+        let first_line_indent = match paragraph.options.alignment {
+            TextAlignment::Left | TextAlignment::Justify => paragraph
+                .options
+                .first_line_indent
+                .min(available_width / 2.0),
+            TextAlignment::Center | TextAlignment::Right => 0.0,
+        };
+        let lines = wrap_runs_with_first_line_indent(
             &paragraph.runs,
             available_width,
+            first_line_indent,
             paragraph.options.font_size,
             paragraph.options.preserve_whitespace,
         );
-        let line_height = paragraph.options.font_size * 1.35;
+        let line_count = lines.len();
+        let line_height = paragraph.options.font_size
+            * if self.theme.enabled {
+                self.theme.line_height
+            } else {
+                1.35
+            };
 
         for (line_index, logical_line) in lines.iter().enumerate() {
             let line = reorder_runs_for_display(logical_line);
@@ -196,27 +277,65 @@ impl<'a> PdfWriter<'a> {
                 self.record_heading(*level, title);
             }
 
-            let default_x = PDF_MARGIN_LEFT + paragraph.options.indent;
+            let default_x = self.theme.margin_left_pt + paragraph.options.indent;
             let line_width = line
                 .iter()
                 .map(|run| estimate_run_width(run, paragraph.options.font_size))
                 .sum::<f32>();
+            let line_indent = if line_index == 0 {
+                first_line_indent
+            } else {
+                0.0
+            };
+            let free_width = (available_width - line_indent - line_width).max(0.0);
             let x = match paragraph.options.alignment {
-                TextAlignment::Left => default_x,
-                TextAlignment::Center => {
-                    default_x + ((available_width - line_width) / 2.0).max(0.0)
+                TextAlignment::Left | TextAlignment::Justify => default_x + line_indent,
+                TextAlignment::Center => default_x + free_width / 2.0,
+                TextAlignment::Right => default_x + free_width,
+            };
+            let word_spacing = if matches!(paragraph.options.alignment, TextAlignment::Justify)
+                && !paragraph.options.preserve_whitespace
+                && line_index + 1 < line_count
+            {
+                let gaps = line
+                    .iter()
+                    .map(|run| run.text.as_str())
+                    .collect::<String>()
+                    .trim_end()
+                    .matches(' ')
+                    .count();
+                if gaps > 0 {
+                    free_width / gaps as f32
+                } else {
+                    0.0
                 }
+            } else {
+                0.0
             };
 
             if paragraph.options.quote_depth > 0 {
-                let quote_x = (default_x - 7.0).max(PDF_MARGIN_LEFT - 10.0);
+                let quote_x = (default_x - self.theme.quote_indent_pt / 2.0)
+                    .max(self.theme.margin_left_pt - 10.0);
+                if let Some(background) = self.theme.quote_background.filter(|_| self.theme.enabled)
+                {
+                    self.draw_rectangle(
+                        PdfRect::new_from_values(
+                            self.cursor_y + paragraph.options.font_size * 0.8 - line_height,
+                            quote_x,
+                            self.cursor_y + paragraph.options.font_size * 0.8,
+                            self.page_width - self.theme.margin_right_pt,
+                        ),
+                        None,
+                        Some(pdf_color(background)),
+                    )?;
+                }
                 self.draw_line(
                     quote_x,
-                    self.cursor_y - paragraph.options.font_size * 0.2,
+                    self.cursor_y + paragraph.options.font_size * 0.8 - line_height,
                     quote_x,
                     self.cursor_y + paragraph.options.font_size * 0.8,
-                    PdfColor::GREY_70,
-                    PdfPoints::new(1.5),
+                    pdf_color(self.theme.quote_border_color),
+                    PdfPoints::new(self.theme.quote_border_width_pt),
                 )?;
             }
             self.draw_runs(
@@ -225,7 +344,10 @@ impl<'a> PdfWriter<'a> {
                 self.cursor_y,
                 paragraph.options.font_size,
                 paragraph.options.color,
-                false,
+                RunLayout {
+                    code_block: false,
+                    word_spacing,
+                },
             )?;
             self.cursor_y -= line_height;
         }
@@ -263,10 +385,28 @@ impl<'a> PdfWriter<'a> {
         baseline: f32,
         base_size: f32,
         base_color: PdfColor,
-        code_block: bool,
+        layout: RunLayout,
     ) -> Result<(), MarkoffError> {
         let mut x = start_x;
-        for run in split_runs_by_font(runs) {
+        let theme_enabled = self.theme.enabled;
+        let link_color = if theme_enabled {
+            pdf_color(self.theme.link_color)
+        } else {
+            LINK_COLOR
+        };
+        let underline_links = !theme_enabled || self.theme.link_underline;
+        let inline_code_background = if theme_enabled {
+            self.theme.code_inline_background
+        } else {
+            Some(self.theme.code_background)
+        };
+        let runs = split_runs_by_font(runs);
+        let runs = if layout.word_spacing > 0.0 {
+            split_runs_after_spaces(runs)
+        } else {
+            runs
+        };
+        for run in runs {
             if run.text.is_empty() {
                 continue;
             }
@@ -283,11 +423,17 @@ impl<'a> PdfWriter<'a> {
                 baseline
             };
             let color = if run.style.link.is_some() {
-                LINK_COLOR
+                link_color
             } else if run.style.code {
-                PdfColor::GREY_20
+                pdf_color(self.theme.code_text_color)
             } else {
                 base_color
+            };
+            let underline = run.style.underline || (run.style.link.is_some() && underline_links);
+            let trailing_spacing = if run.text.ends_with(' ') {
+                layout.word_spacing
+            } else {
+                0.0
             };
             let estimated_width = estimate_run_width(&run, base_size);
             let is_emoji = run
@@ -296,7 +442,10 @@ impl<'a> PdfWriter<'a> {
                 .next()
                 .is_some_and(|grapheme| uses_emoji_font(grapheme, run.style.code));
 
-            if run.style.code && !code_block {
+            if run.style.code
+                && !layout.code_block
+                && let Some(background) = inline_code_background
+            {
                 self.draw_rectangle(
                     PdfRect::new_from_values(
                         y - font_size * 0.22,
@@ -304,15 +453,18 @@ impl<'a> PdfWriter<'a> {
                         y + font_size * 0.84,
                         x + estimated_width + 2.0,
                     ),
-                    Some((TABLE_BORDER, PdfPoints::new(0.35))),
-                    Some(CODE_BACKGROUND),
+                    Some((
+                        pdf_color(self.theme.table_border_color),
+                        PdfPoints::new(0.35),
+                    )),
+                    Some(pdf_color(background)),
                 )?;
             }
 
             if is_emoji {
                 let width = self.draw_emoji_run(&run.text, x, y, font_size)?;
                 let width = width.max(estimated_width);
-                if run.style.underline || run.style.link.is_some() {
+                if underline {
                     self.draw_line(x, y - 1.5, x + width, y - 1.5, color, PdfPoints::new(0.45))?;
                 }
                 if run.style.strikethrough {
@@ -328,7 +480,7 @@ impl<'a> PdfWriter<'a> {
                 if let Some(destination) = run.style.link.as_deref() {
                     self.add_link_annotation(destination, x, y, width, font_size)?;
                 }
-                x += width;
+                x += width + trailing_spacing;
                 continue;
             }
 
@@ -366,7 +518,7 @@ impl<'a> PdfWriter<'a> {
                 .max(estimated_width);
             drop(object);
 
-            if run.style.underline || run.style.link.is_some() {
+            if underline {
                 self.draw_line(x, y - 1.5, x + width, y - 1.5, color, PdfPoints::new(0.45))?;
             }
             if run.style.strikethrough {
@@ -382,7 +534,7 @@ impl<'a> PdfWriter<'a> {
             if let Some(destination) = run.style.link.as_deref() {
                 self.add_link_annotation(destination, x, y, width, font_size)?;
             }
-            x += width;
+            x += width + trailing_spacing;
         }
         Ok(())
     }
@@ -433,6 +585,7 @@ impl<'a> PdfWriter<'a> {
                     indent,
                     space_before: 0.0,
                     space_after: 2.0,
+                    first_line_indent: 0.0,
                     preserve_whitespace: false,
                     quote_depth: 0,
                     alignment: TextAlignment::Left,
@@ -444,11 +597,12 @@ impl<'a> PdfWriter<'a> {
         }
 
         let code = code.replace('\t', "    ");
-        let size = 9.5;
+        let size = self.theme.code_font_size_pt;
+        let padding = self.theme.code_padding_pt;
         let line_height = size * 1.4;
-        let left = PDF_MARGIN_LEFT + indent;
-        let width = (self.page_width - PDF_MARGIN_RIGHT - left).max(1.0);
-        let content_width = (width - 14.0).max(1.0);
+        let left = self.theme.margin_left_pt + indent;
+        let width = (self.page_width - self.theme.margin_right_pt - left).max(1.0);
+        let content_width = (width - padding * 2.0).max(1.0);
         let source_lines = if code.is_empty() {
             vec![String::new()]
         } else {
@@ -477,15 +631,18 @@ impl<'a> PdfWriter<'a> {
                     left + width,
                 ),
                 None,
-                Some(CODE_BACKGROUND),
+                Some(pdf_color(self.theme.code_background)),
             )?;
             self.draw_runs(
                 &line,
-                left + 7.0,
+                left + padding,
                 self.cursor_y,
                 size,
-                PdfColor::GREY_20,
-                true,
+                pdf_color(self.theme.code_text_color),
+                RunLayout {
+                    code_block: true,
+                    word_spacing: 0.0,
+                },
             )?;
             self.cursor_y -= line_height;
         }
@@ -498,12 +655,12 @@ impl<'a> PdfWriter<'a> {
         if column_count == 0 {
             return Ok(());
         }
-        let left = PDF_MARGIN_LEFT + table.indent;
-        let available_width = (self.page_width - PDF_MARGIN_RIGHT - left).max(1.0);
+        let left = self.theme.margin_left_pt + table.indent;
+        let available_width = (self.page_width - self.theme.margin_right_pt - left).max(1.0);
         let column_width = available_width / column_count as f32;
-        let font_size = 9.5;
+        let font_size = self.theme.table_font_size_pt;
         let line_height = font_size * 1.3;
-        let padding = 4.0;
+        let padding = self.theme.table_cell_padding_pt;
         let layout = TableLayout {
             column_count,
             left,
@@ -512,10 +669,13 @@ impl<'a> PdfWriter<'a> {
             line_height,
             padding,
         };
-        let max_lines_per_page =
-            ((self.page_height - PDF_MARGIN_TOP - PDF_MARGIN_BOTTOM - padding * 2.0) / line_height)
-                .floor()
-                .max(1.0) as usize;
+        let max_lines_per_page = ((self.page_height
+            - self.theme.margin_top_pt
+            - self.theme.margin_bottom_pt
+            - padding * 2.0)
+            / line_height)
+            .floor()
+            .max(1.0) as usize;
         let max_lines_per_segment = if table.rows.len() > 1 {
             max_lines_per_page.saturating_sub(1).max(1)
         } else {
@@ -554,7 +714,7 @@ impl<'a> PdfWriter<'a> {
             while line_start < row_line_count {
                 let mut line_count = (row_line_count - line_start).min(max_lines_per_segment);
                 let mut row_height = line_count as f32 * line_height + padding * 2.0;
-                if self.cursor_y - row_height < PDF_MARGIN_BOTTOM {
+                if self.cursor_y - row_height < self.theme.margin_bottom_pt {
                     self.next_page()?;
                     if row_index > 0 {
                         let header = table.rows.first().cloned().unwrap_or_default();
@@ -562,10 +722,11 @@ impl<'a> PdfWriter<'a> {
                             self.write_repeated_table_header(&header, layout)?;
                         }
                     }
-                    let available_lines = ((self.cursor_y - PDF_MARGIN_BOTTOM - padding * 2.0)
-                        / line_height)
-                        .floor()
-                        .max(1.0) as usize;
+                    let available_lines =
+                        ((self.cursor_y - self.theme.margin_bottom_pt - padding * 2.0)
+                            / line_height)
+                            .floor()
+                            .max(1.0) as usize;
                     line_count = line_count.min(available_lines);
                     row_height = line_count as f32 * line_height + padding * 2.0;
                 }
@@ -574,7 +735,7 @@ impl<'a> PdfWriter<'a> {
                     line_start,
                     line_count,
                     table.alignments.as_slice(),
-                    row_index == 0,
+                    TableRowKind::for_index(row_index),
                     layout,
                 )?;
                 self.cursor_y -= row_height;
@@ -609,18 +770,27 @@ impl<'a> PdfWriter<'a> {
             })
             .collect::<Vec<_>>();
         let line_count = wrapped.iter().map(Vec::len).max().unwrap_or(1).max(1);
-        let page_lines =
-            ((self.page_height - PDF_MARGIN_TOP - PDF_MARGIN_BOTTOM - layout.padding * 2.0)
-                / layout.line_height)
-                .floor()
-                .max(2.0) as usize;
+        let page_lines = ((self.page_height
+            - self.theme.margin_top_pt
+            - self.theme.margin_bottom_pt
+            - layout.padding * 2.0)
+            / layout.line_height)
+            .floor()
+            .max(2.0) as usize;
         let mut line_start = 0;
         for segment_lines in segment_line_counts(line_count, page_lines.saturating_sub(1)) {
             let height = segment_lines as f32 * layout.line_height + layout.padding * 2.0;
-            if self.cursor_y - height < PDF_MARGIN_BOTTOM {
+            if self.cursor_y - height < self.theme.margin_bottom_pt {
                 self.next_page()?;
             }
-            self.draw_table_segment(&wrapped, line_start, segment_lines, &[], true, layout)?;
+            self.draw_table_segment(
+                &wrapped,
+                line_start,
+                segment_lines,
+                &[],
+                TableRowKind::Header,
+                layout,
+            )?;
             self.cursor_y -= height;
             line_start += segment_lines;
         }
@@ -633,28 +803,41 @@ impl<'a> PdfWriter<'a> {
         line_start: usize,
         line_count: usize,
         alignments: &[TableAlignment],
-        header: bool,
+        row: TableRowKind,
         layout: TableLayout,
     ) -> Result<(), MarkoffError> {
         let row_height = line_count as f32 * layout.line_height + layout.padding * 2.0;
         let top = self.cursor_y;
         let bottom = top - row_height;
-        let fill = if header {
-            TABLE_HEADER_BACKGROUND
+        let header = row == TableRowKind::Header;
+        let fill = match row {
+            TableRowKind::Header => pdf_color(self.theme.table_header_background),
+            TableRowKind::Striped => self
+                .theme
+                .table_stripe_background
+                .filter(|_| self.theme.enabled)
+                .map_or(PdfColor::WHITE, pdf_color),
+            TableRowKind::Body => PdfColor::WHITE,
+        };
+        let border_width = if self.theme.enabled {
+            self.theme.table_border_width_pt
         } else {
-            PdfColor::WHITE
+            0.45
         };
 
         for column in 0..layout.column_count {
             let cell_left = layout.left + column as f32 * layout.column_width;
             let cell_right = if column + 1 == layout.column_count {
-                self.page_width - PDF_MARGIN_RIGHT
+                self.page_width - self.theme.margin_right_pt
             } else {
                 cell_left + layout.column_width
             };
             self.draw_rectangle(
                 PdfRect::new_from_values(bottom, cell_left, top, cell_right),
-                Some((TABLE_BORDER, PdfPoints::new(0.45))),
+                Some((
+                    pdf_color(self.theme.table_border_color),
+                    PdfPoints::new(border_width),
+                )),
                 Some(fill),
             )?;
 
@@ -686,8 +869,12 @@ impl<'a> PdfWriter<'a> {
                     cell_left + layout.padding + offset,
                     baseline,
                     layout.font_size,
-                    PdfColor::BLACK,
-                    false,
+                    if header {
+                        pdf_color(self.theme.table_header_color)
+                    } else {
+                        pdf_color(self.theme.text_color)
+                    },
+                    RunLayout::default(),
                 )?;
             }
         }
@@ -705,10 +892,14 @@ impl<'a> PdfWriter<'a> {
             ))
             .into());
         }
-        let left = PDF_MARGIN_LEFT + image.indent;
-        let available_width = (self.page_width - PDF_MARGIN_RIGHT - left).max(1.0);
+        let left = self.theme.margin_left_pt + image.indent;
+        let available_width = ((self.page_width - self.theme.margin_right_pt - left)
+            * self.theme.image_max_width_percent
+            / 100.0)
+            .max(1.0);
         let available_height =
-            (self.page_height - PDF_MARGIN_TOP - PDF_MARGIN_BOTTOM - 35.0).max(1.0);
+            (self.page_height - self.theme.margin_top_pt - self.theme.margin_bottom_pt - 35.0)
+                .max(1.0);
         let scale = image_scale_to_fit(
             source_width,
             source_height,
@@ -750,6 +941,7 @@ impl<'a> PdfWriter<'a> {
                     indent: image.indent,
                     space_before: 0.0,
                     space_after: 6.0,
+                    first_line_indent: 0.0,
                     preserve_whitespace: false,
                     quote_depth: 0,
                     alignment: TextAlignment::Center,
@@ -845,12 +1037,79 @@ impl<'a> PdfWriter<'a> {
 
     pub(super) fn finish(mut self, output: &Path) -> Result<(), MarkoffError> {
         self.commit_page()?;
+        self.draw_page_furniture()?;
         self.document.save_to_file(output).map_err(invalid_data)?;
         if !self.headings.is_empty() || self.has_internal_links {
             navigation::add_pdf_navigation(output, &self.headings, &self.anchors)?;
         }
         Ok(())
     }
+
+    /// Draws the configured header and footer text on every finished page.
+    fn draw_page_furniture(&mut self) -> Result<(), MarkoffError> {
+        let header = self.theme.header_text.clone();
+        let footer = self.theme.footer_text.clone();
+        if header.is_empty() && footer.is_empty() {
+            return Ok(());
+        }
+        let size = self.theme.header_footer_font_size_pt;
+        let color = pdf_color(self.theme.text_color);
+        let font = self.body_font;
+        let page_count = self.document.pages().len();
+        for index in 0..page_count {
+            let mut page = self.document.pages().get(index).map_err(invalid_data)?;
+            page.set_content_regeneration_strategy(PdfPageContentRegenerationStrategy::Manual);
+            let page_width = page.width().value;
+            let page_height = page.height().value;
+            let placements = [
+                (
+                    &header,
+                    page_height - self.theme.margin_top_pt / 2.0 - size * 0.35,
+                ),
+                (&footer, self.theme.margin_bottom_pt / 2.0 - size * 0.35),
+            ];
+            for (template, baseline) in placements {
+                let text = expand_page_fields(template, index + 1, page_count);
+                if text.trim().is_empty() {
+                    continue;
+                }
+                let width = estimate_run_width(
+                    &TextRun {
+                        text: text.clone(),
+                        style: InlineStyle::default(),
+                    },
+                    size,
+                );
+                let x = ((page_width - width) / 2.0).max(0.0);
+                let mut object = page
+                    .objects_mut()
+                    .create_text_object(
+                        PdfPoints::new(x),
+                        PdfPoints::new(baseline.max(0.0)),
+                        &text,
+                        font,
+                        PdfPoints::new(size),
+                    )
+                    .map_err(invalid_data)?;
+                if let Some(text_object) = object.as_text_object_mut() {
+                    text_object.set_fill_color(color).map_err(invalid_data)?;
+                }
+            }
+            page.regenerate_content().map_err(invalid_data)?;
+        }
+        Ok(())
+    }
+}
+
+fn expand_page_fields(template: &str, page: i32, pages: i32) -> String {
+    crate::style::page_field_segments(template)
+        .into_iter()
+        .map(|segment| match segment {
+            crate::style::PageTextSegment::Text(text) => text.to_string(),
+            crate::style::PageTextSegment::Page => page.to_string(),
+            crate::style::PageTextSegment::Pages => pages.to_string(),
+        })
+        .collect()
 }
 
 #[cfg(test)]

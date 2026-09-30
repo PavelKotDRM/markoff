@@ -1,4 +1,5 @@
 use crate::document_model::{Block, Document};
+use crate::style::DocumentTheme;
 use crate::{Format, MarkoffError};
 use std::path::Path;
 
@@ -25,6 +26,7 @@ pub(crate) fn convert_structured_data_to_pdf(
     output: &Path,
     format: Format,
     tables_only: bool,
+    theme: &DocumentTheme,
 ) -> Result<(), MarkoffError> {
     let source = std::fs::read_to_string(input)?;
     let value = structured::parse_structured_value(&source, format)?;
@@ -49,7 +51,7 @@ pub(crate) fn convert_structured_data_to_pdf(
             }],
         }
     };
-    crate::pdf_writer::write_document_to_pdf(&document, output)
+    crate::pdf_writer::write_document_to_pdf(&document, output, theme)
 }
 
 pub(crate) fn parse_markdown_document(
