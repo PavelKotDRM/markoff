@@ -98,6 +98,26 @@ fn html_round_trip_preserves_headings_lists_and_links() {
 }
 
 #[test]
+fn html_to_markdown_preserves_link_destinations_with_markdown_delimiters() {
+    let html = temporary_path("html_link_destination_input", "html");
+    let markdown = temporary_path("html_link_destination_output", "md");
+    fs::write(
+        &html,
+        r#"<p><a href="https://example.com/a b_(c)">Docs</a> <img src="images/a b_(c).png" alt="Chart"></p>"#,
+    )
+    .unwrap();
+
+    convert_file(&html, &markdown, Format::Html, Format::Markdown).unwrap();
+
+    assert_eq!(
+        fs::read_to_string(&markdown).unwrap(),
+        "[Docs](<https://example.com/a b_(c)>) ![Chart](<images/a b_(c).png>)\n"
+    );
+
+    remove_files(&[&html, &markdown]);
+}
+
+#[test]
 fn pptx_round_trip_preserves_slide_titles_and_bullets() {
     let markdown = temporary_path("pptx_roundtrip_input", "md");
     let pptx = temporary_path("pptx_roundtrip", "pptx");
@@ -124,6 +144,28 @@ fn pptx_round_trip_preserves_slide_titles_and_bullets() {
             "missing {expected:?} in {rendered:?}"
         );
     }
+
+    remove_files(&[&markdown, &pptx, &restored]);
+}
+
+#[test]
+fn markdown_to_pptx_converts_inline_markup_to_equivalent_plain_text() {
+    let markdown = temporary_path("pptx_inline_markup_input", "md");
+    let pptx = temporary_path("pptx_inline_markup", "pptx");
+    let restored = temporary_path("pptx_inline_markup_output", "md");
+    fs::write(
+        &markdown,
+        "# **Welcome**\n\nRead [the docs](https://example.com) and use `markoff`.\n\n- *First* topic\n",
+    )
+    .unwrap();
+
+    convert_file(&markdown, &pptx, Format::Markdown, Format::Pptx).unwrap();
+    convert_file(&pptx, &restored, Format::Pptx, Format::Markdown).unwrap();
+
+    assert_eq!(
+        fs::read_to_string(&restored).unwrap(),
+        "## Welcome\n\nRead the docs and use markoff.\n\n- First topic\n\n"
+    );
 
     remove_files(&[&markdown, &pptx, &restored]);
 }

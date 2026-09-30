@@ -3,7 +3,9 @@ use crate::MarkoffError;
 use crate::document_model::{Block, Document, Inline, ListItem, TableAlignment};
 use crate::error::invalid_data;
 use crate::tables::markdown_table_from_rows;
-use crate::xml_utils::{MarkdownEscapeContext, markdown_escape, xml_attribute_escape};
+use crate::xml_utils::{
+    MarkdownEscapeContext, markdown_escape, markdown_link_destination, xml_attribute_escape,
+};
 use base64::Engine as _;
 use std::path::Path;
 
@@ -363,14 +365,7 @@ fn code_fence(text: &str, minimum: usize) -> String {
 }
 
 fn render_link(label: &str, destination: &str, title: Option<&str>) -> String {
-    let destination = if destination
-        .chars()
-        .any(|character| character.is_whitespace() || character == '<' || character == '>')
-    {
-        format!("<{}>", destination.replace('>', "\\>"))
-    } else {
-        destination.replace('\\', "\\\\").replace(')', "\\)")
-    };
+    let destination = markdown_link_destination(destination);
     let title = title.map_or_else(String::new, |title| {
         format!(" \"{}\"", title.replace('\\', "\\\\").replace('"', "\\\""))
     });

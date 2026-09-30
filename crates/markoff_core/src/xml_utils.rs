@@ -47,6 +47,17 @@ pub(crate) fn markdown_escape(value: &str, context: MarkdownEscapeContext) -> St
     }
 }
 
+pub(crate) fn markdown_link_destination(destination: &str) -> String {
+    if destination
+        .chars()
+        .any(|character| character.is_whitespace() || character == '<' || character == '>')
+    {
+        format!("<{}>", destination.replace('>', "\\>"))
+    } else {
+        destination.replace('\\', "\\\\").replace(')', "\\)")
+    }
+}
+
 /// Reads a single attribute's decoded/unescaped value from a start tag,
 /// returning `Ok(None)` when the attribute is absent.
 pub(crate) fn attribute_value(
@@ -98,8 +109,8 @@ pub(crate) fn parse_relationships(
 #[cfg(test)]
 mod tests {
     use super::{
-        MarkdownEscapeContext, markdown_escape, parse_relationships, xml_attribute_escape,
-        xml_escape,
+        MarkdownEscapeContext, markdown_escape, markdown_link_destination, parse_relationships,
+        xml_attribute_escape, xml_escape,
     };
 
     #[test]
@@ -124,6 +135,18 @@ mod tests {
         assert_eq!(
             markdown_escape("~a<b", MarkdownEscapeContext::Plain),
             "~a<b"
+        );
+    }
+
+    #[test]
+    fn markdown_link_destinations_use_valid_equivalent_syntax() {
+        assert_eq!(
+            markdown_link_destination("images/a b_(c).png"),
+            "<images/a b_(c).png>"
+        );
+        assert_eq!(
+            markdown_link_destination("images/a_(b).png"),
+            "images/a_(b\\).png"
         );
     }
 

@@ -9,6 +9,7 @@ use crate::MarkoffError;
 use crate::error::invalid_data;
 use crate::xml_utils::xml_escape;
 use crate::zip_utils::write_zip_part;
+use pulldown_cmark::{Event, Options, Parser};
 use std::path::Path;
 
 pub(crate) use crate::pptx_reader::convert_pptx_to_markdown;
@@ -37,18 +38,18 @@ fn parse_markdown_into_slides(source: &str) -> Vec<Slide> {
                 slides.push(slide);
             }
             current = Some(Slide {
-                title: text.trim().to_string(),
+                title: markdown_inline_to_plain_text(text),
                 items: Vec::new(),
             });
             continue;
         }
         let (text, bulleted) =
             if let Some(rest) = line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")) {
-                (rest.to_string(), true)
+                (markdown_inline_to_plain_text(rest), true)
             } else if let Some(rest) = strip_ordered_marker(line) {
-                (rest, true)
+                (markdown_inline_to_plain_text(&rest), true)
             } else {
-                (line.to_string(), false)
+                (markdown_inline_to_plain_text(line), false)
             };
         let slide = current.get_or_insert_with(|| Slide {
             title: String::new(),
@@ -66,6 +67,39 @@ fn parse_markdown_into_slides(source: &str) -> Vec<Slide> {
         });
     }
     slides
+}
+
+fn markdown_inline_to_plain_text(markdown: &str) -> String {
+    let mut options = Options::empty();
+    options.insert(Options::ENABLE_STRIKETHROUGH);
+    options.insert(Options::ENABLE_MATH);
+    options.insert(Options::ENABLE_SUPERSCRIPT);
+    options.insert(Options::ENABLE_SUBSCRIPT);
+
+    let mut text = String::new();
+    for event in Parser::new_ext(markdown, options) {
+        match event {
+            Event::Text(value)
+            | Event::Code(value)
+            | Event::InlineMath(value)
+            | Event::DisplayMath(value) => text.push_str(&value),
+            Event::SoftBreak | Event::HardBreak => text.push(' '),
+            Event::TaskListMarker(checked) => {
+                text.push_str(if checked { "[x] " } else { "[ ] " });
+            }
+            Event::FootnoteReference(label) => {
+                text.push('[');
+                text.push_str(&label);
+                text.push(']');
+            }
+            Event::Start(_)
+            | Event::End(_)
+            | Event::Html(_)
+            | Event::InlineHtml(_)
+            | Event::Rule => {}
+        }
+    }
+    text.trim().to_string()
 }
 
 fn strip_ordered_marker(line: &str) -> Option<String> {

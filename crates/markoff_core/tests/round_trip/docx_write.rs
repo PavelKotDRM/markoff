@@ -35,6 +35,28 @@ fn markdown_docx_round_trip_preserves_supported_elements() {
 }
 
 #[test]
+fn markdown_docx_round_trip_preserves_soft_and_hard_break_semantics() {
+    let markdown = temporary_path("docx_line_breaks_input", "md");
+    let document = temporary_path("docx_line_breaks_document", "docx");
+    let restored = temporary_path("docx_line_breaks_output", "md");
+    fs::write(
+        &markdown,
+        "A soft-wrapped\nparagraph stays together.\n\nA hard break  \nstays inside the paragraph.\n",
+    )
+    .unwrap();
+
+    convert_file(&markdown, &document, Format::Markdown, Format::Docx).unwrap();
+    convert_file(&document, &restored, Format::Docx, Format::Markdown).unwrap();
+
+    assert_eq!(
+        fs::read_to_string(&restored).unwrap(),
+        "A soft-wrapped paragraph stays together.\n\nA hard break  \nstays inside the paragraph.\n"
+    );
+
+    remove_files(&[&markdown, &document, &restored]);
+}
+
+#[test]
 fn markdown_docx_round_trip_preserves_all_heading_levels() {
     use std::io::Read;
     use zip::ZipArchive;

@@ -1,7 +1,9 @@
 use crate::MarkoffError;
 use crate::html_tokenizer::{Token, collapse_whitespace, tokenize};
 use crate::tables::markdown_table_from_rows;
-use crate::xml_utils::{MarkdownEscapeContext, markdown_escape, xml_attribute_escape};
+use crate::xml_utils::{
+    MarkdownEscapeContext, markdown_escape, markdown_link_destination, xml_attribute_escape,
+};
 use std::path::Path;
 
 pub(crate) fn convert_html_to_markdown(input: &Path, output: &Path) -> Result<(), MarkoffError> {
@@ -246,7 +248,8 @@ fn html_to_markdown(html: &str) -> Result<String, MarkoffError> {
                                 format!(" \"{}\"", title.replace('\\', "\\\\").replace('"', "\\\""))
                             },
                         );
-                        let image = format!("![{alt}]({src}{title})");
+                        let destination = markdown_link_destination(&src);
+                        let image = format!("![{alt}]({destination}{title})");
                         if let Some(buffer) = block_stack.last_mut() {
                             buffer.text.push_str(&image);
                         } else {
@@ -382,7 +385,10 @@ fn html_to_markdown(html: &str) -> Result<String, MarkoffError> {
                             let title = title.map_or_else(String::new, |title| {
                                 format!(" \"{}\"", title.replace('\\', "\\\\").replace('"', "\\\""))
                             });
-                            buffer.text.push_str(&format!("[{text}]({href}{title})"));
+                            let destination = markdown_link_destination(&href);
+                            buffer
+                                .text
+                                .push_str(&format!("[{text}]({destination}{title})"));
                         }
                     }
                     _ => {}

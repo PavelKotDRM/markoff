@@ -65,17 +65,29 @@ pub(crate) fn convert_markdown_to_docx(input: &Path, output: &Path) -> Result<()
             if !line.trim().is_empty() {
                 let paragraph_start = index;
                 let mut paragraph = line.to_string();
-                while paragraph.ends_with("  ")
-                    && lines
-                        .get(index + 1)
-                        .is_some_and(|next_line| !next_line.trim().is_empty())
-                {
-                    paragraph.truncate(paragraph.len() - 2);
-                    index += 1;
-                    paragraph.push('\n');
-                    paragraph.push_str(lines[index]);
-                }
                 let list_item = lists.items_by_line.get(paragraph_start).copied().flatten();
+                if list_item.is_none() && !is_standalone_block_line(line) {
+                    while let Some(next_line) = lines.get(index + 1) {
+                        let next_index = index + 1;
+                        if next_line.trim().is_empty()
+                            || lists
+                                .items_by_line
+                                .get(next_index)
+                                .is_some_and(Option::is_some)
+                            || is_standalone_block_line(next_line)
+                            || is_markdown_table_start(&lines, next_index)
+                        {
+                            break;
+                        }
+                        let hard_break = paragraph.ends_with("  ");
+                        if hard_break {
+                            paragraph.truncate(paragraph.len() - 2);
+                        }
+                        paragraph.push(if hard_break { '\n' } else { ' ' });
+                        paragraph.push_str(next_line.trim_start());
+                        index = next_index;
+                    }
+                }
                 body.push_str(&docx_paragraph(
                     &paragraph,
                     &footnote_ids,
@@ -193,4 +205,16 @@ pub(crate) fn convert_markdown_to_docx(input: &Path, output: &Path) -> Result<()
     }
     archive.finish().map_err(invalid_data)?;
     Ok(())
+}
+
+fn is_standalone_block_line(line: &str) -> bool {
+    let line = line.trim_start();
+    let heading_level = line
+        .chars()
+        .take_while(|character| *character == '#')
+        .count();
+    (heading_level > 0 && line.as_bytes().get(heading_level) == Some(&b' '))
+        || line.starts_with('>')
+        || line == "---"
+        || is_fenced_code_block_start(line)
 }
