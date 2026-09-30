@@ -24,7 +24,7 @@ pub(crate) fn convert_pdf_to_markdown(input: &Path, output: &Path) -> Result<(),
             || Path::new("image").to_path_buf(),
             |parent| parent.join("image"),
         );
-    let image_links = extract_pdf_images(input, &image_dir).unwrap_or_default();
+    let image_links = extract_pdf_images(input, &image_dir)?;
     if !image_links.is_empty() {
         markdown.push_str("\n\n");
         markdown.push_str(&image_links.join("\n\n"));
