@@ -47,6 +47,20 @@ The project has moved beyond the initial stub stage:
 - Re-embedding images into DOCX when converting from Markdown or structured data
 - PPTX shape layout, embedded images/charts, and speaker notes are not preserved (only slide titles and body text/bullets)
 
+## Refactoring checklist
+
+This checklist tracks follow-up work identified during a codebase review. Check an item only after its implementation and regression tests are complete.
+
+- [ ] Update the stale GUI list-block assertion in [`application.rs`](./crates/markoff_gui/src/application.rs): the top-level block is `list`, not `list_item`; keep coverage for nested list items.
+- [ ] Ensure CLI temporary input/output files are cleaned up on every exit path, including conversion and stdout-write failures, in [`main.rs`](./crates/markoff_cli/src/main.rs).
+- [ ] Replace substring-based image destination rewriting with Markdown-aware parsing in [`preview.rs`](./crates/markoff_gui/src/preview.rs); cover titles, escapes, and nested parentheses.
+- [ ] Distinguish Windows drive-relative paths such as `C:folder\img.png` from URI schemes in [`preview.rs`](./crates/markoff_gui/src/preview.rs); test drive-relative paths, absolute paths, and real URIs.
+- [ ] Split the conversion dispatch in [`lib.rs`](./crates/markoff_core/src/lib.rs) into focused routing helpers while preserving all format pairs and tables-only behavior.
+- [ ] Stream glob matches in CLI batch conversion instead of collecting all paths first; preserve ordering and error behavior.
+- [ ] Add GUI preview tests for successful and failed conversions, temporary-file cleanup, and explicit error handling.
+
+Current baseline: `cargo test --workspace --all-targets` fails in `keeps_all_document_blocks_by_default_in_gui` because the assertion expects `list_item` while the implementation returns `list`.
+
 ## Architecture
 
 ![markoff workspace architecture](docs/architecture/markoff-architecture.drawio.svg)
