@@ -73,6 +73,7 @@ mod html;
 mod html_tokenizer;
 mod model;
 mod pdf;
+mod pdf_writer;
 mod pptx;
 mod pptx_reader;
 mod tables;
@@ -91,7 +92,8 @@ use document::{
 use docx_reader::convert_docx_to_markdown;
 use docx_writer::convert_markdown_to_docx;
 use html::{convert_html_to_markdown, convert_markdown_to_html};
-use pdf::{convert_markdown_to_pdf, convert_pdf_to_markdown};
+use pdf::convert_pdf_to_markdown;
+use pdf_writer::convert_markdown_to_pdf;
 use pptx::{convert_markdown_to_pptx, convert_pptx_to_markdown};
 use xlsx::{convert_markdown_to_xlsx, convert_xlsx_to_markdown};
 

@@ -49,7 +49,7 @@ pub(crate) fn convert_structured_data_to_pdf(
             }],
         }
     };
-    crate::pdf::write_document_to_pdf(&document, output)
+    crate::pdf_writer::write_document_to_pdf(&document, output)
 }
 
 pub(crate) fn parse_markdown_document(

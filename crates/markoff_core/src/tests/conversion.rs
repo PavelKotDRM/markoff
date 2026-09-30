@@ -264,6 +264,121 @@ fn converts_markdown_to_pdf_with_cyrillic_text() {
 }
 
 #[test]
+fn converts_markdown_syntax_and_navigation_to_rich_pdf() {
+    use base64::Engine as _;
+
+    let mut png = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut png, 1, 1);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().unwrap();
+        writer.write_image_data(&[255, 0, 0, 255]).unwrap();
+    }
+    let image = base64::engine::general_purpose::STANDARD.encode(png);
+    let markdown = unique_temp_path("rich_pdf_input");
+    let output = unique_temp_path("rich_pdf_output");
+    fs::write(
+        &markdown,
+        format!(
+            "# Полный документ\n\n\
+             Жирный **текст**, *курсив*, ~~зачёркнутый~~, <u>подчёркнутый</u> и `inline code`.\n\n\
+             [Внешняя ссылка](https://example.test)\n\n\
+             [Перейти к разделу](#section)\n\n\
+             ## Section\n\n\
+             - Первый пункт\n- Второй пункт сноска[^note]\n\n\
+             | Имя | Значение |\n|:---|---:|\n| Ada | 42 |\n\n\
+             > Цитата из документа.\n\n\
+             ```rust\nfn answer() -> i32 {{\n    42\n}}\n```\n\n\
+             ![Красный пиксель](data:image/png;base64,{image})\n\n\
+             [^note]: Текст определения сноски.\n"
+        ),
+    )
+    .unwrap();
+
+    convert_file(&markdown, &output, Format::Markdown, Format::Pdf).unwrap();
+
+    let pdfium = crate::pdf::bundled_pdfium().unwrap();
+    let pdf = pdfium.load_pdf_from_file(&output, None).unwrap();
+    let text = pdf
+        .pages()
+        .as_range()
+        .map(|index| pdf.pages().get(index).unwrap().text().unwrap().all())
+        .collect::<Vec<_>>()
+        .join("\n");
+    for expected in [
+        "Полный документ",
+        "Жирный текст",
+        "курсив",
+        "зачёркнутый",
+        "подчёркнутый",
+        "inline code",
+        "Первый пункт",
+        "Ada",
+        "Цитата из документа.",
+        "fn answer() -> i32",
+        "Текст определения сноски.",
+        "Красный пиксель",
+    ] {
+        assert!(text.contains(expected), "PDF omitted {expected:?}");
+    }
+    drop(pdf);
+
+    let pdf = lopdf::Document::load(&output).unwrap();
+    let page_ids = pdf.get_pages();
+    assert!(pdf.catalog().unwrap().get(b"Outlines").is_ok());
+    let image_count = page_ids
+        .values()
+        .map(|page_id| pdf.get_page_images(*page_id).unwrap().len())
+        .sum::<usize>();
+    assert_eq!(image_count, 1);
+
+    let mut external_link = false;
+    let mut internal_link = false;
+    for page_id in page_ids.values() {
+        let page = pdf.get_object(*page_id).unwrap().as_dict().unwrap();
+        let Ok(annotations) = page.get(b"Annots") else {
+            continue;
+        };
+        let Ok(annotations) = annotations.as_array() else {
+            continue;
+        };
+        for annotation in annotations {
+            let annotation = if let Ok(annotation_id) = annotation.as_reference() {
+                pdf.get_object(annotation_id).unwrap()
+            } else {
+                annotation
+            };
+            let annotation = annotation.as_dict().unwrap();
+            let Some(action) = annotation.get(b"A").ok() else {
+                continue;
+            };
+            let action = if let Ok(action_id) = action.as_reference() {
+                pdf.get_object(action_id).unwrap()
+            } else {
+                action
+            };
+            let Ok(action) = action.as_dict() else {
+                continue;
+            };
+            if let Some(action_type) = action.get(b"S").ok().and_then(|value| value.as_name().ok())
+            {
+                match action_type {
+                    b"URI" => external_link = true,
+                    b"GoTo" => internal_link = true,
+                    _ => {}
+                }
+            }
+        }
+    }
+    assert!(external_link);
+    assert!(internal_link);
+
+    fs::remove_file(markdown).ok();
+    fs::remove_file(output).ok();
+}
+
+#[test]
 fn paginates_long_markdown_documents_to_pdf() {
     let input = unique_temp_path("long_markdown_to_pdf_input");
     let output = unique_temp_path("long_markdown_to_pdf_output");
@@ -290,7 +405,13 @@ fn converts_docx_to_pdf() {
     let pdf = unique_temp_path("docx_to_pdf_output");
     fs::write(
         &markdown,
-        "# Word report\n\nDOCX text is rendered in PDF.\n",
+        "# Word report\n\n\
+         **DOCX text** has *inline formatting*.\n\n\
+         - first item\n- second item\n\n\
+         | Name | Value |\n| --- | ---: |\n| Ada | 42 |\n\n\
+         ```rust\nfn answer() -> i32 {\n    42\n}\n```\n\n\
+         A footnote reference[^word-note].\n\n\
+         [^word-note]: Footnote definition from Word.\n",
     )
     .unwrap();
     convert_file(&markdown, &docx, Format::Markdown, Format::Docx).unwrap();
@@ -299,7 +420,11 @@ fn converts_docx_to_pdf() {
 
     let extracted = extract_pdf_text(&pdf);
     assert!(extracted.contains("Word report"));
-    assert!(extracted.contains("DOCX text is rendered in PDF."));
+    assert!(extracted.contains("DOCX text"));
+    assert!(extracted.contains("first item"));
+    assert!(extracted.contains("Ada"));
+    assert!(extracted.contains("fn answer() -> i32"));
+    assert!(extracted.contains("Footnote definition from Word."));
 
     fs::remove_file(markdown).ok();
     fs::remove_file(docx).ok();
