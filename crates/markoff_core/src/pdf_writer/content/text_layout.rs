@@ -1,4 +1,7 @@
 use super::super::*;
+use epaint_default_fonts::HACK_REGULAR;
+use std::sync::OnceLock;
+use unicode_bidi::BidiInfo;
 
 pub(in crate::pdf_writer) fn slugify(text: &str) -> String {
     let mut slug = String::new();
@@ -27,20 +30,63 @@ pub(in crate::pdf_writer) fn normalize_anchor(anchor: &str) -> String {
     slugify(anchor)
 }
 
-fn estimate_character_width(character: char, style: &InlineStyle, font_size: f32) -> f32 {
+fn primary_face(style: &InlineStyle) -> &'static ttf_parser::Face<'static> {
+    static REGULAR: OnceLock<ttf_parser::Face<'static>> = OnceLock::new();
+    static BOLD: OnceLock<ttf_parser::Face<'static>> = OnceLock::new();
+    static ITALIC: OnceLock<ttf_parser::Face<'static>> = OnceLock::new();
+    static BOLD_ITALIC: OnceLock<ttf_parser::Face<'static>> = OnceLock::new();
+    static CODE: OnceLock<ttf_parser::Face<'static>> = OnceLock::new();
+
     if style.code {
-        return font_size * 0.61;
-    }
-    let factor = if character.is_whitespace() {
-        0.31
-    } else if character.is_uppercase() {
-        0.64
-    } else if character.is_ascii_punctuation() {
-        0.42
+        CODE.get_or_init(|| {
+            ttf_parser::Face::parse(HACK_REGULAR, 0).expect("embedded Hack font is valid")
+        })
+    } else if style.bold && style.italic {
+        BOLD_ITALIC.get_or_init(|| {
+            ttf_parser::Face::parse(dejavu::sans::bold_oblique(), 0)
+                .expect("embedded DejaVu bold oblique font is valid")
+        })
+    } else if style.bold {
+        BOLD.get_or_init(|| {
+            ttf_parser::Face::parse(dejavu::sans::bold(), 0)
+                .expect("embedded DejaVu bold font is valid")
+        })
+    } else if style.italic {
+        ITALIC.get_or_init(|| {
+            ttf_parser::Face::parse(dejavu::sans::oblique(), 0)
+                .expect("embedded DejaVu oblique font is valid")
+        })
     } else {
-        0.54
+        REGULAR.get_or_init(|| {
+            ttf_parser::Face::parse(dejavu::sans::regular(), 0)
+                .expect("embedded DejaVu font is valid")
+        })
+    }
+}
+
+fn font_face(style: &InlineStyle) -> &'static ttf_parser::Face<'static> {
+    primary_face(style)
+}
+
+pub(in crate::pdf_writer) fn uses_emoji_font(character: char, code: bool) -> bool {
+    let style = InlineStyle {
+        code,
+        ..InlineStyle::default()
     };
-    font_size * factor
+    primary_face(&style).glyph_index(character).is_none()
+        && twemoji_assets::png::PngTwemojiAsset::from_emoji(&character.to_string()).is_some()
+}
+
+fn character_width(character: char, style: &InlineStyle, font_size: f32) -> f32 {
+    if uses_emoji_font(character, style.code) {
+        return font_size;
+    }
+    let face = font_face(style);
+    let Some(glyph) = face.glyph_index(character) else {
+        return font_size * 0.6;
+    };
+    let advance = face.glyph_hor_advance(glyph).unwrap_or(face.units_per_em());
+    font_size * f32::from(advance) / f32::from(face.units_per_em())
 }
 
 pub(in crate::pdf_writer) fn estimate_run_width(run: &TextRun, font_size: f32) -> f32 {
@@ -51,7 +97,7 @@ pub(in crate::pdf_writer) fn estimate_run_width(run: &TextRun, font_size: f32) -
     };
     run.text
         .chars()
-        .map(|character| estimate_character_width(character, &run.style, size))
+        .map(|character| character_width(character, &run.style, size))
         .sum()
 }
 
@@ -63,10 +109,11 @@ struct StyledCharacter {
 
 pub(in crate::pdf_writer) fn wrap_runs(
     runs: &[TextRun],
-    limit: usize,
+    available_width: f32,
+    font_size: f32,
     preserve_whitespace: bool,
 ) -> Vec<Vec<TextRun>> {
-    let limit = limit.max(1);
+    let available_width = available_width.max(1.0);
     let mut lines = Vec::<Vec<StyledCharacter>>::new();
     let mut line = Vec::<StyledCharacter>::new();
     let mut word = Vec::<StyledCharacter>::new();
@@ -82,17 +129,35 @@ pub(in crate::pdf_writer) fn wrap_runs(
                 if character == '\n' {
                     lines.push(std::mem::take(&mut line));
                 } else {
-                    if line.len() >= limit {
+                    if characters_width(&line, font_size)
+                        + character_width(character, &styled.style, font_size)
+                        > available_width
+                        && !line.is_empty()
+                    {
                         lines.push(std::mem::take(&mut line));
                     }
                     line.push(styled);
                 }
             } else if character == '\n' {
-                place_word(&mut line, &mut lines, &mut word, &mut pending_space, limit);
+                place_word(
+                    &mut line,
+                    &mut lines,
+                    &mut word,
+                    &mut pending_space,
+                    available_width,
+                    font_size,
+                );
                 lines.push(std::mem::take(&mut line));
                 pending_space = None;
             } else if character.is_whitespace() {
-                place_word(&mut line, &mut lines, &mut word, &mut pending_space, limit);
+                place_word(
+                    &mut line,
+                    &mut lines,
+                    &mut word,
+                    &mut pending_space,
+                    available_width,
+                    font_size,
+                );
                 if !line.is_empty() {
                     pending_space = Some(styled);
                 }
@@ -101,7 +166,14 @@ pub(in crate::pdf_writer) fn wrap_runs(
             }
         }
     }
-    place_word(&mut line, &mut lines, &mut word, &mut pending_space, limit);
+    place_word(
+        &mut line,
+        &mut lines,
+        &mut word,
+        &mut pending_space,
+        available_width,
+        font_size,
+    );
     if !line.is_empty() || lines.is_empty() {
         lines.push(line);
     }
@@ -113,41 +185,51 @@ fn place_word(
     lines: &mut Vec<Vec<StyledCharacter>>,
     word: &mut Vec<StyledCharacter>,
     pending_space: &mut Option<StyledCharacter>,
-    limit: usize,
+    available_width: f32,
+    font_size: f32,
 ) {
     if word.is_empty() {
         return;
     }
-    let space_count = usize::from(pending_space.is_some() && !line.is_empty());
-    if line.len() + space_count + word.len() > limit && !line.is_empty() {
-        if let Some(space_index) = line.iter().rposition(|item| item.character.is_whitespace()) {
-            let remaining = line.split_off(space_index + 1);
-            while line
-                .last()
-                .is_some_and(|item| item.character.is_whitespace())
-            {
-                line.pop();
-            }
-            lines.push(std::mem::take(line));
-            *line = remaining;
-        } else {
-            lines.push(std::mem::take(line));
-        }
+    let space_width = pending_space
+        .as_ref()
+        .filter(|_| !line.is_empty())
+        .map_or(0.0, |space| {
+            character_width(space.character, &space.style, font_size)
+        });
+    if characters_width(line, font_size) + space_width + characters_width(word, font_size)
+        > available_width
+        && !line.is_empty()
+    {
+        lines.push(std::mem::take(line));
         *pending_space = None;
     }
     if let Some(space) = pending_space.take()
         && !line.is_empty()
-        && line.len() < limit
+        && characters_width(line, font_size)
+            + character_width(space.character, &space.style, font_size)
+            <= available_width
     {
         line.push(space);
     }
 
     for character in word.drain(..) {
-        if line.len() >= limit {
+        if characters_width(line, font_size)
+            + character_width(character.character, &character.style, font_size)
+            > available_width
+            && !line.is_empty()
+        {
             lines.push(std::mem::take(line));
         }
         line.push(character);
     }
+}
+
+fn characters_width(characters: &[StyledCharacter], font_size: f32) -> f32 {
+    characters
+        .iter()
+        .map(|item| character_width(item.character, &item.style, font_size))
+        .sum()
 }
 
 fn characters_to_runs(characters: Vec<StyledCharacter>) -> Vec<TextRun> {
@@ -165,4 +247,35 @@ fn characters_to_runs(characters: Vec<StyledCharacter>) -> Vec<TextRun> {
         }
     }
     runs
+}
+
+pub(in crate::pdf_writer) fn reorder_runs_for_display(runs: &[TextRun]) -> Vec<TextRun> {
+    let characters = runs
+        .iter()
+        .flat_map(|run| {
+            run.text.chars().map(|character| StyledCharacter {
+                character,
+                style: run.style.clone(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let text = characters
+        .iter()
+        .map(|item| item.character)
+        .collect::<String>();
+    let bidi = BidiInfo::new(&text, None);
+    if !bidi.has_rtl() {
+        return runs.to_vec();
+    }
+    let Some(paragraph) = bidi.paragraphs.first() else {
+        return runs.to_vec();
+    };
+    let levels = bidi.reordered_levels_per_char(paragraph, paragraph.range.clone());
+    let visual_order = BidiInfo::reorder_visual(&levels);
+    characters_to_runs(
+        visual_order
+            .into_iter()
+            .filter_map(|index| characters.get(index).cloned())
+            .collect(),
+    )
 }

@@ -71,6 +71,11 @@ The commands below use `cargo run` during development. A release build is create
 
 PDF import and export use `pdfium-render`. The matching Pdfium native library is downloaded and embedded at build time, adding roughly 30 MB to each application binary. On first PDF conversion it is extracted to the user's cache; no network access or separately installed Pdfium library is required at runtime. PDF output embeds fonts with Cyrillic support and renders supported document structure, formatting, links, code, tables, footnotes, and raster images.
 
+PDF output uses the embedded DejaVu fonts for broad Unicode coverage and Twemoji
+graphics for emoji fallback. DejaVu fonts are distributed under their bundled
+free-font license; Twemoji graphics are copyright their contributors and
+licensed under CC-BY 4.0.
+
 ### Use the executable file
 
 To use the application without `cargo run`, build the release binary once:

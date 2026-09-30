@@ -1,19 +1,59 @@
-use super::content::{estimate_run_width, normalize_anchor, slugify, wrap_runs};
+use super::content::{
+    estimate_run_width, normalize_anchor, reorder_runs_for_display, slugify, uses_emoji_font,
+    wrap_runs,
+};
 use super::*;
 use crate::error::invalid_data;
 use base64::Engine as _;
-use epaint_default_fonts::{HACK_REGULAR, UBUNTU_LIGHT};
+use epaint_default_fonts::HACK_REGULAR;
 use pdfium_bundled::pdfium_render::prelude::{
     PdfPageAnnotationCommon, PdfPageContentRegenerationStrategy, PdfPageObjectCommon,
-    PdfPageObjectsCommon, PdfPagePaperSize, PdfPageTextRenderMode, PdfPoints, PdfRect,
+    PdfPageObjectsCommon, PdfPagePaperSize, PdfPoints, PdfRect,
 };
+
+fn split_runs_by_font(runs: &[TextRun]) -> Vec<TextRun> {
+    let mut output: Vec<TextRun> = Vec::new();
+    for run in runs {
+        for character in run.text.chars() {
+            let emoji = uses_emoji_font(character, run.style.code);
+            if let Some(previous) = output.last_mut()
+                && previous.style == run.style
+                && previous
+                    .text
+                    .chars()
+                    .next()
+                    .is_some_and(|first| uses_emoji_font(first, previous.style.code) == emoji)
+            {
+                previous.text.push(character);
+            } else {
+                output.push(TextRun {
+                    text: character.to_string(),
+                    style: run.style.clone(),
+                });
+            }
+        }
+    }
+    output
+}
 
 impl<'a> PdfWriter<'a> {
     pub(super) fn new(pdfium: &'a Pdfium) -> Result<Self, MarkoffError> {
         let mut document = pdfium.create_new_pdf().map_err(invalid_data)?;
         let body_font = document
             .fonts_mut()
-            .load_true_type_from_bytes(UBUNTU_LIGHT, true)
+            .load_true_type_from_bytes(dejavu::sans::regular(), true)
+            .map_err(invalid_data)?;
+        let body_bold_font = document
+            .fonts_mut()
+            .load_true_type_from_bytes(dejavu::sans::bold(), true)
+            .map_err(invalid_data)?;
+        let body_italic_font = document
+            .fonts_mut()
+            .load_true_type_from_bytes(dejavu::sans::oblique(), true)
+            .map_err(invalid_data)?;
+        let body_bold_italic_font = document
+            .fonts_mut()
+            .load_true_type_from_bytes(dejavu::sans::bold_oblique(), true)
             .map_err(invalid_data)?;
         let code_font = document
             .fonts_mut()
@@ -35,6 +75,9 @@ impl<'a> PdfWriter<'a> {
             page_index: 0,
             cursor_y: page_height - PDF_MARGIN_TOP,
             body_font,
+            body_bold_font,
+            body_italic_font,
+            body_bold_italic_font,
             code_font,
             headings: Vec::new(),
             anchors: HashMap::new(),
@@ -108,17 +151,16 @@ impl<'a> PdfWriter<'a> {
         self.cursor_y -= paragraph.options.space_before;
         let available_width =
             self.page_width - PDF_MARGIN_LEFT - PDF_MARGIN_RIGHT - paragraph.options.indent;
-        let max_characters = (available_width / (paragraph.options.font_size * 0.72))
-            .floor()
-            .max(1.0) as usize;
         let lines = wrap_runs(
             &paragraph.runs,
-            max_characters,
+            available_width,
+            paragraph.options.font_size,
             paragraph.options.preserve_whitespace,
         );
         let line_height = paragraph.options.font_size * 1.35;
 
-        for (line_index, line) in lines.iter().enumerate() {
+        for (line_index, logical_line) in lines.iter().enumerate() {
+            let line = reorder_runs_for_display(logical_line);
             self.ensure_space(line_height)?;
             if line_index == 0
                 && let Some((level, title)) = paragraph.options.heading.as_ref()
@@ -150,7 +192,7 @@ impl<'a> PdfWriter<'a> {
                 )?;
             }
             self.draw_runs(
-                line,
+                &line,
                 x,
                 self.cursor_y,
                 paragraph.options.font_size,
@@ -196,7 +238,7 @@ impl<'a> PdfWriter<'a> {
         code_block: bool,
     ) -> Result<(), MarkoffError> {
         let mut x = start_x;
-        for run in runs {
+        for run in split_runs_by_font(runs) {
             if run.text.is_empty() {
                 continue;
             }
@@ -219,7 +261,12 @@ impl<'a> PdfWriter<'a> {
             } else {
                 base_color
             };
-            let width = estimate_run_width(run, base_size);
+            let estimated_width = estimate_run_width(&run, base_size);
+            let is_emoji = run
+                .text
+                .chars()
+                .next()
+                .is_some_and(|character| uses_emoji_font(character, run.style.code));
 
             if run.style.code && !code_block {
                 self.draw_rectangle(
@@ -227,15 +274,44 @@ impl<'a> PdfWriter<'a> {
                         y - font_size * 0.22,
                         x - 2.0,
                         y + font_size * 0.84,
-                        x + width + 2.0,
+                        x + estimated_width + 2.0,
                     ),
                     Some((TABLE_BORDER, PdfPoints::new(0.35))),
                     Some(CODE_BACKGROUND),
                 )?;
             }
 
+            if is_emoji {
+                let width = self.draw_emoji_run(&run.text, x, y, font_size)?;
+                let width = width.max(estimated_width);
+                if run.style.underline || run.style.link.is_some() {
+                    self.draw_line(x, y - 1.5, x + width, y - 1.5, color, PdfPoints::new(0.45))?;
+                }
+                if run.style.strikethrough {
+                    self.draw_line(
+                        x,
+                        y + font_size * 0.31,
+                        x + width,
+                        y + font_size * 0.31,
+                        color,
+                        PdfPoints::new(0.45),
+                    )?;
+                }
+                if let Some(destination) = run.style.link.as_deref() {
+                    self.add_link_annotation(destination, x, y, width, font_size)?;
+                }
+                x += width;
+                continue;
+            }
+
             let font = if run.style.code {
                 self.code_font
+            } else if run.style.bold && run.style.italic {
+                self.body_bold_italic_font
+            } else if run.style.bold {
+                self.body_bold_font
+            } else if run.style.italic {
+                self.body_italic_font
             } else {
                 self.body_font
             };
@@ -254,16 +330,12 @@ impl<'a> PdfWriter<'a> {
                 .as_text_object_mut()
                 .ok_or_else(|| invalid_data(std::io::Error::other("expected a PDF text object")))?;
             text.set_fill_color(color).map_err(invalid_data)?;
-            if run.style.bold {
-                text.set_render_mode(PdfPageTextRenderMode::FilledThenStroked)
-                    .map_err(invalid_data)?;
-                text.set_stroke_color(color).map_err(invalid_data)?;
-                text.set_stroke_width(PdfPoints::new(0.18))
-                    .map_err(invalid_data)?;
-            }
-            if run.style.italic {
-                text.skew_degrees(0.0, 12.0).map_err(invalid_data)?;
-            }
+            let width = object
+                .bounds()
+                .map_err(invalid_data)?
+                .width()
+                .value
+                .max(estimated_width);
             drop(object);
 
             if run.style.underline || run.style.link.is_some() {
@@ -285,6 +357,36 @@ impl<'a> PdfWriter<'a> {
             x += width;
         }
         Ok(())
+    }
+
+    fn draw_emoji_run(
+        &mut self,
+        text: &str,
+        start_x: f32,
+        baseline: f32,
+        font_size: f32,
+    ) -> Result<f32, MarkoffError> {
+        let mut x = start_x;
+        for character in text.chars().filter(|character| *character != '\u{fe0f}') {
+            let emoji = character.to_string();
+            let Some(asset) = twemoji_assets::png::PngTwemojiAsset::from_emoji(&emoji) else {
+                x += font_size;
+                continue;
+            };
+            let image = image::load_from_memory(asset.data.0).map_err(invalid_data)?;
+            self.page_mut()
+                .objects_mut()
+                .create_image_object(
+                    PdfPoints::new(x),
+                    PdfPoints::new(baseline - font_size * 0.22),
+                    &image,
+                    Some(PdfPoints::new(font_size)),
+                    Some(PdfPoints::new(font_size)),
+                )
+                .map_err(invalid_data)?;
+            x += font_size;
+        }
+        Ok(x - start_x)
     }
 
     fn write_code_block(
@@ -319,7 +421,7 @@ impl<'a> PdfWriter<'a> {
         let line_height = size * 1.4;
         let left = PDF_MARGIN_LEFT + indent;
         let width = (self.page_width - PDF_MARGIN_RIGHT - left).max(1.0);
-        let max_characters = (width / (size * 0.65)).floor().max(1.0) as usize;
+        let content_width = (width - 14.0).max(1.0);
         let source_lines = if code.is_empty() {
             vec![String::new()]
         } else {
@@ -334,7 +436,7 @@ impl<'a> PdfWriter<'a> {
                     ..InlineStyle::default()
                 },
             };
-            code_lines.extend(wrap_runs(&[run], max_characters, true));
+            code_lines.extend(wrap_runs(&[run], content_width, size, true));
         }
 
         self.cursor_y -= 2.0;
@@ -406,10 +508,12 @@ impl<'a> PdfWriter<'a> {
             let wrapped = cells
                 .iter()
                 .map(|cell| {
-                    let max_characters = ((column_width - padding * 2.0) / (font_size * 0.68))
-                        .floor()
-                        .max(1.0) as usize;
-                    let lines = wrap_runs(cell, max_characters, false);
+                    let lines = wrap_runs(
+                        cell,
+                        (column_width - padding * 2.0).max(1.0),
+                        font_size,
+                        false,
+                    );
                     if lines.is_empty() {
                         vec![Vec::new()]
                     } else {
@@ -463,14 +567,15 @@ impl<'a> PdfWriter<'a> {
         let wrapped = cells
             .iter()
             .map(|cell| {
-                let limit = ((layout.column_width - layout.padding * 2.0)
-                    / (layout.font_size * 0.68))
-                    .floor()
-                    .max(1.0) as usize;
-                wrap_runs(cell, limit, false)
-                    .into_iter()
-                    .next()
-                    .unwrap_or_default()
+                wrap_runs(
+                    cell,
+                    (layout.column_width - layout.padding * 2.0).max(1.0),
+                    layout.font_size,
+                    false,
+                )
+                .into_iter()
+                .next()
+                .unwrap_or_default()
             })
             .collect::<Vec<_>>();
         let height = layout.line_height + layout.padding * 2.0;

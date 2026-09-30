@@ -264,6 +264,81 @@ fn converts_markdown_to_pdf_with_cyrillic_text() {
 }
 
 #[test]
+fn pdf_wraps_formatted_text_and_code_and_preserves_unicode() {
+    use pdfium_bundled::pdfium_render::prelude::{
+        PdfPageObjectCommon, PdfPageObjectType, PdfPageObjectsCommon,
+    };
+
+    let input = unique_temp_path("markdown_to_pdf_layout_input");
+    let output = unique_temp_path("markdown_to_pdf_layout_output");
+    fs::write(
+        &input,
+        "Это третий абзац, в котором есть: **полужирный текст,** *курсив,* \
+         ***полужирный курсив,*** <u>подчеркнутый текст,</u> ~~зачеркнутый текст.~~\n\n\
+         ```text\n\
+         very_long_code_line_without_spaces_0123456789_abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ\n\
+         ```\n\n\
+         Стрелки: ← ↑ → ↓ ↔ ⇒ ⇔\n\n\
+         Emoji: 🙂 🚀 ✅\n\n\
+         RTL sample: العربية / עברית\n",
+    )
+    .unwrap();
+
+    convert_file(&input, &output, Format::Markdown, Format::Pdf).unwrap();
+
+    let extracted = extract_pdf_text(&output);
+    assert!(extracted.contains("Стрелки: ← ↑ → ↓ ↔ ⇒ ⇔"));
+    assert!(extracted.contains("العربية"));
+    assert!(extracted.contains("עברית"));
+
+    let pdfium = crate::pdf::bundled_pdfium().unwrap();
+    let document = pdfium.load_pdf_from_file(&output, None).unwrap();
+    let page = document.pages().get(0).unwrap();
+    let right_boundary = page.width().value - 42.0;
+    let text_bounds = page
+        .objects()
+        .iter()
+        .filter(|object| object.object_type() == PdfPageObjectType::Text)
+        .map(|object| {
+            let text = object.as_text_object().unwrap().text();
+            let bounds = object.bounds().unwrap();
+            (text, bounds)
+        })
+        .collect::<Vec<_>>();
+    let overflowing = text_bounds
+        .iter()
+        .filter(|(_, bounds)| bounds.right().value > right_boundary + 0.5)
+        .map(|(text, bounds)| format!("{text:?} at {}", bounds.right().value))
+        .collect::<Vec<_>>();
+    assert!(
+        overflowing.is_empty(),
+        "text escaped the page content boundary: {overflowing:?}"
+    );
+    for (index, (_, bounds)) in text_bounds.iter().enumerate() {
+        for (_, other) in text_bounds.iter().skip(index + 1) {
+            let same_line = (bounds.bottom().value - other.bottom().value).abs() < 0.5;
+            let horizontal_overlap = bounds.right().value.min(other.right().value)
+                - bounds.left().value.max(other.left().value);
+            assert!(
+                !same_line || horizontal_overlap <= 0.5,
+                "formatted text objects overlap on the same line"
+            );
+        }
+    }
+    drop(document);
+    let document = lopdf::Document::load(&output).unwrap();
+    let emoji_images = document
+        .get_pages()
+        .values()
+        .map(|page_id| document.get_page_images(*page_id).unwrap().len())
+        .sum::<usize>();
+    assert_eq!(emoji_images, 3);
+
+    fs::remove_file(input).ok();
+    fs::remove_file(output).ok();
+}
+
+#[test]
 fn converts_markdown_syntax_and_navigation_to_rich_pdf() {
     use base64::Engine as _;
 
