@@ -198,6 +198,7 @@ impl eframe::App for MarkoffApp {
                     .show_ui(ui, |ui| {
                         for format in [
                             Format::Markdown,
+                            Format::Pdf,
                             Format::Docx,
                             Format::Json,
                             Format::Csv,
@@ -397,6 +398,30 @@ mod tests {
 
         fs::remove_file(markdown).ok();
         fs::remove_file(document).ok();
+    }
+
+    #[test]
+    fn converts_markdown_to_pdf_in_gui() {
+        let markdown = temporary_path("pdf_preview_input", "md");
+        fs::write(&markdown, "# PDF preview\n\nCyrillic: Привет, мир!\n").unwrap();
+
+        let mut app = MarkoffApp {
+            target: Format::Pdf,
+            ..MarkoffApp::default()
+        };
+        app.add_file(markdown.clone());
+        let output = app.jobs[0].output.clone();
+
+        app.convert_selected();
+
+        assert!(matches!(app.jobs[0].status, JobStatus::Success));
+        let SourcePreview::Markdown { content, .. } = &app.jobs[0].result_preview else {
+            panic!("expected a Markdown preview for the generated PDF");
+        };
+        assert!(content.contains("Cyrillic: Привет, мир!"));
+
+        fs::remove_file(markdown).ok();
+        fs::remove_file(output).ok();
     }
 
     #[test]

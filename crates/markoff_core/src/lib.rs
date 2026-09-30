@@ -86,11 +86,12 @@ use csv_format::{convert_csv_to_markdown, convert_markdown_to_csv};
 use data::{convert_data_to_xlsx, convert_xlsx_to_data};
 use document::{
     convert_document_to_markdown, convert_markdown_to_document, convert_structured_data_format,
+    convert_structured_data_to_pdf,
 };
 use docx_reader::convert_docx_to_markdown;
 use docx_writer::convert_markdown_to_docx;
 use html::{convert_html_to_markdown, convert_markdown_to_html};
-use pdf::convert_pdf_to_markdown;
+use pdf::{convert_markdown_to_pdf, convert_pdf_to_markdown};
 use pptx::{convert_markdown_to_pptx, convert_pptx_to_markdown};
 use xlsx::{convert_markdown_to_xlsx, convert_xlsx_to_markdown};
 
@@ -182,6 +183,10 @@ fn route_docx(request: &ConversionRequest) -> Result<(), MarkoffError> {
                 convert_docx_to_markdown(&request.input, markdown)
             })
         }
+        Format::Pdf => convert_via_markdown_intermediate(
+            |markdown| convert_docx_to_markdown(&request.input, markdown),
+            |markdown| convert_markdown_to_pdf(markdown, &request.output),
+        ),
         _ => not_implemented(request),
     }
 }
@@ -201,6 +206,7 @@ fn route_pdf(request: &ConversionRequest) -> Result<(), MarkoffError> {
 fn route_markdown(request: &ConversionRequest) -> Result<(), MarkoffError> {
     match request.to {
         Format::Docx => convert_markdown_to_docx(&request.input, &request.output),
+        Format::Pdf => convert_markdown_to_pdf(&request.input, &request.output),
         Format::Json | Format::Yaml | Format::Toml => convert_markdown_to_document(
             &request.input,
             &request.output,
@@ -273,6 +279,12 @@ fn route_structured_data(request: &ConversionRequest) -> Result<(), MarkoffError
         Format::Pptx => convert_structured_via_markdown(request, |markdown| {
             convert_markdown_to_pptx(markdown, &request.output)
         }),
+        Format::Pdf => convert_structured_data_to_pdf(
+            &request.input,
+            &request.output,
+            request.from,
+            request.tables_only,
+        ),
         Format::Html => convert_structured_via_markdown(request, |markdown| {
             convert_markdown_to_html(markdown, &request.output)
         }),
@@ -348,8 +360,7 @@ fn not_implemented(request: &ConversionRequest) -> Result<(), MarkoffError> {
 /// Reports whether table-only conversion applies to a format pair.
 ///
 /// The option is available between JSON/YAML/TOML and Markdown, DOCX, PPTX, or
-/// HTML. PDF is additionally supported as a source format, but not as a
-/// destination.
+/// HTML. PDF is supported as both a source and destination format.
 ///
 /// # Examples
 ///
@@ -357,7 +368,7 @@ fn not_implemented(request: &ConversionRequest) -> Result<(), MarkoffError> {
 /// use markoff_core::{Format, supports_tables_only};
 ///
 /// assert!(supports_tables_only(Format::Docx, Format::Json));
-/// assert!(!supports_tables_only(Format::Json, Format::Pdf));
+/// assert!(supports_tables_only(Format::Json, Format::Pdf));
 /// ```
 #[must_use]
 pub fn supports_tables_only(from: Format, to: Format) -> bool {
@@ -371,7 +382,7 @@ pub fn supports_tables_only(from: Format, to: Format) -> bool {
     let document_target = |format| {
         matches!(
             format,
-            Format::Markdown | Format::Docx | Format::Pptx | Format::Html
+            Format::Markdown | Format::Docx | Format::Pdf | Format::Pptx | Format::Html
         )
     };
 

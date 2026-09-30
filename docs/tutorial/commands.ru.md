@@ -99,6 +99,13 @@ markoff_cli convert INPUT [--from FORMAT] [--to FORMAT]
 # DOCX -> Markdown с перезаписью результата
 .\markoff_cli.exe convert .\report.docx --to md --overwrite
 
+# Markdown или DOCX -> PDF
+.\markoff_cli.exe convert .\notes.md -o .\notes.pdf
+.\markoff_cli.exe convert .\report.docx --to pdf
+
+# JSON/YAML/TOML -> PDF
+.\markoff_cli.exe convert .\report.json --to pdf
+
 # Файл с нестандартным расширением
 .\markoff_cli.exe convert .\input.data --from json --to yaml `
     -o .\output.yaml
@@ -224,11 +231,11 @@ markoff_cli gui
 
 Основные реализованные направления:
 
-- DOCX -> Markdown, CSV, XLSX, JSON, YAML, TOML;
-- Markdown -> DOCX, CSV, XLSX, JSON, YAML, TOML, PPTX, HTML;
+- DOCX -> Markdown, CSV, XLSX, JSON, YAML, TOML, PDF;
+- Markdown -> DOCX, PDF, CSV, XLSX, JSON, YAML, TOML, PPTX, HTML;
 - CSV -> Markdown, XLSX, DOCX;
 - XLSX/XLSM -> Markdown, CSV, JSON, YAML, TOML, DOCX;
-- JSON/YAML/TOML -> Markdown, DOCX, PPTX, HTML, XLSX и другие JSON/YAML/TOML;
+- JSON/YAML/TOML -> Markdown, DOCX, PDF, PPTX, HTML, XLSX и другие JSON/YAML/TOML;
 - PDF -> Markdown, JSON, YAML, TOML;
 - PPTX -> Markdown, JSON, YAML, TOML;
 - HTML -> Markdown, JSON, YAML, TOML.

@@ -19,6 +19,46 @@ pub(crate) fn convert_structured_data_format(
 ) -> Result<(), MarkoffError> {
     structured::convert_structured_data_format(input, output, from, to)
 }
+
+pub(crate) fn convert_structured_data_to_pdf(
+    input: &Path,
+    output: &Path,
+    format: Format,
+    tables_only: bool,
+) -> Result<(), MarkoffError> {
+    let source = std::fs::read_to_string(input)?;
+    let value = structured::parse_structured_value(&source, format)?;
+    let document = if value.get("blocks").is_some() {
+        let mut document = parse_document(&source, format)?;
+        if tables_only {
+            retain_table_blocks(&mut document);
+        }
+        document
+    } else {
+        if tables_only {
+            return Err(MarkoffError::InvalidOption {
+                message:
+                    "--tables-only requires a JSON, YAML, or TOML document schema containing blocks"
+                        .to_string(),
+            });
+        }
+        Document {
+            blocks: vec![Block::Code {
+                code: source,
+                info: Some(format.to_string()),
+            }],
+        }
+    };
+    crate::pdf::write_document_to_pdf(&document, output)
+}
+
+pub(crate) fn parse_markdown_document(
+    source: &str,
+    base_dir: &Path,
+) -> Result<Document, MarkoffError> {
+    markdown_to_document(source, base_dir)
+}
+
 pub(crate) fn convert_markdown_to_document(
     input: &Path,
     output: &Path,

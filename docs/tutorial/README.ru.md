@@ -154,7 +154,7 @@ chmod +x markoff_cli markoff_gui
 - выбрать точный путь каждого результата;
 - обработать каталог по шаблону;
 - передавать данные через stdin/stdout;
-- преобразовать Markdown в DOCX или использовать PDF как входной формат;
+- преобразовать Markdown, DOCX или JSON/YAML/TOML в PDF, а также использовать PDF как входной формат;
 - работать без графического окружения.
 
 GUI и CLI используют одно и то же ядро конвертации, поэтому правила форматов,
@@ -282,15 +282,24 @@ markoff_cli convert INPUT [--from FORMAT] [--to FORMAT] [-o OUTPUT]
 .\markoff_cli.exe convert .\report.docx --to md -o .\converted\report.md
 ```
 
-#### PDF в Markdown
+#### PDF в Markdown и документы в PDF
 
 ```powershell
 .\markoff_cli.exe convert .\manual.pdf --to md -o .\converted\manual.md
 ```
 
-PDF поддерживается как входной формат только для Markdown. Для сканированного
-PDF без текстового слоя потребуется OCR во внешнем инструменте, так как
-встроенного OCR в `markoff` нет.
+PDF можно создать из Markdown, DOCX или JSON/YAML/TOML:
+
+```powershell
+.\markoff_cli.exe convert .\notes.md -o .\notes.pdf
+.\markoff_cli.exe convert .\report.docx --to pdf
+.\markoff_cli.exe convert .\report.json --to pdf
+```
+
+PDF-экспорт автоматически размещает текст на новых страницах, но не сохраняет
+исходный макет и изображения. PDF-вход поддерживается для документов со
+встроенным текстовым слоем; для сканированного PDF потребуется OCR во внешнем
+инструменте, так как встроенного OCR в `markoff` нет.
 
 #### Markdown в DOCX
 
@@ -523,6 +532,7 @@ CLI.
 В списке **Convert to:** доступны:
 
 - Markdown;
+- PDF;
 - DOCX;
 - JSON;
 - CSV;
@@ -536,9 +546,11 @@ DOCX доступен в GUI как целевой формат. Выберит�
 **Convert to:**, нажмите **Apply format**, а затем **Convert selected**.
 Результат сохранится рядом с исходным файлом с расширением `.docx`.
 
-PDF не предлагается GUI как целевой формат, поскольку в текущей версии он
-поддерживается только как входной файл для преобразования в Markdown. Для
-запуска такого преобразования используйте CLI:
+PDF можно выбрать как целевой формат для Markdown, DOCX и JSON/YAML/TOML.
+Выберите **pdf** в поле **Convert to:**, нажмите **Apply format**, затем
+**Convert selected**. Полученный PDF можно просмотреть во вкладке **Result**.
+PDF также можно добавить как входной файл; для отсканированного PDF без
+текстового слоя потребуется OCR во внешнем инструменте.
 
 ```powershell
 .\markoff_cli.exe convert .\manual.pdf --to md
@@ -574,7 +586,7 @@ PDF не предлагается GUI как целевой формат, пос
 | Формат | Расширения | Назначение |
 | --- | --- | --- |
 | Word | `.docx` | Документы Microsoft Word |
-| PDF | `.pdf` | Входной PDF с текстовым слоем |
+| PDF | `.pdf` | Входной PDF с текстовым слоем или целевой формат |
 | Markdown | `.md`, `.markdown` | Текстовая разметка |
 | Excel | `.xlsx`, `.xlsm` | Табличные книги |
 | JSON | `.json` | Структурированные данные или схема документа |
@@ -588,11 +600,11 @@ PDF не предлагается GUI как целевой формат, пос
 
 | Источник | Поддерживаемые цели |
 | --- | --- |
-| DOCX | Markdown, HTML, CSV, XLSX, JSON, YAML, TOML |
-| Markdown | DOCX, CSV, XLSX, JSON, YAML, TOML, PPTX, HTML |
+| DOCX | Markdown, HTML, CSV, XLSX, JSON, YAML, TOML, PDF |
+| Markdown | DOCX, PDF, CSV, XLSX, JSON, YAML, TOML, PPTX, HTML |
 | CSV | Markdown, XLSX, DOCX |
 | XLSX/XLSM | Markdown, CSV, JSON, YAML, TOML, DOCX |
-| JSON/YAML/TOML | Markdown, DOCX, PPTX, HTML, XLSX, другие JSON/YAML/TOML |
+| JSON/YAML/TOML | Markdown, DOCX, PDF, PPTX, HTML, XLSX, другие JSON/YAML/TOML |
 | PDF | Markdown, JSON, YAML, TOML |
 | PPTX | Markdown, JSON, YAML, TOML |
 | HTML | Markdown, JSON, YAML, TOML |
@@ -801,6 +813,9 @@ Get-Content -Raw .\config.json |
 При выводе документной структуры в JSON/YAML/TOML изображения сохраняются
 внутри данных в формате base64. Такой результат не зависит от внешних файлов.
 
+При выводе в PDF изображения не встраиваются: вместо них выводится
+альтернативный текст, если он задан.
+
 При обратном преобразовании JSON/YAML/TOML или Markdown в Markdown приложение
 может восстановить файлы изображений в каталоге `image`. При обратном
 преобразовании Markdown в DOCX изображения пока не встраиваются обратно как
@@ -828,7 +843,10 @@ Get-Content -Raw .\config.json |
 
 ## 9. Ограничения
 
-- PDF можно преобразовать только в Markdown.
+- PDF со встроенным текстовым слоем можно преобразовать в Markdown или
+  документную схему JSON/YAML/TOML. PDF создаётся из Markdown, DOCX и
+  JSON/YAML/TOML; результат содержит перевёрстанный текст, а не исходный
+  макет и изображения.
 - Для PDF без встроенного текстового слоя OCR не выполняется.
 - Разметка страниц, векторная графика и таблицы PDF не восстанавливаются как
   исходный макет; изображения добавляются в Markdown отдельными ссылками.
@@ -843,8 +861,6 @@ Get-Content -Raw .\config.json |
 - DOCX, XLSX/XLSM, PDF и PPTX нельзя использовать в потоковом режиме
   stdin/stdout.
 - Для табличного преобразования JSON/YAML/TOML требуется массив объектов.
-- В GUI нельзя выбрать PDF как целевой формат; PDF поддерживается только как
- входной формат для Markdown.
 
 ## 10. Ошибки и устранение проблем
 

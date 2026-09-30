@@ -21,7 +21,10 @@ pub(super) fn convert_structured_data_format(
     Ok(())
 }
 
-fn parse_structured_value(source: &str, format: Format) -> Result<serde_json::Value, MarkoffError> {
+pub(super) fn parse_structured_value(
+    source: &str,
+    format: Format,
+) -> Result<serde_json::Value, MarkoffError> {
     match format {
         Format::Json => Ok(serde_json::from_str(source).map_err(invalid_data)?),
         Format::Yaml => Ok(serde_yaml::from_str(source).map_err(invalid_data)?),
