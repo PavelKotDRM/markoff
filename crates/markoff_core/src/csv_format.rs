@@ -37,7 +37,7 @@ pub(crate) fn convert_markdown_to_csv(
     delimiter: u8,
 ) -> Result<(), MarkoffError> {
     let source = std::fs::read_to_string(input)?;
-    let rows = parse_markdown_table(&source);
+    let rows = parse_markdown_table(&source)?;
 
     if rows.is_empty() {
         return Err(MarkoffError::NotImplemented {

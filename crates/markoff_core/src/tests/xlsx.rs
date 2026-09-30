@@ -1,5 +1,5 @@
 use super::unique_temp_path;
-use crate::xlsx::{read_xlsx_sheets, write_xlsx_sheets};
+use crate::xlsx::{CellValue, read_xlsx_sheets, write_xlsx_sheets, write_xlsx_value_sheets};
 use crate::{Format, convert_file};
 use std::collections::BTreeMap;
 use std::fs;
@@ -70,4 +70,18 @@ fn round_trips_json_rows_through_xlsx() {
     fs::remove_file(json).ok();
     fs::remove_file(workbook).ok();
     fs::remove_file(restored).ok();
+}
+
+#[test]
+fn rejects_column_indexes_that_cannot_be_represented() {
+    let workbook = unique_temp_path("too_many_columns");
+    let mut sheets = BTreeMap::new();
+    sheets.insert(
+        "Wide".to_string(),
+        vec![vec![CellValue::Empty; usize::from(u16::MAX) + 2]],
+    );
+
+    let error = write_xlsx_value_sheets(&workbook, &sheets).unwrap_err();
+    assert!(error.to_string().contains("column limit"));
+    fs::remove_file(workbook).ok();
 }

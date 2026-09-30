@@ -66,6 +66,44 @@ fn structured_formats_preserve_inline_nodes_and_legacy_documents() {
 }
 
 #[test]
+fn renderer_preserves_legacy_text_when_content_is_also_present() {
+    let source = r#"{"blocks":[{"type":"paragraph","text":"Legacy ","content":[{"type":"strong","content":[{"type":"text","text":"new"}]}]}]}"#;
+    let document = parse_document(source, Format::Json).unwrap();
+
+    assert_eq!(
+        document_to_markdown(&document, Path::new(".")).unwrap(),
+        "Legacy **new**\n"
+    );
+}
+
+#[test]
+fn renderer_rejects_excessive_document_nesting() {
+    let mut block = Block::Paragraph {
+        text: Some("deep".to_string()),
+        content: Vec::new(),
+    };
+    for _ in 0..130 {
+        block = Block::Quote {
+            text: None,
+            blocks: vec![block],
+        };
+    }
+    let document = super::super::document_model::Document {
+        blocks: vec![block],
+    };
+
+    let error = document_to_markdown(&document, Path::new(".")).unwrap_err();
+    assert!(error.to_string().contains("nesting exceeds"));
+}
+
+#[test]
+fn markdown_parser_rejects_excessive_nesting() {
+    let markdown = format!("{}deep\n", "> ".repeat(130));
+    let error = markdown_to_document(&markdown, Path::new(".")).unwrap_err();
+    assert!(error.to_string().contains("nesting exceeds"));
+}
+
+#[test]
 fn parses_lists_with_ordering_nesting_and_start_numbers() {
     let markdown = "8. First\n9. Second\n\n- Parent\n    - Nested\n";
     let document = markdown_to_document(markdown, Path::new(".")).unwrap();

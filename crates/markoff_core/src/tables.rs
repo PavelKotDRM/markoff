@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
+use std::io::{Error, ErrorKind};
 
-pub(crate) fn parse_markdown_table(markdown: &str) -> Vec<Vec<String>> {
+pub(crate) fn parse_markdown_table(markdown: &str) -> Result<Vec<Vec<String>>, Error> {
     let rows = markdown
         .lines()
         .map(str::trim)
@@ -8,25 +9,39 @@ pub(crate) fn parse_markdown_table(markdown: &str) -> Vec<Vec<String>> {
         .filter(|line| line.contains('|'))
         .collect::<Vec<_>>();
 
-    if rows.len() < 3 {
-        return Vec::new();
+    if rows.len() < 2 {
+        return Ok(Vec::new());
     }
 
     let header = parse_markdown_table_row(rows[0]);
-
-    let body = rows[1..]
-        .iter()
-        .skip_while(|row| row.contains("---"))
-        .map(|row| parse_markdown_table_row(row))
-        .filter(|row| !row.is_empty() && row.len() == header.len())
-        .collect::<Vec<_>>();
-
-    let mut result = Vec::new();
-    if !header.is_empty() {
-        result.push(header);
+    let separator = parse_markdown_table_row(rows[1]);
+    if header.is_empty()
+        || separator.len() != header.len()
+        || !separator.iter().all(|cell| {
+            let cell = cell.trim().trim_matches(':');
+            cell.len() >= 3 && cell.chars().all(|character| character == '-')
+        })
+    {
+        return Ok(Vec::new());
     }
-    result.extend(body);
-    result
+
+    let mut result = vec![header];
+    for (index, row) in rows.iter().enumerate().skip(2) {
+        let row = parse_markdown_table_row(row);
+        if row.len() != result[0].len() {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                format!(
+                    "Markdown table row {} has {} cells; expected {}",
+                    index + 1,
+                    row.len(),
+                    result[0].len()
+                ),
+            ));
+        }
+        result.push(row);
+    }
+    Ok(result)
 }
 
 fn parse_markdown_table_row(row: &str) -> Vec<String> {
@@ -52,7 +67,9 @@ fn parse_markdown_table_row(row: &str) -> Vec<String> {
     cells
 }
 
-pub(crate) fn parse_markdown_tables(markdown: &str) -> BTreeMap<String, Vec<Vec<String>>> {
+pub(crate) fn parse_markdown_tables(
+    markdown: &str,
+) -> Result<BTreeMap<String, Vec<Vec<String>>>, Error> {
     let mut tables = BTreeMap::new();
     let mut sheet_name = "Sheet1".to_string();
     let mut table_lines = Vec::new();
@@ -60,7 +77,7 @@ pub(crate) fn parse_markdown_tables(markdown: &str) -> BTreeMap<String, Vec<Vec<
     for line in markdown.lines() {
         if let Some(name) = line.trim().strip_prefix("## ") {
             if !table_lines.is_empty() {
-                let rows = parse_markdown_table(&table_lines.join("\n"));
+                let rows = parse_markdown_table(&table_lines.join("\n"))?;
                 if !rows.is_empty() {
                     tables.insert(sheet_name, rows);
                 }
@@ -73,12 +90,12 @@ pub(crate) fn parse_markdown_tables(markdown: &str) -> BTreeMap<String, Vec<Vec<
     }
 
     if !table_lines.is_empty() {
-        let rows = parse_markdown_table(&table_lines.join("\n"));
+        let rows = parse_markdown_table(&table_lines.join("\n"))?;
         if !rows.is_empty() {
             tables.insert(sheet_name, rows);
         }
     }
-    tables
+    Ok(tables)
 }
 
 pub(crate) fn markdown_table_from_rows(rows: &[Vec<String>]) -> String {
@@ -127,6 +144,22 @@ mod tests {
         let markdown = markdown_table_from_rows(&rows);
 
         assert!(markdown.contains("Quarter \\| Sales"));
-        assert_eq!(parse_markdown_table(&markdown), rows);
+        assert_eq!(parse_markdown_table(&markdown).unwrap(), rows);
+    }
+
+    #[test]
+    fn preserves_header_only_table() {
+        let markdown = "| Name | Score |\n| --- | --- |";
+        assert_eq!(
+            parse_markdown_table(markdown).unwrap(),
+            vec![vec!["Name".to_string(), "Score".to_string()]]
+        );
+    }
+
+    #[test]
+    fn rejects_body_rows_with_the_wrong_width() {
+        let error =
+            parse_markdown_table("| A | B |\n| --- | --- |\n| one | two | three |").unwrap_err();
+        assert!(error.to_string().contains("row 3 has 3 cells; expected 2"));
     }
 }

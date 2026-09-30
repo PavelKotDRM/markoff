@@ -154,19 +154,24 @@ where
             continue;
         }
         let delimiter = if remaining.starts_with("**") || remaining.starts_with("__") {
-            let marker = &remaining[..2];
+            let marker = remaining.as_bytes()[0];
             let marker_count = remaining
                 .as_bytes()
-                .as_chunks::<2>()
-                .0
                 .iter()
-                .take_while(|chunk| *chunk == marker.as_bytes())
-                .count();
-            if marker_count % 2 == 1 {
-                style.bold = !style.bold;
+                .take_while(|byte| **byte == marker)
+                .count()
+                / 2;
+            let marker_length = marker_count * 2;
+            if marker_count % 2 == 0 {
+                remaining = &remaining[marker_length..];
+                continue;
             }
-            remaining = &remaining[marker_count * 2..];
-            continue;
+            if style.bold || has_matching_bold_delimiter(&remaining[marker_length..], marker) {
+                style.bold = !style.bold;
+                remaining = &remaining[marker_length..];
+                continue;
+            }
+            Some(2)
         } else if remaining.starts_with("~~") {
             style.strikethrough = !style.strikethrough;
             remaining = &remaining[2..];
@@ -239,6 +244,37 @@ where
     }
     flush_pending_inline_run(&mut runs, &mut pending, hyperlink);
     runs
+}
+
+fn has_matching_bold_delimiter(value: &str, marker: u8) -> bool {
+    let marker = char::from(marker);
+    let mut index = 0;
+    let mut escaped = false;
+    while index < value.len() {
+        let Some(character) = value[index..].chars().next() else {
+            break;
+        };
+        let character_length = character.len_utf8();
+        if escaped {
+            escaped = false;
+            index += character_length;
+        } else if character == '\\' {
+            escaped = true;
+            index += character_length;
+        } else if character == marker {
+            let run_length = value[index..]
+                .chars()
+                .take_while(|next| *next == marker)
+                .count();
+            if (run_length / 2) % 2 == 1 {
+                return true;
+            }
+            index += run_length;
+        } else {
+            index += character_length;
+        }
+    }
+    false
 }
 
 fn flush_pending_inline_run(

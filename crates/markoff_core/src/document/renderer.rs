@@ -7,10 +7,13 @@ use crate::xml_utils::{MarkdownEscapeContext, markdown_escape, xml_attribute_esc
 use base64::Engine as _;
 use std::path::Path;
 
+const MAX_DOCUMENT_NESTING_DEPTH: usize = 128;
+
 pub(super) fn document_to_markdown(
     document: &Document,
     base_dir: &Path,
 ) -> Result<String, MarkoffError> {
+    validate_document_depth(document)?;
     let mut image_index = 0usize;
     let mut rendered_blocks = Vec::with_capacity(document.blocks.len());
     for block in &document.blocks {
@@ -20,6 +23,7 @@ pub(super) fn document_to_markdown(
 }
 
 pub(super) fn render_document(document: &Document, format: Format) -> Result<String, MarkoffError> {
+    validate_document_depth(document)?;
     match format {
         Format::Json => Ok(serde_json::to_string_pretty(document).map_err(invalid_data)?),
         Format::Yaml => Ok(serde_yaml::to_string(document).map_err(invalid_data)?),
@@ -29,12 +33,14 @@ pub(super) fn render_document(document: &Document, format: Format) -> Result<Str
 }
 
 pub(super) fn parse_document(source: &str, format: Format) -> Result<Document, MarkoffError> {
-    match format {
-        Format::Json => Ok(serde_json::from_str(source).map_err(invalid_data)?),
-        Format::Yaml => Ok(serde_yaml::from_str(source).map_err(invalid_data)?),
-        Format::Toml => Ok(toml::from_str(source).map_err(invalid_data)?),
+    let document = match format {
+        Format::Json => serde_json::from_str(source).map_err(invalid_data)?,
+        Format::Yaml => serde_yaml::from_str(source).map_err(invalid_data)?,
+        Format::Toml => toml::from_str(source).map_err(invalid_data)?,
         _ => unreachable!("only JSON, YAML, and TOML parse into a document"),
-    }
+    };
+    validate_document_depth(&document)?;
+    Ok(document)
 }
 
 fn render_block(
@@ -160,11 +166,93 @@ fn render_content(
     if content.is_empty() {
         return Ok(legacy_text.unwrap_or_default().to_string());
     }
-    content
+    let rendered = content
         .iter()
         .map(|inline| render_inline(inline, base_dir, image_index))
         .collect::<Result<Vec<_>, _>>()
-        .map(|parts| parts.concat())
+        .map(|parts| parts.concat())?;
+    Ok(legacy_text.map_or(rendered.clone(), |text| format!("{text}{rendered}")))
+}
+
+fn validate_document_depth(document: &Document) -> Result<(), MarkoffError> {
+    let mut blocks = document
+        .blocks
+        .iter()
+        .map(|block| (block, 0usize))
+        .collect::<Vec<_>>();
+    let mut inlines = Vec::new();
+
+    while let Some((block, depth)) = blocks.pop() {
+        check_depth(depth)?;
+        match block {
+            Block::Heading { content, .. }
+            | Block::ListItem { content, .. }
+            | Block::Paragraph { content, .. } => {
+                inlines.extend(content.iter().map(|inline| (inline, depth + 1)));
+            }
+            Block::List { items, .. } => {
+                for item in items {
+                    blocks.extend(item.blocks.iter().map(|block| (block, depth + 1)));
+                }
+            }
+            Block::Table { cells, .. } => {
+                for row in cells {
+                    for cell in row {
+                        inlines.extend(cell.iter().map(|inline| (inline, depth + 1)));
+                    }
+                }
+            }
+            Block::Quote { blocks: nested, .. }
+            | Block::FootnoteDefinition { blocks: nested, .. } => {
+                blocks.extend(nested.iter().map(|block| (block, depth + 1)));
+            }
+            Block::Code { .. }
+            | Block::Math { .. }
+            | Block::HorizontalRule
+            | Block::Image { .. }
+            | Block::Html { .. } => {}
+        }
+    }
+
+    while let Some((inline, depth)) = inlines.pop() {
+        check_depth(depth)?;
+        let content = match inline {
+            Inline::Emphasis { content }
+            | Inline::Strong { content }
+            | Inline::Strikethrough { content }
+            | Inline::Underline { content }
+            | Inline::Superscript { content }
+            | Inline::Subscript { content }
+            | Inline::Link { content, .. }
+            | Inline::Footnote { content } => Some(content),
+            Inline::Text { .. }
+            | Inline::Code { .. }
+            | Inline::Math { .. }
+            | Inline::Image { .. }
+            | Inline::FootnoteReference { .. }
+            | Inline::Bookmark { .. }
+            | Inline::SoftBreak
+            | Inline::HardBreak
+            | Inline::TaskListMarker { .. }
+            | Inline::Html { .. } => None,
+        };
+        if let Some(content) = content {
+            inlines.extend(content.iter().map(|inline| (inline, depth + 1)));
+        }
+    }
+
+    Ok(())
+}
+
+fn check_depth(depth: usize) -> Result<(), MarkoffError> {
+    if depth > MAX_DOCUMENT_NESTING_DEPTH {
+        return Err(MarkoffError::InvalidInput {
+            path: format!(
+                "document nesting exceeds the supported depth of {MAX_DOCUMENT_NESTING_DEPTH}"
+            ),
+        });
+    }
+    Ok(())
 }
 
 fn render_inline(

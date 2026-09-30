@@ -30,6 +30,7 @@ tracing = "0.1"
 ttf-parser = "0.25"
 twemoji-assets = { version = "1.5.1", default-features = false, features = ["png"] }
 unicode-bidi = "0.3"
+unicode-segmentation = "1.12"
 zip = "8"
 
 [dev-dependencies]

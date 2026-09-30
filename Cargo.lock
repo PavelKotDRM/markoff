@@ -2170,6 +2170,7 @@ dependencies = [
  "ttf-parser",
  "twemoji-assets",
  "unicode-bidi",
+ "unicode-segmentation",
  "zip",
 ]
 

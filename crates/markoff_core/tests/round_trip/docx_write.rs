@@ -292,6 +292,54 @@ fn markdown_docx_round_trip_preserves_emphasis_and_nested_lists() {
 }
 
 #[test]
+fn markdown_docx_rejects_list_nesting_beyond_word_limit() {
+    use std::io::Read;
+    use zip::ZipArchive;
+
+    let markdown = temporary_path("deep_list_input", "md");
+    let document = temporary_path("deep_list_document", "docx");
+    let source = (0..9)
+        .map(|level| format!("{}- Level {level}", "    ".repeat(level)))
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    fs::write(&markdown, source).unwrap();
+
+    convert_file(&markdown, &document, Format::Markdown, Format::Docx).unwrap();
+    let file = fs::File::open(&document).unwrap();
+    let mut archive = ZipArchive::new(file).unwrap();
+    let mut document_xml = String::new();
+    archive
+        .by_name("word/document.xml")
+        .unwrap()
+        .read_to_string(&mut document_xml)
+        .unwrap();
+    assert!(document_xml.contains("<w:ilvl w:val=\"8\"/>"));
+    drop(archive);
+    remove_files(&[&markdown, &document]);
+
+    let markdown = temporary_path("too_deep_list_input", "md");
+    let document = temporary_path("too_deep_list_document", "docx");
+    let source = (0..10)
+        .map(|level| format!("{}- Level {level}", "    ".repeat(level)))
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    fs::write(&markdown, source).unwrap();
+
+    let error = convert_file(&markdown, &document, Format::Markdown, Format::Docx)
+        .expect_err("nesting beyond Word's nine levels must be rejected");
+    assert!(matches!(
+        error,
+        markoff_core::MarkoffError::Io(ref error)
+            if error.kind() == std::io::ErrorKind::InvalidInput
+    ));
+    assert!(!document.exists());
+
+    remove_files(&[&markdown, &document]);
+}
+
+#[test]
 fn markdown_docx_preserves_list_boundaries_and_start_numbers() {
     use std::io::Read;
     use zip::ZipArchive;
@@ -374,6 +422,31 @@ fn markdown_docx_round_trip_normalizes_adjacent_bold_runs() {
     );
 
     remove_files(&[&markdown, &document, &restored]);
+}
+
+#[test]
+fn markdown_docx_does_not_leak_unmatched_bold_markers() {
+    use std::io::Read;
+    use zip::ZipArchive;
+
+    let markdown = temporary_path("unmatched_bold_input", "md");
+    let document = temporary_path("unmatched_bold_document", "docx");
+    fs::write(&markdown, "**bold** plain **unclosed\n").unwrap();
+
+    convert_file(&markdown, &document, Format::Markdown, Format::Docx).unwrap();
+
+    let file = fs::File::open(&document).unwrap();
+    let mut archive = ZipArchive::new(file).unwrap();
+    let mut document_xml = String::new();
+    archive
+        .by_name("word/document.xml")
+        .unwrap()
+        .read_to_string(&mut document_xml)
+        .unwrap();
+    assert_eq!(document_xml.matches("<w:b/>").count(), 1);
+    assert!(document_xml.contains("plain **unclosed"));
+
+    remove_files(&[&markdown, &document]);
 }
 
 #[test]

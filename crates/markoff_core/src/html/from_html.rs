@@ -6,7 +6,7 @@ use std::path::Path;
 
 pub(crate) fn convert_html_to_markdown(input: &Path, output: &Path) -> Result<(), MarkoffError> {
     let source = std::fs::read_to_string(input)?;
-    let markdown = html_to_markdown(&source);
+    let markdown = html_to_markdown(&source)?;
     std::fs::write(output, markdown)?;
     Ok(())
 }
@@ -57,8 +57,8 @@ fn flush_block(output: &mut String, text: &str, quote_depth: usize) {
     output.push_str("\n\n");
 }
 
-fn html_to_markdown(html: &str) -> String {
-    let tokens = tokenize(html);
+fn html_to_markdown(html: &str) -> Result<String, MarkoffError> {
+    let tokens = tokenize(html)?;
     let mut output = String::new();
     let mut block_stack: Vec<BlockBuffer> = Vec::new();
     let mut quote_depth = 0usize;
@@ -130,6 +130,7 @@ fn html_to_markdown(html: &str) -> String {
                     }
                     "tr" => current_row.clear(),
                     "td" | "th" => {
+                        reject_unsupported_table_span(&attributes)?;
                         if name == "th" {
                             table_alignments.push(
                                 html_attribute(&attributes, "style")
@@ -429,7 +430,31 @@ fn html_to_markdown(html: &str) -> String {
         }
         markdown.push_str(&footnote_definitions.join("\n\n"));
     }
-    markdown
+    Ok(markdown)
+}
+
+fn reject_unsupported_table_span(attributes: &[(String, String)]) -> Result<(), MarkoffError> {
+    for name in ["colspan", "rowspan"] {
+        let Some(value) = html_attribute(attributes, name) else {
+            continue;
+        };
+        let span = value.parse::<usize>().map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("invalid HTML table {name} value `{value}`"),
+            )
+        })?;
+        if span != 1 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "HTML table {name}={span} is unsupported because Markdown cannot preserve merged cells"
+                ),
+            )
+            .into());
+        }
+    }
+    Ok(())
 }
 
 fn html_attribute(attributes: &[(String, String)], key: &str) -> Option<String> {

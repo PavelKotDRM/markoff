@@ -25,7 +25,11 @@ fn rows_from_json(value: &serde_json::Value) -> Result<Vec<Vec<CellValue>>, Mark
 
     let mut rows = vec![headers.iter().cloned().map(CellValue::String).collect()];
     for object in objects {
-        let object = object.as_object().expect("validated above");
+        let Some(object) = object.as_object() else {
+            return Err(MarkoffError::InvalidInput {
+                path: "structured data must contain only objects".to_string(),
+            });
+        };
         rows.push(
             headers
                 .iter()
@@ -138,7 +142,13 @@ pub(crate) fn convert_xlsx_to_data(
 ) -> Result<(), MarkoffError> {
     let sheets = read_xlsx_value_sheets(input)?;
     let value = if sheets.len() == 1 {
-        json_from_rows(sheets.values().next().expect("one sheet exists"))
+        let rows = sheets
+            .values()
+            .next()
+            .ok_or_else(|| MarkoffError::InvalidInput {
+                path: input.to_string_lossy().to_string(),
+            })?;
+        json_from_rows(rows)
     } else {
         serde_json::Value::Object(
             sheets

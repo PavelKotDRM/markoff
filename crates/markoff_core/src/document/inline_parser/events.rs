@@ -182,7 +182,12 @@ pub(crate) fn parse_inline_events<'a>(
                     html: "<hr>".to_string(),
                 },
             ),
-            Event::Start(_) => {}
+            Event::Start(Tag::Paragraph) => {}
+            Event::Start(unsupported) => {
+                return Err(MarkoffError::InvalidInput {
+                    path: format!("unsupported Markdown inline element: {unsupported:?}"),
+                });
+            }
         }
     }
     while frames.len() > 1 {

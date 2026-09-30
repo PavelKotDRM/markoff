@@ -7,6 +7,15 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::path::Path;
 
+const MAX_DOCUMENT_NESTING_DEPTH: usize = 128;
+
+struct ParseContext<'a> {
+    offset_source: &'a str,
+    original_source: &'a str,
+    base_dir: &'a Path,
+    placeholders: &'a HashMap<String, ProtectedInline>,
+}
+
 pub(super) fn markdown_to_document(
     markdown: &str,
     base_dir: &Path,
@@ -17,16 +26,14 @@ pub(super) fn markdown_to_document(
         .into_offset_iter()
         .collect::<Vec<_>>();
     let mut cursor = 0;
+    let context = ParseContext {
+        offset_source: &source,
+        original_source: markdown,
+        base_dir,
+        placeholders: &placeholders,
+    };
     Ok(Document {
-        blocks: parse_blocks(
-            &events,
-            &mut cursor,
-            None,
-            &source,
-            markdown,
-            base_dir,
-            &placeholders,
-        )?,
+        blocks: parse_blocks(&events, &mut cursor, None, &context, 0)?,
     })
 }
 
@@ -46,11 +53,16 @@ fn parse_blocks<'a>(
     events: &[(Event<'a>, Range<usize>)],
     cursor: &mut usize,
     stop: Option<TagEnd>,
-    offset_source: &str,
-    original_source: &str,
-    base_dir: &Path,
-    placeholders: &HashMap<String, ProtectedInline>,
+    context: &ParseContext<'_>,
+    depth: usize,
 ) -> Result<Vec<Block>, MarkoffError> {
+    if depth > MAX_DOCUMENT_NESTING_DEPTH {
+        return Err(MarkoffError::InvalidInput {
+            path: format!(
+                "Markdown nesting exceeds the supported depth of {MAX_DOCUMENT_NESTING_DEPTH}"
+            ),
+        });
+    }
     let mut blocks = Vec::new();
     let mut pending_task_marker = None;
     while let Some((event, range)) = events.get(*cursor) {
@@ -66,8 +78,8 @@ fn parse_blocks<'a>(
                         events,
                         cursor,
                         Some(TagEnd::Paragraph),
-                        base_dir,
-                        placeholders,
+                        context.base_dir,
+                        context.placeholders,
                     )?;
                     if let Some(checked) = pending_task_marker.take() {
                         content.insert(0, Inline::TaskListMarker { checked });
@@ -84,8 +96,8 @@ fn parse_blocks<'a>(
                         events,
                         cursor,
                         Some(TagEnd::Heading(level)),
-                        base_dir,
-                        placeholders,
+                        context.base_dir,
+                        context.placeholders,
                     )?,
                 }),
                 Tag::BlockQuote(_) => blocks.push(Block::Quote {
@@ -94,21 +106,13 @@ fn parse_blocks<'a>(
                         events,
                         cursor,
                         Some(TagEnd::BlockQuote(None)),
-                        offset_source,
-                        original_source,
-                        base_dir,
-                        placeholders,
+                        context,
+                        depth + 1,
                     )?,
                 }),
-                Tag::List(start) => blocks.push(parse_list(
-                    events,
-                    cursor,
-                    start,
-                    offset_source,
-                    original_source,
-                    base_dir,
-                    placeholders,
-                )?),
+                Tag::List(start) => {
+                    blocks.push(parse_list(events, cursor, start, context, depth + 1)?)
+                }
                 Tag::CodeBlock(kind) => {
                     blocks.push(parse_code_block(events, cursor, kind));
                 }
@@ -118,21 +122,23 @@ fn parse_blocks<'a>(
                         events,
                         cursor,
                         Some(TagEnd::FootnoteDefinition),
-                        offset_source,
-                        original_source,
-                        base_dir,
-                        placeholders,
+                        context,
+                        depth + 1,
                     )?,
                 }),
                 Tag::Table(alignments) => blocks.push(parse_table(
                     events,
                     cursor,
                     alignments,
-                    base_dir,
-                    placeholders,
+                    context.base_dir,
+                    context.placeholders,
                 )?),
                 Tag::HtmlBlock => blocks.push(parse_html_block(events, cursor)),
-                _ => {}
+                unsupported => {
+                    return Err(MarkoffError::InvalidInput {
+                        path: format!("unsupported Markdown block: {unsupported:?}"),
+                    });
+                }
             },
             Event::Rule => blocks.push(Block::HorizontalRule),
             Event::DisplayMath(text) => blocks.push(Block::Math {
@@ -181,7 +187,7 @@ fn parse_blocks<'a>(
         if stop.is_some() && *cursor >= events.len() {
             break;
         }
-        let _ = (range, offset_source, original_source);
+        let _ = range;
     }
     Ok(blocks)
 }
@@ -190,10 +196,8 @@ fn parse_list<'a>(
     events: &[(Event<'a>, Range<usize>)],
     cursor: &mut usize,
     start: Option<u64>,
-    offset_source: &str,
-    original_source: &str,
-    base_dir: &Path,
-    placeholders: &HashMap<String, ProtectedInline>,
+    context: &ParseContext<'_>,
+    depth: usize,
 ) -> Result<Block, MarkoffError> {
     let ordered = start.is_some();
     let mut items = Vec::new();
@@ -206,20 +210,21 @@ fn parse_list<'a>(
             Event::Start(Tag::Item) => {
                 let item_offset = range.start;
                 *cursor += 1;
-                let blocks = parse_blocks(
-                    events,
-                    cursor,
-                    Some(TagEnd::Item),
-                    offset_source,
-                    original_source,
-                    base_dir,
-                    placeholders,
-                )?;
+                let blocks = parse_blocks(events, cursor, Some(TagEnd::Item), context, depth)?;
                 let number = ordered
-                    .then(|| list_item_number(offset_source, original_source, item_offset))
+                    .then(|| {
+                        list_item_number(
+                            context.offset_source,
+                            context.original_source,
+                            item_offset,
+                        )
+                    })
                     .flatten();
-                let task_checked =
-                    list_item_task_marker(offset_source, original_source, item_offset);
+                let task_checked = list_item_task_marker(
+                    context.offset_source,
+                    context.original_source,
+                    item_offset,
+                );
                 let mut blocks = blocks;
                 if let Some(checked) = task_checked
                     && let Some(Block::Paragraph { content, .. }) = blocks.first_mut()

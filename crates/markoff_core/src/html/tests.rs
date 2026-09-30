@@ -55,3 +55,50 @@ fn parses_hand_written_html_with_void_elements_and_table() {
     fs::remove_file(html).ok();
     fs::remove_file(markdown_out).ok();
 }
+
+#[test]
+fn reports_unclosed_comments_without_writing_partial_output() {
+    let html = unique_temp_path("html_unclosed_comment", "html");
+    let markdown_out = unique_temp_path("html_unclosed_comment_output", "md");
+    fs::write(&html, "<p>Visible</p><!-- missing end").unwrap();
+
+    let error = convert_html_to_markdown(&html, &markdown_out).unwrap_err();
+    assert!(error.to_string().contains("unclosed HTML comment"));
+    assert!(!markdown_out.exists());
+
+    fs::remove_file(html).ok();
+}
+
+#[test]
+fn ignores_script_close_text_inside_strings() {
+    let html = unique_temp_path("html_script_string", "html");
+    let markdown_out = unique_temp_path("html_script_string_output", "md");
+    fs::write(
+        &html,
+        r#"<script>const marker = "</script not-a-tag>";</script><p>Preserved</p>"#,
+    )
+    .unwrap();
+
+    convert_html_to_markdown(&html, &markdown_out).unwrap();
+    assert_eq!(fs::read_to_string(&markdown_out).unwrap(), "Preserved\n");
+
+    fs::remove_file(html).ok();
+    fs::remove_file(markdown_out).ok();
+}
+
+#[test]
+fn rejects_merged_html_table_cells() {
+    let html = unique_temp_path("html_merged_table", "html");
+    let markdown_out = unique_temp_path("html_merged_table_output", "md");
+    fs::write(
+        &html,
+        "<table><tr><th colspan=\"2\">Merged</th></tr><tr><td>A</td><td>B</td></tr></table>",
+    )
+    .unwrap();
+
+    let error = convert_html_to_markdown(&html, &markdown_out).unwrap_err();
+    assert!(error.to_string().contains("colspan=2 is unsupported"));
+    assert!(!markdown_out.exists());
+
+    fs::remove_file(html).ok();
+}

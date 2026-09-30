@@ -8,7 +8,7 @@ use crate::docx_runs::{
     PendingRun, flush_pending_run, queue_docx_run, resolve_general_ref, word_property_enabled,
 };
 use crate::error::invalid_data;
-use crate::xml_utils::attribute_value;
+use crate::xml_utils::{attribute_value, xml_escape};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -50,6 +50,89 @@ impl RunProperties {
         self.code = false;
         self.vertical_align = VerticalAlign::Baseline;
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum VerticalMerge {
+    Restart,
+    Continue,
+}
+
+struct TableCell {
+    content: String,
+    colspan: usize,
+    vertical_merge: Option<VerticalMerge>,
+}
+
+fn render_table(rows: &[Vec<TableCell>]) -> String {
+    let has_merged_cells = rows
+        .iter()
+        .flatten()
+        .any(|cell| cell.colspan > 1 || cell.vertical_merge.is_some());
+    if !has_merged_cells {
+        let rows = rows
+            .iter()
+            .map(|row| row.iter().map(|cell| cell.content.clone()).collect())
+            .collect::<Vec<Vec<String>>>();
+        return table_from_rows(&rows);
+    }
+
+    let mut rowspans = rows
+        .iter()
+        .map(|row| vec![1usize; row.len()])
+        .collect::<Vec<_>>();
+    let mut skipped = rows
+        .iter()
+        .map(|row| vec![false; row.len()])
+        .collect::<Vec<_>>();
+    let mut active_merges = BTreeMap::<usize, (usize, usize)>::new();
+    for (row_index, row) in rows.iter().enumerate() {
+        let mut column = 0usize;
+        for (cell_index, cell) in row.iter().enumerate() {
+            match cell.vertical_merge {
+                Some(VerticalMerge::Restart) => {
+                    for merged_column in column..column + cell.colspan {
+                        active_merges.insert(merged_column, (row_index, cell_index));
+                    }
+                }
+                Some(VerticalMerge::Continue) => {
+                    if let Some(&(origin_row, origin_cell)) = active_merges.get(&column) {
+                        rowspans[origin_row][origin_cell] += 1;
+                        skipped[row_index][cell_index] = true;
+                    }
+                }
+                None => {
+                    for merged_column in column..column + cell.colspan {
+                        active_merges.remove(&merged_column);
+                    }
+                }
+            }
+            column += cell.colspan;
+        }
+    }
+
+    let mut html = String::from("<table>\n");
+    for (row_index, row) in rows.iter().enumerate() {
+        html.push_str("  <tr>\n");
+        for (cell_index, cell) in row.iter().enumerate() {
+            if skipped[row_index][cell_index] {
+                continue;
+            }
+            html.push_str("    <td");
+            if cell.colspan > 1 {
+                html.push_str(&format!(" colspan=\"{}\"", cell.colspan));
+            }
+            if rowspans[row_index][cell_index] > 1 {
+                html.push_str(&format!(" rowspan=\"{}\"", rowspans[row_index][cell_index]));
+            }
+            html.push('>');
+            html.push_str(&xml_escape(&cell.content));
+            html.push_str("</td>\n");
+        }
+        html.push_str("  </tr>\n");
+    }
+    html.push_str("</table>");
+    html
 }
 
 pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<(), MarkoffError> {
@@ -99,6 +182,8 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
     let mut table_rows = Vec::new();
     let mut table_row = Vec::new();
     let mut table_cell_paragraphs = Vec::new();
+    let mut table_cell_colspan = 1usize;
+    let mut table_cell_vertical_merge = None;
     let mut in_table = false;
     let mut in_table_cell = false;
     let mut list_counters = BTreeMap::new();
@@ -116,6 +201,23 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                 "tc" if in_table => {
                     in_table_cell = true;
                     table_cell_paragraphs.clear();
+                    table_cell_colspan = 1;
+                    table_cell_vertical_merge = None;
+                }
+                "gridSpan" if in_table_cell => {
+                    table_cell_colspan = attribute_value(&event, "val")?
+                        .and_then(|value| value.parse().ok())
+                        .filter(|span| *span > 0)
+                        .unwrap_or(1);
+                }
+                "vMerge" if in_table_cell => {
+                    table_cell_vertical_merge = Some(
+                        if attribute_value(&event, "val")?.as_deref() == Some("restart") {
+                            VerticalMerge::Restart
+                        } else {
+                            VerticalMerge::Continue
+                        },
+                    );
                 }
                 "p" => {
                     in_paragraph = true;
@@ -171,7 +273,7 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                 "hyperlink" if in_paragraph => {
                     flush_pending_run(&mut paragraph, &mut pending_run);
                     hyperlink_target = if let Some(anchor) = attribute_value(&event, "anchor")? {
-                        (!anchor.starts_with("_heading=")).then(|| format!("anchor:{anchor}"))
+                        Some(format!("anchor:{anchor}"))
                     } else {
                         attribute_value(&event, "id")?
                             .and_then(|id| relationships.get(&id))
@@ -422,17 +524,21 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                     in_paragraph = false;
                 }
                 "tc" if in_table_cell => {
-                    table_row.push(table_cell_paragraphs.join("<br>"));
+                    table_row.push(TableCell {
+                        content: table_cell_paragraphs.join("<br>"),
+                        colspan: table_cell_colspan,
+                        vertical_merge: table_cell_vertical_merge,
+                    });
                     in_table_cell = false;
                 }
                 "tr" if in_table => {
                     if !table_row.is_empty() {
-                        table_rows.push(table_row.clone());
+                        table_rows.push(std::mem::take(&mut table_row));
                     }
                 }
                 "tbl" if in_table => {
                     if !table_rows.is_empty() {
-                        markdown.push(table_from_rows(&table_rows));
+                        markdown.push(render_table(&table_rows));
                     }
                     in_table = false;
                 }

@@ -31,7 +31,7 @@ fn golden_document_round_trip_preserves_core_markdown_content() {
 
     let source_markdown = fs::read_to_string(&markdown).unwrap();
     assert!(
-        source_markdown.contains("1. **Heading Level 1 / Заголовок уровня 1 3**"),
+        source_markdown.contains("[**1. Heading Level 1 / Заголовок уровня 1 3**](#_heading=)"),
         "tab between TOC title and page number should become a space, not merge digits: {source_markdown:?}"
     );
     for expected in [
@@ -56,7 +56,7 @@ fn golden_document_round_trip_preserves_core_markdown_content() {
     let rendered = fs::read_to_string(&restored_markdown).unwrap();
     for expected in [
         "# 1. Heading Level 1 / Заголовок уровня 1",
-        "1. **Heading Level 1 / Заголовок уровня 1 3**",
+        "[**1. Heading Level 1 / Заголовок уровня 1 3**](#_heading=)",
         "**полужирный текст,** *курсив,* ***полужирный курсив,*** <u>подчеркнутый текст,</u> ~~зачеркнутый текст,~~ верхний индекс x$^{2}$, нижний индекс H$_{2}$O",
         "Встроенная формула: $E = mc^{2}$",
         "$$\\begin{matrix} 1 & 2 \\\\ 3 & 4 \\end{matrix}$$",
@@ -71,7 +71,10 @@ fn golden_document_round_trip_preserves_core_markdown_content() {
         "```\nfunction greet(name) {\n    console.log(\"Hello, \" + name);",
         "Строка с ручным разрывом строки.  \nСледующая строка после soft line break.",
         "| ID | Name | Role | Active |",
-        "| Q4 | 160 | 110 | 50 |",
+        "\\<td>Q4\\</td>",
+        "\\<td>160\\</td>",
+        "\\<td>110\\</td>",
+        "\\<td>50\\</td>",
         "Текст со сноской номер 1.[^1]",
         "[^1]: Сноска 1: Это тестовая сноска.",
     ] {

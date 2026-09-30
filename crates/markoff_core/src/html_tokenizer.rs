@@ -1,3 +1,5 @@
+use std::io::{Error, ErrorKind};
+
 const VOID_ELEMENTS: &[&str] = &[
     "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source",
     "track", "wbr",
@@ -9,7 +11,7 @@ pub(super) enum Token {
     Text(String),
 }
 
-pub(super) fn tokenize(html: &str) -> Vec<Token> {
+pub(super) fn tokenize(html: &str) -> Result<Vec<Token>, Error> {
     let len = html.len();
     let mut index = 0;
     let mut tokens = Vec::new();
@@ -22,7 +24,13 @@ pub(super) fn tokenize(html: &str) -> Vec<Token> {
             }
             let rest = &html[index..];
             if rest.starts_with("<!--") {
-                index += rest.find("-->").map_or(rest.len(), |end| end + 3);
+                let Some(end) = rest.find("-->") else {
+                    return Err(Error::new(
+                        ErrorKind::InvalidData,
+                        format!("unclosed HTML comment at byte {index}"),
+                    ));
+                };
+                index += end + 3;
                 continue;
             }
             if rest.len() >= 9 && rest[..9].eq_ignore_ascii_case("<!doctype") {
@@ -44,15 +52,14 @@ pub(super) fn tokenize(html: &str) -> Vec<Token> {
             let lower_name = name.to_ascii_lowercase();
 
             if lower_name == "script" || lower_name == "style" {
-                let close_pattern = format!("</{lower_name}");
                 let remaining = &html[index..];
-                if let Some(position) = remaining.to_ascii_lowercase().find(&close_pattern) {
-                    index += position;
-                    let after = &html[index..];
-                    index += after.find('>').map_or(after.len(), |end| end + 1);
-                } else {
-                    index = len;
-                }
+                let Some((position, consumed)) = scan_raw_text_end(remaining, &lower_name) else {
+                    return Err(Error::new(
+                        ErrorKind::InvalidData,
+                        format!("unclosed <{lower_name}> element before byte {index}"),
+                    ));
+                };
+                index += position + consumed;
                 continue;
             }
 
@@ -69,7 +76,88 @@ pub(super) fn tokenize(html: &str) -> Vec<Token> {
     if !text_buffer.is_empty() {
         tokens.push(Token::Text(text_buffer));
     }
-    tokens
+    Ok(tokens)
+}
+
+fn scan_raw_text_end(input: &str, tag_name: &str) -> Option<(usize, usize)> {
+    #[derive(Clone, Copy, PartialEq)]
+    enum State {
+        Normal,
+        SingleQuote,
+        DoubleQuote,
+        Template,
+        LineComment,
+        BlockComment,
+    }
+
+    let bytes = input.as_bytes();
+    let tag = tag_name.as_bytes();
+    let mut state = State::Normal;
+    let mut escaped = false;
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        match state {
+            State::Normal => {
+                if byte == b'<'
+                    && bytes.get(index + 1) == Some(&b'/')
+                    && bytes
+                        .get(index + 2..index + 2 + tag.len())
+                        .is_some_and(|candidate| candidate.eq_ignore_ascii_case(tag))
+                {
+                    let name_end = index + 2 + tag.len();
+                    if bytes.get(name_end).is_some_and(|byte| {
+                        byte.is_ascii_whitespace() || matches!(byte, b'>' | b'/')
+                    }) && let Some(end) = bytes[name_end..].iter().position(|byte| *byte == b'>')
+                    {
+                        return Some((index, name_end + end + 1 - index));
+                    }
+                }
+                match (byte, bytes.get(index + 1).copied()) {
+                    (b'\'', _) => state = State::SingleQuote,
+                    (b'"', _) => state = State::DoubleQuote,
+                    (b'`', _) => state = State::Template,
+                    (b'/', Some(b'/')) => {
+                        state = State::LineComment;
+                        index += 1;
+                    }
+                    (b'/', Some(b'*')) => {
+                        state = State::BlockComment;
+                        index += 1;
+                    }
+                    _ => {}
+                }
+            }
+            State::SingleQuote | State::DoubleQuote | State::Template => {
+                let terminator = match state {
+                    State::SingleQuote => b'\'',
+                    State::DoubleQuote => b'"',
+                    State::Template => b'`',
+                    _ => unreachable!(),
+                };
+                if escaped {
+                    escaped = false;
+                } else if byte == b'\\' {
+                    escaped = true;
+                } else if byte == terminator {
+                    state = State::Normal;
+                }
+            }
+            State::LineComment => {
+                if matches!(byte, b'\r' | b'\n') {
+                    state = State::Normal;
+                }
+            }
+            State::BlockComment => {
+                if byte == b'*' && bytes.get(index + 1) == Some(&b'/') {
+                    state = State::Normal;
+                    index += 1;
+                }
+            }
+        }
+        index += 1;
+    }
+    None
 }
 
 fn scan_tag(rest: &str) -> (String, usize) {

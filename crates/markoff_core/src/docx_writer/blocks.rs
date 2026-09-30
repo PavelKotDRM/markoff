@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use super::footnotes::markdown_inline_to_docx_runs_with_footnotes;
 use super::hyperlinks::{Bookmark, HyperlinkAllocator};
 use super::lists::ListParagraph;
+use crate::MarkoffError;
 use crate::docx_inline::{markdown_code_block_to_docx_runs, markdown_list_item};
 use crate::xml_utils::xml_attribute_escape;
 
@@ -32,7 +33,7 @@ pub(super) fn docx_paragraph(
     list_item: Option<ListParagraph>,
     bookmark: Option<&Bookmark>,
     hyperlinks: &mut HyperlinkAllocator,
-) -> String {
+) -> Result<String, MarkoffError> {
     let heading_level = line
         .chars()
         .take_while(|character| *character == '#')
@@ -53,8 +54,13 @@ pub(super) fn docx_paragraph(
             &line[heading_level + 1..],
         )
     } else if let Some(list_item) = list_item {
-        let (_, _, content) =
-            markdown_list_item(line).expect("parsed Markdown list item has a list marker");
+        let Some((_, _, content)) = markdown_list_item(line) else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "parsed Markdown list item has no list marker",
+            )
+            .into());
+        };
         (
             format!(
                 "<w:pPr><w:numPr><w:ilvl w:val=\"{}\"/><w:numId w:val=\"{}\"/></w:numPr></w:pPr>",
@@ -76,7 +82,7 @@ pub(super) fn docx_paragraph(
     } else {
         runs
     };
-    format!("<w:p>{style}{content}</w:p>")
+    Ok(format!("<w:p>{style}{content}</w:p>"))
 }
 
 pub(super) fn docx_code_block(value: &str) -> String {

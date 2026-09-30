@@ -31,6 +31,13 @@ pub(crate) fn convert_markdown_to_docx(input: &Path, output: &Path) -> Result<()
     let lines = source.lines().collect::<Vec<_>>();
     let (heading_bookmarks, heading_anchors) = build_heading_bookmarks(&lines);
     let lists = parse_markdown_lists(&source);
+    if lists.definitions.iter().any(|list| list.level > 8) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Markdown list nesting exceeds DOCX's nine-level limit",
+        )
+        .into());
+    }
     let mut body = String::new();
     let mut index = 0;
     let mut document_hyperlinks =
@@ -42,7 +49,7 @@ pub(crate) fn convert_markdown_to_docx(input: &Path, output: &Path) -> Result<()
             while index < lines.len() && is_markdown_table_row(lines[index]) {
                 index += 1;
             }
-            let rows = parse_markdown_table(&lines[start..index].join("\n"));
+            let rows = parse_markdown_table(&lines[start..index].join("\n"))?;
             body.push_str(&docx_table(&rows, &footnote_ids, &mut document_hyperlinks));
         } else if is_fenced_code_block_start(line) {
             let start = index + 1;
@@ -77,7 +84,7 @@ pub(crate) fn convert_markdown_to_docx(input: &Path, output: &Path) -> Result<()
                         .get(paragraph_start)
                         .and_then(Option::as_ref),
                     &mut document_hyperlinks,
-                ));
+                )?);
             }
             index += 1;
         }

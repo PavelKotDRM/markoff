@@ -2,6 +2,7 @@ use super::super::*;
 use epaint_default_fonts::HACK_REGULAR;
 use std::sync::OnceLock;
 use unicode_bidi::BidiInfo;
+use unicode_segmentation::UnicodeSegmentation;
 
 pub(in crate::pdf_writer) fn slugify(text: &str) -> String {
     let mut slug = String::new();
@@ -68,25 +69,33 @@ fn font_face(style: &InlineStyle) -> &'static ttf_parser::Face<'static> {
     primary_face(style)
 }
 
-pub(in crate::pdf_writer) fn uses_emoji_font(character: char, code: bool) -> bool {
+pub(in crate::pdf_writer) fn uses_emoji_font(grapheme: &str, code: bool) -> bool {
     let style = InlineStyle {
         code,
         ..InlineStyle::default()
     };
-    primary_face(&style).glyph_index(character).is_none()
-        && twemoji_assets::png::PngTwemojiAsset::from_emoji(&character.to_string()).is_some()
+    let unavailable_in_primary_font = grapheme
+        .chars()
+        .any(|character| primary_face(&style).glyph_index(character).is_none());
+    unavailable_in_primary_font
+        && twemoji_assets::png::PngTwemojiAsset::from_emoji(grapheme).is_some()
 }
 
-fn character_width(character: char, style: &InlineStyle, font_size: f32) -> f32 {
-    if uses_emoji_font(character, style.code) {
+fn grapheme_width(grapheme: &str, style: &InlineStyle, font_size: f32) -> f32 {
+    if uses_emoji_font(grapheme, style.code) {
         return font_size;
     }
-    let face = font_face(style);
-    let Some(glyph) = face.glyph_index(character) else {
-        return font_size * 0.6;
-    };
-    let advance = face.glyph_hor_advance(glyph).unwrap_or(face.units_per_em());
-    font_size * f32::from(advance) / f32::from(face.units_per_em())
+    grapheme
+        .chars()
+        .map(|character| {
+            let face = font_face(style);
+            let Some(glyph) = face.glyph_index(character) else {
+                return font_size * 0.6;
+            };
+            let advance = face.glyph_hor_advance(glyph).unwrap_or(face.units_per_em());
+            font_size * f32::from(advance) / f32::from(face.units_per_em())
+        })
+        .sum()
 }
 
 pub(in crate::pdf_writer) fn estimate_run_width(run: &TextRun, font_size: f32) -> f32 {
@@ -96,14 +105,14 @@ pub(in crate::pdf_writer) fn estimate_run_width(run: &TextRun, font_size: f32) -
         font_size
     };
     run.text
-        .chars()
-        .map(|character| character_width(character, &run.style, size))
+        .graphemes(true)
+        .map(|grapheme| grapheme_width(grapheme, &run.style, size))
         .sum()
 }
 
 #[derive(Clone)]
-struct StyledCharacter {
-    character: char,
+struct StyledGrapheme {
+    text: String,
     style: InlineStyle,
 }
 
@@ -114,23 +123,23 @@ pub(in crate::pdf_writer) fn wrap_runs(
     preserve_whitespace: bool,
 ) -> Vec<Vec<TextRun>> {
     let available_width = available_width.max(1.0);
-    let mut lines = Vec::<Vec<StyledCharacter>>::new();
-    let mut line = Vec::<StyledCharacter>::new();
-    let mut word = Vec::<StyledCharacter>::new();
-    let mut pending_space: Option<StyledCharacter> = None;
+    let mut lines = Vec::<Vec<StyledGrapheme>>::new();
+    let mut line = Vec::<StyledGrapheme>::new();
+    let mut word = Vec::<StyledGrapheme>::new();
+    let mut pending_space: Option<StyledGrapheme> = None;
 
     for run in runs {
-        for character in run.text.chars() {
-            let styled = StyledCharacter {
-                character,
+        for grapheme in run.text.graphemes(true) {
+            let styled = StyledGrapheme {
+                text: grapheme.to_string(),
                 style: run.style.clone(),
             };
             if preserve_whitespace {
-                if character == '\n' {
+                if matches!(grapheme, "\n" | "\r\n") {
                     lines.push(std::mem::take(&mut line));
                 } else {
-                    if characters_width(&line, font_size)
-                        + character_width(character, &styled.style, font_size)
+                    if graphemes_width(&line, font_size)
+                        + grapheme_width(grapheme, &styled.style, font_size)
                         > available_width
                         && !line.is_empty()
                     {
@@ -138,7 +147,7 @@ pub(in crate::pdf_writer) fn wrap_runs(
                     }
                     line.push(styled);
                 }
-            } else if character == '\n' {
+            } else if matches!(grapheme, "\n" | "\r\n") {
                 place_word(
                     &mut line,
                     &mut lines,
@@ -149,7 +158,7 @@ pub(in crate::pdf_writer) fn wrap_runs(
                 );
                 lines.push(std::mem::take(&mut line));
                 pending_space = None;
-            } else if character.is_whitespace() {
+            } else if grapheme.chars().all(char::is_whitespace) {
                 place_word(
                     &mut line,
                     &mut lines,
@@ -177,14 +186,14 @@ pub(in crate::pdf_writer) fn wrap_runs(
     if !line.is_empty() || lines.is_empty() {
         lines.push(line);
     }
-    lines.into_iter().map(characters_to_runs).collect()
+    lines.into_iter().map(graphemes_to_runs).collect()
 }
 
 fn place_word(
-    line: &mut Vec<StyledCharacter>,
-    lines: &mut Vec<Vec<StyledCharacter>>,
-    word: &mut Vec<StyledCharacter>,
-    pending_space: &mut Option<StyledCharacter>,
+    line: &mut Vec<StyledGrapheme>,
+    lines: &mut Vec<Vec<StyledGrapheme>>,
+    word: &mut Vec<StyledGrapheme>,
+    pending_space: &mut Option<StyledGrapheme>,
     available_width: f32,
     font_size: f32,
 ) {
@@ -195,9 +204,9 @@ fn place_word(
         .as_ref()
         .filter(|_| !line.is_empty())
         .map_or(0.0, |space| {
-            character_width(space.character, &space.style, font_size)
+            grapheme_width(&space.text, &space.style, font_size)
         });
-    if characters_width(line, font_size) + space_width + characters_width(word, font_size)
+    if graphemes_width(line, font_size) + space_width + graphemes_width(word, font_size)
         > available_width
         && !line.is_empty()
     {
@@ -206,42 +215,41 @@ fn place_word(
     }
     if let Some(space) = pending_space.take()
         && !line.is_empty()
-        && characters_width(line, font_size)
-            + character_width(space.character, &space.style, font_size)
+        && graphemes_width(line, font_size) + grapheme_width(&space.text, &space.style, font_size)
             <= available_width
     {
         line.push(space);
     }
 
-    for character in word.drain(..) {
-        if characters_width(line, font_size)
-            + character_width(character.character, &character.style, font_size)
+    for grapheme in word.drain(..) {
+        if graphemes_width(line, font_size)
+            + grapheme_width(&grapheme.text, &grapheme.style, font_size)
             > available_width
             && !line.is_empty()
         {
             lines.push(std::mem::take(line));
         }
-        line.push(character);
+        line.push(grapheme);
     }
 }
 
-fn characters_width(characters: &[StyledCharacter], font_size: f32) -> f32 {
-    characters
+fn graphemes_width(graphemes: &[StyledGrapheme], font_size: f32) -> f32 {
+    graphemes
         .iter()
-        .map(|item| character_width(item.character, &item.style, font_size))
+        .map(|item| grapheme_width(&item.text, &item.style, font_size))
         .sum()
 }
 
-fn characters_to_runs(characters: Vec<StyledCharacter>) -> Vec<TextRun> {
+fn graphemes_to_runs(graphemes: Vec<StyledGrapheme>) -> Vec<TextRun> {
     let mut runs: Vec<TextRun> = Vec::new();
-    for item in characters {
+    for item in graphemes {
         if let Some(last) = runs.last_mut()
             && last.style == item.style
         {
-            last.text.push(item.character);
+            last.text.push_str(&item.text);
         } else {
             runs.push(TextRun {
-                text: item.character.to_string(),
+                text: item.text,
                 style: item.style,
             });
         }
@@ -250,18 +258,18 @@ fn characters_to_runs(characters: Vec<StyledCharacter>) -> Vec<TextRun> {
 }
 
 pub(in crate::pdf_writer) fn reorder_runs_for_display(runs: &[TextRun]) -> Vec<TextRun> {
-    let characters = runs
+    let graphemes = runs
         .iter()
         .flat_map(|run| {
-            run.text.chars().map(|character| StyledCharacter {
-                character,
+            run.text.graphemes(true).map(|text| StyledGrapheme {
+                text: text.to_string(),
                 style: run.style.clone(),
             })
         })
         .collect::<Vec<_>>();
-    let text = characters
+    let text = graphemes
         .iter()
-        .map(|item| item.character)
+        .map(|item| item.text.as_str())
         .collect::<String>();
     let bidi = BidiInfo::new(&text, None);
     if !bidi.has_rtl() {
@@ -272,10 +280,40 @@ pub(in crate::pdf_writer) fn reorder_runs_for_display(runs: &[TextRun]) -> Vec<T
     };
     let levels = bidi.reordered_levels_per_char(paragraph, paragraph.range.clone());
     let visual_order = BidiInfo::reorder_visual(&levels);
-    characters_to_runs(
-        visual_order
-            .into_iter()
-            .filter_map(|index| characters.get(index).cloned())
-            .collect(),
-    )
+    let mut character_to_grapheme = Vec::new();
+    for (index, grapheme) in graphemes.iter().enumerate() {
+        character_to_grapheme.extend(std::iter::repeat_n(index, grapheme.text.chars().count()));
+    }
+    let mut previous = None;
+    let reordered = visual_order
+        .into_iter()
+        .filter_map(|character_index| character_to_grapheme.get(character_index).copied())
+        .filter_map(|grapheme_index| {
+            if previous.replace(grapheme_index) == Some(grapheme_index) {
+                None
+            } else {
+                graphemes.get(grapheme_index).cloned()
+            }
+        })
+        .collect();
+    graphemes_to_runs(reordered)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compound_emoji_is_measured_and_wrapped_as_one_grapheme() {
+        let emoji = "👩🏽‍💻";
+        assert!(uses_emoji_font(emoji, false));
+        let run = TextRun {
+            text: format!("{emoji}{emoji}"),
+            style: InlineStyle::default(),
+        };
+        assert_eq!(estimate_run_width(&run, 12.0), 24.0);
+        let lines = wrap_runs(&[run], 12.1, 12.0, false);
+        assert_eq!(lines.len(), 2);
+        assert!(lines.iter().all(|line| line[0].text == emoji));
+    }
 }

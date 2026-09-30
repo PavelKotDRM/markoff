@@ -10,24 +10,52 @@ use pdfium_bundled::pdfium_render::prelude::{
     PdfPageAnnotationCommon, PdfPageContentRegenerationStrategy, PdfPageObjectCommon,
     PdfPageObjectsCommon, PdfPagePaperSize, PdfPoints, PdfRect,
 };
+use unicode_segmentation::UnicodeSegmentation;
+
+fn segment_line_counts(total_lines: usize, max_lines: usize) -> Vec<usize> {
+    let max_lines = max_lines.max(1);
+    let mut remaining = total_lines;
+    let mut segments = Vec::new();
+    while remaining > 0 {
+        let count = remaining.min(max_lines);
+        segments.push(count);
+        remaining -= count;
+    }
+    segments
+}
+
+fn image_scale_to_fit(
+    source_width: f32,
+    source_height: f32,
+    available_width: f32,
+    available_height: f32,
+) -> f32 {
+    (available_width / source_width)
+        .min(available_height / source_height)
+        .min(1.0)
+}
+
+fn require_active_page<T>(page: Option<&mut T>) -> std::io::Result<&mut T> {
+    page.ok_or_else(|| std::io::Error::other("PDF writer has no active page"))
+}
 
 fn split_runs_by_font(runs: &[TextRun]) -> Vec<TextRun> {
     let mut output: Vec<TextRun> = Vec::new();
     for run in runs {
-        for character in run.text.chars() {
-            let emoji = uses_emoji_font(character, run.style.code);
+        for grapheme in run.text.graphemes(true) {
+            let emoji = uses_emoji_font(grapheme, run.style.code);
             if let Some(previous) = output.last_mut()
                 && previous.style == run.style
                 && previous
                     .text
-                    .chars()
+                    .graphemes(true)
                     .next()
                     .is_some_and(|first| uses_emoji_font(first, previous.style.code) == emoji)
             {
-                previous.text.push(character);
+                previous.text.push_str(grapheme);
             } else {
                 output.push(TextRun {
-                    text: character.to_string(),
+                    text: grapheme.to_string(),
                     style: run.style.clone(),
                 });
             }
@@ -86,10 +114,10 @@ impl<'a> PdfWriter<'a> {
         })
     }
 
-    fn page_mut(&mut self) -> &mut PdfPage<'a> {
-        self.page
-            .as_mut()
-            .expect("PDF writer always has an active page")
+    fn page_mut(&mut self) -> Result<&mut PdfPage<'a>, MarkoffError> {
+        require_active_page(self.page.as_mut())
+            .map_err(invalid_data)
+            .map_err(Into::into)
     }
 
     fn commit_page(&mut self) -> Result<(), MarkoffError> {
@@ -264,9 +292,9 @@ impl<'a> PdfWriter<'a> {
             let estimated_width = estimate_run_width(&run, base_size);
             let is_emoji = run
                 .text
-                .chars()
+                .graphemes(true)
                 .next()
-                .is_some_and(|character| uses_emoji_font(character, run.style.code));
+                .is_some_and(|grapheme| uses_emoji_font(grapheme, run.style.code));
 
             if run.style.code && !code_block {
                 self.draw_rectangle(
@@ -316,7 +344,7 @@ impl<'a> PdfWriter<'a> {
                 self.body_font
             };
             let mut object = self
-                .page_mut()
+                .page_mut()?
                 .objects_mut()
                 .create_text_object(
                     PdfPoints::new(x),
@@ -367,14 +395,13 @@ impl<'a> PdfWriter<'a> {
         font_size: f32,
     ) -> Result<f32, MarkoffError> {
         let mut x = start_x;
-        for character in text.chars().filter(|character| *character != '\u{fe0f}') {
-            let emoji = character.to_string();
-            let Some(asset) = twemoji_assets::png::PngTwemojiAsset::from_emoji(&emoji) else {
+        for emoji in text.graphemes(true) {
+            let Some(asset) = twemoji_assets::png::PngTwemojiAsset::from_emoji(emoji) else {
                 x += font_size;
                 continue;
             };
             let image = image::load_from_memory(asset.data.0).map_err(invalid_data)?;
-            self.page_mut()
+            self.page_mut()?
                 .objects_mut()
                 .create_image_object(
                     PdfPoints::new(x),
@@ -525,8 +552,8 @@ impl<'a> PdfWriter<'a> {
             let mut line_start = 0;
 
             while line_start < row_line_count {
-                let line_count = (row_line_count - line_start).min(max_lines_per_segment);
-                let row_height = line_count as f32 * line_height + padding * 2.0;
+                let mut line_count = (row_line_count - line_start).min(max_lines_per_segment);
+                let mut row_height = line_count as f32 * line_height + padding * 2.0;
                 if self.cursor_y - row_height < PDF_MARGIN_BOTTOM {
                     self.next_page()?;
                     if row_index > 0 {
@@ -535,6 +562,12 @@ impl<'a> PdfWriter<'a> {
                             self.write_repeated_table_header(&header, layout)?;
                         }
                     }
+                    let available_lines = ((self.cursor_y - PDF_MARGIN_BOTTOM - padding * 2.0)
+                        / line_height)
+                        .floor()
+                        .max(1.0) as usize;
+                    line_count = line_count.min(available_lines);
+                    row_height = line_count as f32 * line_height + padding * 2.0;
                 }
                 self.draw_table_segment(
                     &wrapped,
@@ -573,25 +606,24 @@ impl<'a> PdfWriter<'a> {
                     layout.font_size,
                     false,
                 )
-                .into_iter()
-                .next()
-                .unwrap_or_default()
             })
             .collect::<Vec<_>>();
-        let height = layout.line_height + layout.padding * 2.0;
-        self.ensure_space(height)?;
-        self.draw_table_segment(
-            &wrapped
-                .iter()
-                .map(|line| vec![line.clone()])
-                .collect::<Vec<_>>(),
-            0,
-            1,
-            &[],
-            true,
-            layout,
-        )?;
-        self.cursor_y -= height;
+        let line_count = wrapped.iter().map(Vec::len).max().unwrap_or(1).max(1);
+        let page_lines =
+            ((self.page_height - PDF_MARGIN_TOP - PDF_MARGIN_BOTTOM - layout.padding * 2.0)
+                / layout.line_height)
+                .floor()
+                .max(2.0) as usize;
+        let mut line_start = 0;
+        for segment_lines in segment_line_counts(line_count, page_lines.saturating_sub(1)) {
+            let height = segment_lines as f32 * layout.line_height + layout.padding * 2.0;
+            if self.cursor_y - height < PDF_MARGIN_BOTTOM {
+                self.next_page()?;
+            }
+            self.draw_table_segment(&wrapped, line_start, segment_lines, &[], true, layout)?;
+            self.cursor_y -= height;
+            line_start += segment_lines;
+        }
         Ok(())
     }
 
@@ -677,14 +709,17 @@ impl<'a> PdfWriter<'a> {
         let available_width = (self.page_width - PDF_MARGIN_RIGHT - left).max(1.0);
         let available_height =
             (self.page_height - PDF_MARGIN_TOP - PDF_MARGIN_BOTTOM - 35.0).max(1.0);
-        let scale = (available_width / source_width)
-            .min(available_height / source_height)
-            .min(1.0);
+        let scale = image_scale_to_fit(
+            source_width,
+            source_height,
+            available_width,
+            available_height,
+        );
         let width = source_width * scale;
         let height = source_height * scale;
         self.ensure_space(height + 8.0)?;
         let bottom = self.cursor_y - height;
-        self.page_mut()
+        self.page_mut()?
             .objects_mut()
             .create_image_object(
                 PdfPoints::new(left),
@@ -761,7 +796,7 @@ impl<'a> PdfWriter<'a> {
             destination.to_string()
         };
         let mut annotation = self
-            .page_mut()
+            .page_mut()?
             .annotations_mut()
             .create_link_annotation(&uri)
             .map_err(invalid_data)?;
@@ -778,7 +813,7 @@ impl<'a> PdfWriter<'a> {
         let (stroke_color, stroke_width) = stroke
             .map(|(color, width)| (Some(color), Some(width)))
             .unwrap_or((None, None));
-        self.page_mut()
+        self.page_mut()?
             .objects_mut()
             .create_path_object_rect(bounds, stroke_color, stroke_width, fill)
             .map_err(invalid_data)?;
@@ -794,7 +829,7 @@ impl<'a> PdfWriter<'a> {
         color: PdfColor,
         width: PdfPoints,
     ) -> Result<(), MarkoffError> {
-        self.page_mut()
+        self.page_mut()?
             .objects_mut()
             .create_path_object_line(
                 PdfPoints::new(x1),
@@ -815,5 +850,31 @@ impl<'a> PdfWriter<'a> {
             navigation::add_pdf_navigation(output, &self.headings, &self.anchors)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn oversized_table_content_is_split_without_dropping_lines() {
+        let segments = segment_line_counts(251, 37);
+        assert!(segments.iter().all(|count| *count <= 37));
+        assert_eq!(segments.iter().sum::<usize>(), 251);
+    }
+
+    #[test]
+    fn oversized_image_is_scaled_to_fit_both_page_dimensions() {
+        let scale = image_scale_to_fit(800.0, 8_000.0, 500.0, 700.0);
+        assert!(800.0 * scale <= 500.0);
+        assert!(8_000.0 * scale <= 700.0);
+        assert_eq!(scale, 0.0875);
+    }
+
+    #[test]
+    fn missing_active_page_returns_an_error() {
+        let error = require_active_page(None::<&mut ()>).unwrap_err();
+        assert!(error.to_string().contains("no active page"));
     }
 }

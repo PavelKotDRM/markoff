@@ -139,7 +139,7 @@ pub(super) fn parse_inline_html(
     base_dir: &Path,
     bookmark_closings: &mut usize,
 ) -> Result<(), MarkoffError> {
-    let tokens = tokenize(html);
+    let tokens = tokenize(html)?;
     let Some(token) = tokens.first() else {
         push_inline(
             frames,

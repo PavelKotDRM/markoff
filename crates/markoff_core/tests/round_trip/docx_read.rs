@@ -158,6 +158,70 @@ fn docx_to_markdown_converts_embedded_tables() {
 }
 
 #[test]
+fn docx_to_markdown_preserves_auto_heading_anchors_as_internal_links() {
+    use std::io::Write;
+    use zip::write::SimpleFileOptions;
+
+    let document = temporary_path("docx_auto_heading_anchor", "docx");
+    let markdown = temporary_path("docx_auto_heading_anchor", "md");
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:hyperlink w:anchor="_heading=Introduction"><w:r><w:t>Introduction</w:t></w:r></w:hyperlink></w:p></w:body></w:document>"#;
+    let file = fs::File::create(&document).unwrap();
+    let mut archive = zip::ZipWriter::new(file);
+    archive
+        .start_file("word/document.xml", SimpleFileOptions::default())
+        .unwrap();
+    archive.write_all(xml.as_bytes()).unwrap();
+    archive.finish().unwrap();
+
+    convert_file(&document, &markdown, Format::Docx, Format::Markdown).unwrap();
+
+    assert_eq!(
+        fs::read_to_string(&markdown).unwrap(),
+        "[Introduction](#_heading=Introduction)\n"
+    );
+
+    remove_files(&[&document, &markdown]);
+}
+
+#[test]
+fn docx_to_markdown_preserves_merged_table_cells_as_html() {
+    use std::io::Write;
+    use zip::write::SimpleFileOptions;
+
+    for (name, table_xml, expected) in [
+        (
+            "grid_span",
+            r#"<w:tr><w:tc><w:tcPr><w:gridSpan w:val="2"/></w:tcPr><w:p><w:r><w:t>wide</w:t></w:r></w:p></w:tc></w:tr>"#,
+            r#"<td colspan="2">wide</td>"#,
+        ),
+        (
+            "vertical_merge",
+            r#"<w:tr><w:tc><w:tcPr><w:vMerge w:val="restart"/></w:tcPr><w:p><w:r><w:t>tall</w:t></w:r></w:p></w:tc></w:tr><w:tr><w:tc><w:tcPr><w:vMerge/></w:tcPr><w:p/></w:tc></w:tr>"#,
+            r#"<td rowspan="2">tall</td>"#,
+        ),
+    ] {
+        let document = temporary_path(&format!("docx_{name}"), "docx");
+        let markdown = temporary_path(&format!("docx_{name}"), "md");
+        let xml = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:tbl>{table_xml}</w:tbl></w:body></w:document>"#
+        );
+        let file = fs::File::create(&document).unwrap();
+        let mut archive = zip::ZipWriter::new(file);
+        archive
+            .start_file("word/document.xml", SimpleFileOptions::default())
+            .unwrap();
+        archive.write_all(xml.as_bytes()).unwrap();
+        archive.finish().unwrap();
+
+        convert_file(&document, &markdown, Format::Docx, Format::Markdown).unwrap();
+        let rendered = fs::read_to_string(&markdown).unwrap();
+        assert!(rendered.contains(expected), "{rendered}");
+
+        remove_files(&[&document, &markdown]);
+    }
+}
+
+#[test]
 fn docx_to_markdown_preserves_list_markers_and_numbering() {
     use std::io::Write;
     use zip::write::SimpleFileOptions;
