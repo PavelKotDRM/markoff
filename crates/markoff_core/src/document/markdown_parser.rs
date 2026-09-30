@@ -134,6 +134,23 @@ fn parse_blocks<'a>(
                     context.placeholders,
                 )?),
                 Tag::HtmlBlock => blocks.push(parse_html_block(events, cursor)),
+                tag if is_inline_start(&tag) => {
+                    *cursor -= 1;
+                    let content = parse_tight_inline_run(events, cursor, context)?;
+                    if let Some(checked) = pending_task_marker.take() {
+                        blocks.push(Block::Paragraph {
+                            text: None,
+                            content: std::iter::once(Inline::TaskListMarker { checked })
+                                .chain(content)
+                                .collect(),
+                        });
+                    } else {
+                        blocks.push(Block::Paragraph {
+                            text: None,
+                            content,
+                        });
+                    }
+                }
                 unsupported => {
                     return Err(MarkoffError::InvalidInput {
                         path: format!("unsupported Markdown block: {unsupported:?}"),
@@ -144,29 +161,28 @@ fn parse_blocks<'a>(
             Event::DisplayMath(text) => blocks.push(Block::Math {
                 text: text.to_string(),
             }),
-            Event::Html(html) | Event::InlineHtml(html) => {
+            Event::Html(html) => {
                 blocks.push(Block::Html {
                     html: html.to_string(),
                 });
             }
-            Event::Text(text) => blocks.push(Block::Paragraph {
-                text: None,
-                content: vec![Inline::Text {
-                    text: text.to_string(),
-                }],
-            }),
-            Event::Code(code) => blocks.push(Block::Paragraph {
-                text: None,
-                content: vec![Inline::Code {
-                    text: code.to_string(),
-                }],
-            }),
-            Event::FootnoteReference(label) => blocks.push(Block::Paragraph {
-                text: None,
-                content: vec![Inline::FootnoteReference {
-                    label: label.to_string(),
-                }],
-            }),
+            Event::Text(_)
+            | Event::Code(_)
+            | Event::FootnoteReference(_)
+            | Event::InlineMath(_)
+            | Event::SoftBreak
+            | Event::HardBreak
+            | Event::InlineHtml(_) => {
+                *cursor -= 1;
+                let mut content = parse_tight_inline_run(events, cursor, context)?;
+                if let Some(checked) = pending_task_marker.take() {
+                    content.insert(0, Inline::TaskListMarker { checked });
+                }
+                blocks.push(Block::Paragraph {
+                    text: None,
+                    content,
+                });
+            }
             Event::TaskListMarker(checked) => {
                 if let Some(Block::Paragraph { content, .. }) = blocks.last_mut() {
                     content.insert(0, Inline::TaskListMarker { checked });
@@ -174,14 +190,7 @@ fn parse_blocks<'a>(
                     pending_task_marker = Some(checked);
                 }
             }
-            Event::InlineMath(text) => blocks.push(Block::Paragraph {
-                text: None,
-                content: vec![Inline::Math {
-                    text: text.to_string(),
-                    display: false,
-                }],
-            }),
-            Event::End(_) | Event::SoftBreak | Event::HardBreak => {}
+            Event::End(_) => {}
         }
 
         if stop.is_some() && *cursor >= events.len() {
@@ -190,6 +199,68 @@ fn parse_blocks<'a>(
         let _ = range;
     }
     Ok(blocks)
+}
+
+fn parse_tight_inline_run<'a>(
+    events: &[(Event<'a>, Range<usize>)],
+    cursor: &mut usize,
+    context: &ParseContext<'_>,
+) -> Result<Vec<Inline>, MarkoffError> {
+    let start = *cursor;
+    let mut end = start;
+    let mut inline_depth = 0usize;
+    while let Some((event, _)) = events.get(end) {
+        match event {
+            Event::Start(tag) if is_inline_start(tag) => inline_depth += 1,
+            Event::End(end_tag) if is_inline_end(*end_tag) => {
+                inline_depth = inline_depth.saturating_sub(1);
+            }
+            Event::Start(_) | Event::End(_) | Event::Rule | Event::DisplayMath(_)
+                if inline_depth == 0 =>
+            {
+                break;
+            }
+            _ => {}
+        }
+        end += 1;
+    }
+
+    let mut inline_cursor = 0;
+    let content = parse_inline_events(
+        &events[start..end],
+        &mut inline_cursor,
+        None,
+        context.base_dir,
+        context.placeholders,
+    )?;
+    *cursor = end;
+    Ok(content)
+}
+
+fn is_inline_start(tag: &Tag<'_>) -> bool {
+    matches!(
+        tag,
+        Tag::Emphasis
+            | Tag::Strong
+            | Tag::Strikethrough
+            | Tag::Superscript
+            | Tag::Subscript
+            | Tag::Link { .. }
+            | Tag::Image { .. }
+    )
+}
+
+fn is_inline_end(end: TagEnd) -> bool {
+    matches!(
+        end,
+        TagEnd::Emphasis
+            | TagEnd::Strong
+            | TagEnd::Strikethrough
+            | TagEnd::Superscript
+            | TagEnd::Subscript
+            | TagEnd::Link
+            | TagEnd::Image
+    )
 }
 
 fn parse_list<'a>(

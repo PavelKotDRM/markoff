@@ -156,6 +156,7 @@ impl MarkoffApp {
         let Some(job) = self.selected.and_then(|index| self.jobs.get_mut(index)) else {
             return;
         };
+        self.preview_pane = PreviewPane::Result;
         let delimiter = match self.csv_delimiter.as_bytes() {
             [delimiter] if delimiter.is_ascii() => *delimiter,
             _ => {
@@ -329,14 +330,9 @@ impl eframe::App for MarkoffApp {
         });
 
         egui::CentralPanel::default().show(ui, |ui| {
-            let selected_preview = self
-                .selected
-                .and_then(|index| self.jobs.get(index))
-                .map(|job| &job.source_preview);
-            let result_preview = self
-                .selected
-                .and_then(|index| self.jobs.get(index))
-                .map(|job| &job.result_preview);
+            let selected_job = self.selected.and_then(|index| self.jobs.get(index));
+            let selected_preview = selected_job.map(|job| &job.source_preview);
+            let result_preview = selected_job.map(|job| &job.result_preview);
             let markdown_cache = &mut self.markdown_cache;
 
             ui.horizontal(|ui| {
@@ -344,6 +340,19 @@ impl eframe::App for MarkoffApp {
                 ui.selectable_value(&mut self.preview_pane, PreviewPane::Result, "Result");
             });
             ui.separator();
+            if let Some(job) = selected_job
+                && job.status == JobStatus::Failed
+            {
+                egui::Frame::group(ui.style())
+                    .fill(ui.visuals().error_fg_color.linear_multiply(0.08))
+                    .show(ui, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.colored_label(ui.visuals().error_fg_color, "Conversion failed:");
+                            ui.label(&job.message);
+                        });
+                    });
+                ui.add_space(6.0);
+            }
 
             match self.preview_pane {
                 PreviewPane::Source => {
@@ -392,7 +401,7 @@ impl eframe::App for MarkoffApp {
 
 #[cfg(test)]
 mod tests {
-    use super::{JobStatus, MarkoffApp, SourcePreview, load_source_preview};
+    use super::{JobStatus, MarkoffApp, PreviewPane, SourcePreview, load_source_preview};
     use markoff_core::{Format, convert_file};
     use std::fs;
     use std::path::PathBuf;
@@ -430,7 +439,11 @@ mod tests {
     #[test]
     fn converts_markdown_to_pdf_in_gui() {
         let markdown = temporary_path("pdf_preview_input", "md");
-        fs::write(&markdown, "# PDF preview\n\nCyrillic: Привет, мир!\n").unwrap();
+        fs::write(
+            &markdown,
+            "# Содержание\n\n- [1. Первый раздел](#1-первый-раздел)\n- [2. Второй раздел](#2-второй-раздел)\n\n## 1. Первый раздел\n\nCyrillic: Привет, мир!\n\n## 2. Второй раздел\n",
+        )
+        .unwrap();
 
         let mut app = MarkoffApp {
             target: Format::Pdf,
@@ -557,6 +570,11 @@ mod tests {
         app.convert_selected();
         assert!(matches!(app.jobs[0].status, JobStatus::Failed));
         assert!(app.jobs[0].message.contains("delimiter"));
+        assert!(matches!(app.preview_pane, PreviewPane::Result));
+        let SourcePreview::Text(message) = &app.jobs[0].result_preview else {
+            panic!("expected the conversion error in the result preview");
+        };
+        assert_eq!(message, &app.jobs[0].message);
         assert!(!app.jobs[0].output.exists());
         fs::remove_file(input).unwrap();
     }
