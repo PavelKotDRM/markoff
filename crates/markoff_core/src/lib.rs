@@ -144,18 +144,30 @@ pub fn convert_document(request: &ConversionRequest) -> Result<(), MarkoffError>
         })?;
     }
 
-    match (request.from, request.to) {
-        (Format::Docx, Format::Markdown) => {
-            convert_docx_to_markdown(&request.input, &request.output)
-        }
-        (Format::Docx, Format::Html) => convert_via_markdown_intermediate(
+    route_conversion(request)
+}
+
+fn route_conversion(request: &ConversionRequest) -> Result<(), MarkoffError> {
+    match request.from {
+        Format::Docx => route_docx(request),
+        Format::Pdf => route_pdf(request),
+        Format::Markdown => route_markdown(request),
+        Format::Csv => route_csv(request),
+        Format::Xlsx => route_xlsx(request),
+        Format::Json | Format::Yaml | Format::Toml => route_structured_data(request),
+        Format::Pptx => route_pptx(request),
+        Format::Html => route_html(request),
+    }
+}
+
+fn route_docx(request: &ConversionRequest) -> Result<(), MarkoffError> {
+    match request.to {
+        Format::Markdown => convert_docx_to_markdown(&request.input, &request.output),
+        Format::Html => convert_via_markdown_intermediate(
             |markdown| convert_docx_to_markdown(&request.input, markdown),
             |markdown| convert_markdown_to_html(markdown, &request.output),
         ),
-        (Format::Markdown, Format::Docx) => {
-            convert_markdown_to_docx(&request.input, &request.output)
-        }
-        (Format::Docx, Format::Csv | Format::Xlsx) => convert_via_markdown_intermediate(
+        Format::Csv | Format::Xlsx => convert_via_markdown_intermediate(
             |markdown| convert_docx_to_markdown(&request.input, markdown),
             |markdown| match request.to {
                 Format::Csv => {
@@ -165,178 +177,172 @@ pub fn convert_document(request: &ConversionRequest) -> Result<(), MarkoffError>
                 _ => unreachable!("only CSV and XLSX reach this branch"),
             },
         ),
-        (Format::Docx, Format::Json | Format::Yaml | Format::Toml) => {
-            convert_via_markdown_intermediate(
-                |markdown| convert_docx_to_markdown(&request.input, markdown),
-                |markdown| {
-                    convert_markdown_to_document(
-                        markdown,
-                        &request.output,
-                        request.to,
-                        request.tables_only,
-                    )
-                },
-            )
+        Format::Json | Format::Yaml | Format::Toml => {
+            convert_source_to_structured(request, |markdown| {
+                convert_docx_to_markdown(&request.input, markdown)
+            })
         }
-        (Format::Csv | Format::Xlsx, Format::Docx) => convert_via_markdown_intermediate(
-            |markdown| match request.from {
-                Format::Csv => {
-                    convert_csv_to_markdown(&request.input, markdown, request.csv_delimiter)
-                }
-                Format::Xlsx => convert_xlsx_to_markdown(&request.input, markdown),
-                _ => unreachable!("only CSV and XLSX reach this branch"),
-            },
-            |markdown| convert_markdown_to_docx(markdown, &request.output),
+        _ => not_implemented(request),
+    }
+}
+
+fn route_pdf(request: &ConversionRequest) -> Result<(), MarkoffError> {
+    match request.to {
+        Format::Markdown => convert_pdf_to_markdown(&request.input, &request.output),
+        Format::Json | Format::Yaml | Format::Toml => {
+            convert_source_to_structured(request, |markdown| {
+                convert_pdf_to_markdown(&request.input, markdown)
+            })
+        }
+        _ => not_implemented(request),
+    }
+}
+
+fn route_markdown(request: &ConversionRequest) -> Result<(), MarkoffError> {
+    match request.to {
+        Format::Docx => convert_markdown_to_docx(&request.input, &request.output),
+        Format::Json | Format::Yaml | Format::Toml => convert_markdown_to_document(
+            &request.input,
+            &request.output,
+            request.to,
+            request.tables_only,
         ),
-        (Format::Json | Format::Yaml | Format::Toml, Format::Docx) => {
-            convert_via_markdown_intermediate(
-                |markdown| {
-                    convert_document_to_markdown(
-                        &request.input,
-                        markdown,
-                        request.from,
-                        request.tables_only,
-                    )
-                },
-                |markdown| convert_markdown_to_docx(markdown, &request.output),
-            )
-        }
-        (Format::Pdf, Format::Markdown) => convert_pdf_to_markdown(&request.input, &request.output),
-        (Format::Pdf, Format::Json | Format::Yaml | Format::Toml) => {
-            convert_via_markdown_intermediate(
-                |markdown| convert_pdf_to_markdown(&request.input, markdown),
-                |markdown| {
-                    convert_markdown_to_document(
-                        markdown,
-                        &request.output,
-                        request.to,
-                        request.tables_only,
-                    )
-                },
-            )
-        }
-        (Format::Json | Format::Yaml | Format::Toml, Format::Markdown) => {
-            convert_document_to_markdown(
-                &request.input,
-                &request.output,
-                request.from,
-                request.tables_only,
-            )
-        }
-        (Format::Markdown, Format::Json | Format::Yaml | Format::Toml) => {
-            convert_markdown_to_document(
-                &request.input,
-                &request.output,
-                request.to,
-                request.tables_only,
-            )
-        }
-        (Format::Csv, Format::Markdown) => {
-            convert_csv_to_markdown(&request.input, &request.output, request.csv_delimiter)
-        }
-        (Format::Markdown, Format::Csv) => {
+        Format::Csv => {
             convert_markdown_to_csv(&request.input, &request.output, request.csv_delimiter)
         }
-        (Format::Xlsx, Format::Markdown) => {
-            convert_xlsx_to_markdown(&request.input, &request.output)
+        Format::Xlsx => convert_markdown_to_xlsx(&request.input, &request.output),
+        Format::Pptx => convert_markdown_to_pptx(&request.input, &request.output),
+        Format::Html => convert_markdown_to_html(&request.input, &request.output),
+        _ => not_implemented(request),
+    }
+}
+
+fn route_csv(request: &ConversionRequest) -> Result<(), MarkoffError> {
+    match request.to {
+        Format::Markdown => {
+            convert_csv_to_markdown(&request.input, &request.output, request.csv_delimiter)
         }
-        (Format::Markdown, Format::Xlsx) => {
-            convert_markdown_to_xlsx(&request.input, &request.output)
-        }
-        (Format::Json | Format::Csv | Format::Yaml | Format::Toml, Format::Xlsx) => {
-            convert_data_to_xlsx(
-                &request.input,
-                &request.output,
-                request.from,
-                request.csv_delimiter,
-            )
-        }
-        (Format::Xlsx, Format::Json | Format::Csv | Format::Yaml | Format::Toml) => {
-            convert_xlsx_to_data(
-                &request.input,
-                &request.output,
-                request.to,
-                request.csv_delimiter,
-            )
-        }
-        (Format::Pptx, Format::Markdown) => {
-            convert_pptx_to_markdown(&request.input, &request.output)
-        }
-        (Format::Pptx, Format::Json | Format::Yaml | Format::Toml) => {
-            convert_via_markdown_intermediate(
-                |markdown| convert_pptx_to_markdown(&request.input, markdown),
-                |markdown| {
-                    convert_markdown_to_document(
-                        markdown,
-                        &request.output,
-                        request.to,
-                        request.tables_only,
-                    )
-                },
-            )
-        }
-        (Format::Markdown, Format::Pptx) => {
-            convert_markdown_to_pptx(&request.input, &request.output)
-        }
-        (Format::Html, Format::Markdown) => {
-            convert_html_to_markdown(&request.input, &request.output)
-        }
-        (Format::Html, Format::Json | Format::Yaml | Format::Toml) => {
-            convert_via_markdown_intermediate(
-                |markdown| convert_html_to_markdown(&request.input, markdown),
-                |markdown| {
-                    convert_markdown_to_document(
-                        markdown,
-                        &request.output,
-                        request.to,
-                        request.tables_only,
-                    )
-                },
-            )
-        }
-        (Format::Markdown, Format::Html) => {
-            convert_markdown_to_html(&request.input, &request.output)
-        }
-        (Format::Json | Format::Yaml | Format::Toml, Format::Pptx) => {
-            convert_via_markdown_intermediate(
-                |markdown| {
-                    convert_document_to_markdown(
-                        &request.input,
-                        markdown,
-                        request.from,
-                        request.tables_only,
-                    )
-                },
-                |markdown| convert_markdown_to_pptx(markdown, &request.output),
-            )
-        }
-        (Format::Json | Format::Yaml | Format::Toml, Format::Html) => {
-            convert_via_markdown_intermediate(
-                |markdown| {
-                    convert_document_to_markdown(
-                        &request.input,
-                        markdown,
-                        request.from,
-                        request.tables_only,
-                    )
-                },
-                |markdown| convert_markdown_to_html(markdown, &request.output),
-            )
-        }
-        (
-            Format::Json | Format::Yaml | Format::Toml,
-            Format::Json | Format::Yaml | Format::Toml,
-        ) if request.from != request.to => convert_structured_data_format(
+        Format::Docx => convert_via_markdown_intermediate(
+            |markdown| convert_csv_to_markdown(&request.input, markdown, request.csv_delimiter),
+            |markdown| convert_markdown_to_docx(markdown, &request.output),
+        ),
+        Format::Xlsx => convert_data_to_xlsx(
             &request.input,
             &request.output,
             request.from,
-            request.to,
+            request.csv_delimiter,
         ),
-        _ => Err(MarkoffError::NotImplemented {
-            from: request.from,
-            to: request.to,
-        }),
+        _ => not_implemented(request),
     }
+}
+
+fn route_xlsx(request: &ConversionRequest) -> Result<(), MarkoffError> {
+    match request.to {
+        Format::Markdown => convert_xlsx_to_markdown(&request.input, &request.output),
+        Format::Docx => convert_via_markdown_intermediate(
+            |markdown| convert_xlsx_to_markdown(&request.input, markdown),
+            |markdown| convert_markdown_to_docx(markdown, &request.output),
+        ),
+        Format::Json | Format::Csv | Format::Yaml | Format::Toml => convert_xlsx_to_data(
+            &request.input,
+            &request.output,
+            request.to,
+            request.csv_delimiter,
+        ),
+        _ => not_implemented(request),
+    }
+}
+
+fn route_structured_data(request: &ConversionRequest) -> Result<(), MarkoffError> {
+    match request.to {
+        Format::Markdown => convert_document_to_markdown(
+            &request.input,
+            &request.output,
+            request.from,
+            request.tables_only,
+        ),
+        Format::Docx => convert_structured_via_markdown(request, |markdown| {
+            convert_markdown_to_docx(markdown, &request.output)
+        }),
+        Format::Xlsx => convert_data_to_xlsx(
+            &request.input,
+            &request.output,
+            request.from,
+            request.csv_delimiter,
+        ),
+        Format::Pptx => convert_structured_via_markdown(request, |markdown| {
+            convert_markdown_to_pptx(markdown, &request.output)
+        }),
+        Format::Html => convert_structured_via_markdown(request, |markdown| {
+            convert_markdown_to_html(markdown, &request.output)
+        }),
+        Format::Json | Format::Yaml | Format::Toml if request.from != request.to => {
+            convert_structured_data_format(
+                &request.input,
+                &request.output,
+                request.from,
+                request.to,
+            )
+        }
+        _ => not_implemented(request),
+    }
+}
+
+fn route_pptx(request: &ConversionRequest) -> Result<(), MarkoffError> {
+    match request.to {
+        Format::Markdown => convert_pptx_to_markdown(&request.input, &request.output),
+        Format::Json | Format::Yaml | Format::Toml => {
+            convert_source_to_structured(request, |markdown| {
+                convert_pptx_to_markdown(&request.input, markdown)
+            })
+        }
+        _ => not_implemented(request),
+    }
+}
+
+fn route_html(request: &ConversionRequest) -> Result<(), MarkoffError> {
+    match request.to {
+        Format::Markdown => convert_html_to_markdown(&request.input, &request.output),
+        Format::Json | Format::Yaml | Format::Toml => {
+            convert_source_to_structured(request, |markdown| {
+                convert_html_to_markdown(&request.input, markdown)
+            })
+        }
+        _ => not_implemented(request),
+    }
+}
+
+fn convert_source_to_structured(
+    request: &ConversionRequest,
+    source_to_markdown: impl FnOnce(&Path) -> Result<(), MarkoffError>,
+) -> Result<(), MarkoffError> {
+    convert_via_markdown_intermediate(source_to_markdown, |markdown| {
+        convert_markdown_to_document(markdown, &request.output, request.to, request.tables_only)
+    })
+}
+
+fn convert_structured_via_markdown(
+    request: &ConversionRequest,
+    markdown_to_target: impl FnOnce(&Path) -> Result<(), MarkoffError>,
+) -> Result<(), MarkoffError> {
+    convert_via_markdown_intermediate(
+        |markdown| {
+            convert_document_to_markdown(
+                &request.input,
+                markdown,
+                request.from,
+                request.tables_only,
+            )
+        },
+        markdown_to_target,
+    )
+}
+
+fn not_implemented(request: &ConversionRequest) -> Result<(), MarkoffError> {
+    Err(MarkoffError::NotImplemented {
+        from: request.from,
+        to: request.to,
+    })
 }
 
 /// Reports whether table-only conversion applies to a format pair.

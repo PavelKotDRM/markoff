@@ -3,6 +3,9 @@ use indicatif::{ProgressBar, ProgressStyle};
 use markoff_core::{ConversionRequest, Format, MarkoffError, convert_document, detect_format};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static TEMPORARY_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 const BUILD_INFO: &str = concat!(
     env!("CARGO_PKG_VERSION"),
@@ -108,16 +111,66 @@ fn parse_delimiter(spec: Option<&str>) -> anyhow::Result<u8> {
         .map_err(|_| anyhow::anyhow!("--delimiter must be a single ASCII character, got {spec:?}"))
 }
 
-fn temporary_path(format: Format) -> PathBuf {
-    std::env::temp_dir().join(format!(
-        "markoff_{}_{}.{}",
-        std::process::id(),
-        std::time::SystemTime::now()
+struct TemporaryFile {
+    path: PathBuf,
+}
+
+impl TemporaryFile {
+    fn new(format: Format) -> std::io::Result<Self> {
+        let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("system time is after the Unix epoch")
-            .as_nanos(),
-        format
-    ))
+            .as_nanos();
+        for _ in 0..8 {
+            let sequence = TEMPORARY_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "markoff_{}_{}_{}.{}",
+                std::process::id(),
+                nanos,
+                sequence,
+                format
+            ));
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(file) => {
+                    drop(file);
+                    return Ok(Self { path });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "could not allocate a unique temporary file",
+        ))
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    #[cfg(test)]
+    fn from_path(path: PathBuf) -> Self {
+        Self { path }
+    }
+}
+
+impl Drop for TemporaryFile {
+    fn drop(&mut self) {
+        if let Err(error) = std::fs::remove_file(&self.path)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(
+                path = %self.path.display(),
+                %error,
+                "failed to remove temporary CLI file"
+            );
+        }
+    }
 }
 
 fn target_format(to: Option<&str>, output: Option<&Path>) -> anyhow::Result<Format> {
@@ -132,15 +185,40 @@ fn target_format(to: Option<&str>, output: Option<&Path>) -> anyhow::Result<Form
     ))
 }
 
-fn convert_one(
-    input: &Path,
-    output: Option<&Path>,
-    from: Option<&str>,
-    to: Option<&str>,
+struct ConvertOptions<'a> {
+    input: &'a Path,
+    output: Option<&'a Path>,
+    from: Option<&'a str>,
+    to: Option<&'a str>,
     overwrite: bool,
     delimiter: u8,
     tables_only: bool,
+}
+
+fn convert_one(options: ConvertOptions<'_>) -> anyhow::Result<()> {
+    let stdin = std::io::stdin();
+    let stdout = std::io::stdout();
+    let mut stdin = stdin.lock();
+    let mut stdout = stdout.lock();
+    convert_one_with_io(options, &mut stdin, &mut stdout, TemporaryFile::new)
+}
+
+fn convert_one_with_io(
+    options: ConvertOptions<'_>,
+    stdin: &mut impl Read,
+    stdout: &mut impl Write,
+    mut temporary_file: impl FnMut(Format) -> std::io::Result<TemporaryFile>,
 ) -> anyhow::Result<()> {
+    let ConvertOptions {
+        input,
+        output,
+        from,
+        to,
+        overwrite,
+        delimiter,
+        tables_only,
+    } = options;
+
     let from = match from {
         Some(value) => parse_format_spec(value)?,
         None if input != Path::new("-") => detect_format(input)?,
@@ -155,17 +233,28 @@ fn convert_one(
         ));
     }
 
-    let temporary_input = reads_stdin.then(|| temporary_path(from));
-    let temporary_output = writes_stdout.then(|| temporary_path(to));
+    let temporary_input = if reads_stdin {
+        Some(temporary_file(from)?)
+    } else {
+        None
+    };
+    let temporary_output = if writes_stdout {
+        Some(temporary_file(to)?)
+    } else {
+        None
+    };
     if let Some(path) = &temporary_input {
         let mut source = String::new();
-        std::io::stdin().read_to_string(&mut source)?;
-        std::fs::write(path, source)?;
+        stdin.read_to_string(&mut source)?;
+        std::fs::write(path.path(), source)?;
     }
-    let source_path = temporary_input.as_deref().unwrap_or(input);
+    let source_path = temporary_input
+        .as_ref()
+        .map(TemporaryFile::path)
+        .unwrap_or(input);
     let destination = temporary_output
-        .as_deref()
-        .map(Path::to_path_buf)
+        .as_ref()
+        .map(|path| path.path().to_path_buf())
         .or_else(|| output.map(Path::to_path_buf))
         .unwrap_or_else(|| {
             let mut path = input.to_path_buf();
@@ -187,15 +276,17 @@ fn convert_one(
     })?;
     if writes_stdout {
         let rendered = std::fs::read_to_string(&destination)?;
-        std::io::stdout().write_all(rendered.as_bytes())?;
-        std::fs::remove_file(&destination).ok();
+        stdout.write_all(rendered.as_bytes())?;
     } else {
         println!("Converted {} -> {}", input.display(), destination.display());
     }
-    if let Some(path) = temporary_input {
-        std::fs::remove_file(path).ok();
-    }
     Ok(())
+}
+
+fn matching_files(pattern: &str) -> anyhow::Result<impl Iterator<Item = PathBuf>> {
+    Ok(glob::glob(pattern)?
+        .filter_map(Result::ok)
+        .filter(|path| path.is_file()))
 }
 
 fn run_batch(
@@ -208,14 +299,9 @@ fn run_batch(
     tables_only: bool,
 ) -> anyhow::Result<()> {
     let pattern = directory.join(pattern).to_string_lossy().to_string();
-    let inputs = glob::glob(&pattern)?
-        .filter_map(Result::ok)
-        .filter(|path| path.is_file())
-        .collect::<Vec<_>>();
-    let progress = ProgressBar::new(inputs.len() as u64);
-    progress.set_style(ProgressStyle::with_template(
-        "{wide_bar} {pos}/{len} {msg}",
-    )?);
+    let inputs = matching_files(&pattern)?;
+    let progress = ProgressBar::new_spinner();
+    progress.set_style(ProgressStyle::with_template("{spinner} {pos} {msg}")?);
 
     for input in inputs {
         let from = detect_format(&input)?;
@@ -256,15 +342,15 @@ fn main() -> anyhow::Result<()> {
             tables_only,
             delimiter,
         }) => {
-            convert_one(
-                &input,
-                output.as_deref(),
-                from.as_deref(),
-                to.as_deref(),
+            convert_one(ConvertOptions {
+                input: &input,
+                output: output.as_deref(),
+                from: from.as_deref(),
+                to: to.as_deref(),
                 overwrite,
-                parse_delimiter(delimiter.as_deref())?,
+                delimiter: parse_delimiter(delimiter.as_deref())?,
                 tables_only,
-            )?;
+            })?;
         }
         Some(Commands::Batch {
             directory,
@@ -296,4 +382,170 @@ fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ConvertOptions, TemporaryFile, convert_one_with_io, matching_files, run_batch};
+    use markoff_core::Format;
+    use std::io::{self, Cursor, Write};
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temporary_paths(name: &str) -> [PathBuf; 2] {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time is after the Unix epoch")
+            .as_nanos();
+        let prefix = format!("markoff_cli_{name}_{}_{nanos}", std::process::id());
+        [
+            std::env::temp_dir().join(format!("{prefix}_input.json")),
+            std::env::temp_dir().join(format!("{prefix}_output.yaml")),
+        ]
+    }
+
+    fn temporary_file_factory(
+        paths: [PathBuf; 2],
+    ) -> impl FnMut(Format) -> std::io::Result<TemporaryFile> {
+        let mut paths = paths.into_iter();
+        move |_| {
+            Ok(TemporaryFile::from_path(
+                paths.next().expect("two temporary paths are needed"),
+            ))
+        }
+    }
+
+    fn stream_conversion_options() -> ConvertOptions<'static> {
+        ConvertOptions {
+            input: Path::new("-"),
+            output: Some(Path::new("-")),
+            from: Some("json"),
+            to: Some("yaml"),
+            overwrite: false,
+            delimiter: b',',
+            tables_only: false,
+        }
+    }
+
+    #[test]
+    fn conversion_failure_cleans_up_stdin_and_stdout_temporary_files() {
+        let paths = temporary_paths("conversion_error");
+        let mut input = Cursor::new(b"not valid JSON".to_vec());
+        let mut output = Vec::new();
+
+        let result = convert_one_with_io(
+            stream_conversion_options(),
+            &mut input,
+            &mut output,
+            temporary_file_factory(paths.clone()),
+        );
+
+        assert!(result.is_err());
+        assert!(paths.iter().all(|path| !path.exists()));
+    }
+
+    #[test]
+    fn stdout_failure_cleans_up_stdin_and_stdout_temporary_files() {
+        struct FailingWriter;
+
+        impl Write for FailingWriter {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "simulated stdout failure",
+                ))
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let paths = temporary_paths("stdout_error");
+        let mut input = Cursor::new(br#"{"answer":42}"#.to_vec());
+        let mut output = FailingWriter;
+
+        let result = convert_one_with_io(
+            stream_conversion_options(),
+            &mut input,
+            &mut output,
+            temporary_file_factory(paths.clone()),
+        );
+
+        assert!(result.is_err());
+        assert!(paths.iter().all(|path| !path.exists()));
+    }
+
+    #[test]
+    fn matching_files_rejects_invalid_glob_patterns() {
+        assert!(matching_files("[").is_err());
+    }
+
+    #[test]
+    fn matching_files_preserves_glob_order_and_filters_directories() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time is after the Unix epoch")
+            .as_nanos();
+        let directory =
+            std::env::temp_dir().join(format!("markoff_cli_glob_{}_{nanos}", std::process::id()));
+        std::fs::create_dir_all(directory.join("filtered.csv")).unwrap();
+        std::fs::write(directory.join("second.csv"), "").unwrap();
+        std::fs::write(directory.join("first.csv"), "").unwrap();
+        let pattern = directory.join("*.csv").to_string_lossy().into_owned();
+        let expected = glob::glob(&pattern)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|path| path.is_file())
+            .collect::<Vec<_>>();
+
+        let actual = matching_files(&pattern).unwrap().collect::<Vec<_>>();
+
+        assert_eq!(actual, expected);
+        assert_eq!(actual.len(), 2);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn batch_conversion_stops_at_the_first_output_error_in_glob_order() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time is after the Unix epoch")
+            .as_nanos();
+        let directory =
+            std::env::temp_dir().join(format!("markoff_cli_batch_{}_{nanos}", std::process::id()));
+        let output = directory.join("converted");
+        std::fs::create_dir_all(&output).unwrap();
+        std::fs::write(directory.join("first.md"), "# First\n").unwrap();
+        std::fs::write(directory.join("second.md"), "# Second\n").unwrap();
+
+        let pattern = directory.join("*.md").to_string_lossy().into_owned();
+        let inputs = matching_files(&pattern).unwrap().collect::<Vec<_>>();
+        assert_eq!(inputs.len(), 2);
+        let first_output = output
+            .join(inputs[0].file_stem().unwrap())
+            .with_extension("json");
+        let second_output = output
+            .join(inputs[1].file_stem().unwrap())
+            .with_extension("json");
+        std::fs::write(&first_output, "preserve existing output").unwrap();
+
+        let result = run_batch(
+            &directory,
+            "*.md",
+            &output,
+            Format::Json,
+            false,
+            b',',
+            false,
+        );
+
+        assert!(result.is_err());
+        assert_eq!(
+            std::fs::read_to_string(&first_output).unwrap(),
+            "preserve existing output"
+        );
+        assert!(!second_output.exists());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 }

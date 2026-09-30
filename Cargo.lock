@@ -2141,6 +2141,7 @@ dependencies = [
  "egui_commonmark",
  "egui_extras",
  "markoff_core",
+ "pulldown-cmark",
  "rfd",
  "serde_json",
  "serde_yaml",
@@ -2774,13 +2775,14 @@ dependencies = [
 
 [[package]]
 name = "pdfium-bundled"
-version = "0.1.2+pdfium-8066"
+version = "0.2.0+pdfium-8066"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "633bb45e536ab50eca486672d03372d5e500a35fafdb2c684c0d4e5983bd8fe9"
+checksum = "8c8b4729e2bd1ab612208e96e02e7a08d7b8ab06ef5399ef9ad5f5927b3a3b43"
 dependencies = [
  "etcetera",
  "flate2",
  "pdfium-render",
+ "sha2",
  "tar",
  "thiserror 2.0.21",
  "ureq",

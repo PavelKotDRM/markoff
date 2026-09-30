@@ -434,7 +434,7 @@ mod tests {
         let markdown = temporary_path("full_document_input", "md");
         fs::write(
             &markdown,
-            "| A | B |\r\n| --- | --- |\r\n| 1 | 2 |\r\n\r\n# Title\r\n\r\nA paragraph.\r\n\r\n- One\r\n",
+            "| A | B |\r\n| --- | --- |\r\n| 1 | 2 |\r\n\r\n# Title\r\n\r\nA paragraph.\r\n\r\n- One\r\n  - Nested\r\n",
         )
         .unwrap();
 
@@ -456,7 +456,16 @@ mod tests {
             .iter()
             .map(|block| block["type"].as_str().unwrap())
             .collect::<Vec<_>>();
-        assert_eq!(block_types, ["table", "heading", "paragraph", "list_item"]);
+        assert_eq!(block_types, ["table", "heading", "paragraph", "list"]);
+        assert_eq!(
+            blocks[3]["items"][0]["blocks"][0]["content"][0]["text"],
+            "One"
+        );
+        assert_eq!(blocks[3]["items"][0]["blocks"][1]["type"], "list");
+        assert_eq!(
+            blocks[3]["items"][0]["blocks"][1]["items"][0]["blocks"][0]["content"][0]["text"],
+            "Nested"
+        );
 
         fs::remove_file(markdown).ok();
         fs::remove_file(output).ok();

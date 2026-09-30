@@ -1,9 +1,11 @@
 use crate::MarkoffError;
 use crate::error::invalid_data;
+use pdfium_bundled::pdfium_render::prelude::Pdfium;
 use std::path::Path;
+use std::sync::OnceLock;
 
 pub(crate) fn convert_pdf_to_markdown(input: &Path, output: &Path) -> Result<(), MarkoffError> {
-    let pdfium = pdfium_bundled::bind_bundled().map_err(invalid_data)?;
+    let pdfium = bundled_pdfium()?;
     let document = pdfium
         .load_pdf_from_file(input, None)
         .map_err(invalid_data)?;
@@ -30,6 +32,28 @@ pub(crate) fn convert_pdf_to_markdown(input: &Path, output: &Path) -> Result<(),
 
     std::fs::write(output, format!("{markdown}\n"))?;
     Ok(())
+}
+
+static PDFIUM: OnceLock<Result<Pdfium, PdfiumInitializationError>> = OnceLock::new();
+
+#[derive(Debug)]
+struct PdfiumInitializationError(String);
+
+impl std::fmt::Display for PdfiumInitializationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for PdfiumInitializationError {}
+
+fn bundled_pdfium() -> std::io::Result<&'static Pdfium> {
+    match PDFIUM.get_or_init(|| {
+        pdfium_bundled::bind_bundled().map_err(|error| PdfiumInitializationError(error.to_string()))
+    }) {
+        Ok(pdfium) => Ok(pdfium),
+        Err(error) => Err(invalid_data(PdfiumInitializationError(error.0.clone()))),
+    }
 }
 
 /// Extracts every image XObject referenced by the PDF's pages, saving each
@@ -95,4 +119,17 @@ fn decode_pdf_image(
         writer.write_image_data(&samples).ok()?;
     }
     Some((png_bytes, "png"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bundled_pdfium;
+
+    #[test]
+    fn reuses_the_bundled_pdfium_binding() {
+        let first = bundled_pdfium().unwrap();
+        let second = bundled_pdfium().unwrap();
+
+        assert!(std::ptr::eq(first, second));
+    }
 }
