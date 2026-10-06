@@ -108,6 +108,7 @@ struct MarkoffApp {
 
 enum StyleNotice {
     Exported(PathBuf),
+    Imported(PathBuf),
     Failed(String),
 }
 
@@ -226,6 +227,24 @@ impl MarkoffApp {
         });
     }
 
+    fn import_style_theme(&mut self, source: PathBuf, path: PathBuf) {
+        match markoff_core::write_style_theme_from_document(&source, &path, true) {
+            Ok(()) => {
+                self.style_preview = Some(StylePreviewState::load(&path));
+                self.style = Some(path.clone());
+                self.show_style_preview = true;
+                self.style_notice = Some(StyleNotice::Imported(path));
+                self.update_outputs();
+            }
+            Err(error) => {
+                self.style_notice = Some(StyleNotice::Failed(format!(
+                    "Unable to import style from {}: {error}",
+                    source.display()
+                )));
+            }
+        }
+    }
+
     fn create_default_style(&mut self, path: PathBuf) {
         self.show_style_preview = true;
         if let Err(error) = markoff_core::write_default_style_theme(&path, true) {
@@ -266,15 +285,18 @@ impl eframe::App for MarkoffApp {
                         for format in [
                             Format::Markdown,
                             Format::Pdf,
+                            Format::Doc,
                             Format::Docx,
                             Format::Odt,
                             Format::Json,
                             Format::Csv,
                             Format::Yaml,
                             Format::Toml,
+                            Format::Xls,
                             Format::Xlsx,
                             Format::Ods,
                             Format::Html,
+                            Format::Ppt,
                             Format::Pptx,
                             Format::Odp,
                         ] {
@@ -309,7 +331,7 @@ impl eframe::App for MarkoffApp {
                 ui.label("Style:");
                 let style_supported = matches!(
                     self.target,
-                    Format::Pdf | Format::Html | Format::Docx | Format::Odt
+                    Format::Pdf | Format::Html | Format::Doc | Format::Docx | Format::Odt
                 );
                 ui.add_enabled_ui(style_supported, |ui| {
                     let label = self
@@ -319,6 +341,25 @@ impl eframe::App for MarkoffApp {
                         .and_then(|name| name.to_str())
                         .unwrap_or("Default");
                     ui.label(label);
+                    if ui
+                        .button("Import...")
+                        .on_hover_text(
+                            "Create a theme from formatting in an existing DOC/DOCX, XLS/XLSX, PPT/PPTX, or ODS file.",
+                        )
+                        .clicked()
+                        && let Some(source) = rfd::FileDialog::new()
+                            .add_filter(
+                                "Office documents",
+                                &["doc", "docx", "xls", "xlsx", "xlsm", "ppt", "pptx", "ods"],
+                            )
+                            .pick_file()
+                        && let Some(path) = rfd::FileDialog::new()
+                            .add_filter("TOML theme", &["toml"])
+                            .set_file_name("style-theme.toml")
+                            .save_file()
+                    {
+                        self.import_style_theme(source, path);
+                    }
                     if ui.button("Choose...").clicked()
                         && let Some(path) = rfd::FileDialog::new()
                             .add_filter("TOML theme", &["toml"])
@@ -396,6 +437,9 @@ impl eframe::App for MarkoffApp {
                     match notice {
                         StyleNotice::Exported(path) => {
                             ui.label(format!("Style template saved to {}", path.display()));
+                        }
+                        StyleNotice::Imported(path) => {
+                            ui.label(format!("Style imported to {}", path.display()));
                         }
                         StyleNotice::Failed(message) => {
                             ui.colored_label(ui.visuals().error_fg_color, message);
@@ -659,6 +703,39 @@ mod tests {
 
         fs::remove_file(theme).ok();
         fs::remove_dir(blocked).ok();
+    }
+
+    #[test]
+    fn imports_office_style_theme_in_gui() {
+        let markdown = temporary_path("style_import_source", "md");
+        let source = temporary_path("style_import_document", "docx");
+        let theme = temporary_path("style_import_theme", "toml");
+        fs::write(&markdown, "# Imported\n\nText.\n").unwrap();
+        convert_file(&markdown, &source, Format::Markdown, Format::Docx).unwrap();
+
+        let mut app = MarkoffApp::default();
+        app.import_style_theme(source.clone(), theme.clone());
+
+        assert_eq!(app.style.as_ref(), Some(&theme));
+        assert!(app.show_style_preview);
+        assert!(matches!(
+            app.style_preview,
+            Some(StylePreviewState::Loaded { .. })
+        ));
+        assert!(matches!(
+            &app.style_notice,
+            Some(StyleNotice::Imported(path)) if path == &theme
+        ));
+        assert_eq!(
+            markoff_core::load_style_theme_preview(&theme)
+                .unwrap()
+                .font_size_pt,
+            11.0
+        );
+
+        fs::remove_file(markdown).ok();
+        fs::remove_file(source).ok();
+        fs::remove_file(theme).ok();
     }
 
     #[test]

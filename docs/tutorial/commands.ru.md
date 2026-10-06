@@ -218,23 +218,29 @@ markoff gui
 
 | Формат | Идентификаторы |
 | --- | --- |
-| Word | `docx` |
+| Word | `doc`, `docx` |
 | OpenDocument Text | `odt` |
 | PDF | `pdf` |
 | Markdown | `md`, `markdown` |
-| Excel | `xlsx`, `xlsm` |
+| Excel | `xls`, `xlsx`, `xlsm` |
 | OpenDocument Spreadsheet | `ods` |
 | JSON | `json` |
 | CSV | `csv` |
 | YAML | `yaml`, `yml` |
 | TOML | `toml` |
-| PowerPoint | `pptx` |
+| PowerPoint | `ppt`, `pptx` |
 | OpenDocument Presentation | `odp` |
 | HTML | `html`, `htm` |
 
+Старые `.doc`, `.xls` и `.ppt` читаются через `office_oxide`; для записи в эти
+форматы требуется LibreOffice. Добавьте `soffice`/`libreoffice` в `PATH` либо
+задайте `MARKOFF_LIBREOFFICE` с путём к исполняемому файлу. При переходе через
+OOXML макросы, встроенные объекты и некоторые элементы оформления могут быть
+потеряны.
+
 ### Необязательная тема оформления
 
-Для выходных PDF, HTML, DOCX и ODT можно передать TOML-файл:
+Для выходных PDF, HTML, DOC/DOCX и ODT можно передать TOML-файл:
 
 ```powershell
 markoff convert report.md --to pdf --style docs\examples\style-theme.toml
@@ -261,16 +267,33 @@ markoff style-template -o corporate.toml --overwrite
 Каждый параметр в шаблоне снабжён комментарием. Ненужные строки можно удалить:
 пропущенные свойства получают те же значения по умолчанию.
 
+Создать тему на основе готового документа или таблицы можно командой
+`style-import`:
+
+```powershell
+markoff style-import reference.doc -o corporate.toml
+markoff style-import reference.docx -o corporate.toml
+markoff style-import workbook.xlsx -o spreadsheet-theme.toml
+markoff style-import slides.ppt -o presentation-theme.toml
+markoff style-import reference.docx -o corporate.toml --overwrite
+```
+
+Поддерживаются DOC/DOCX, XLS/XLSX/XLSM, PPT/PPTX и ODS. Для старых `.doc`,
+`.xls` и `.ppt` LibreOffice не нужен. Из Word импортируются поддерживаемые
+параметры текста, заголовков и страницы; из таблиц — оформление ячеек; из
+презентаций — шрифты и цвета темы. Оформление, которое нельзя представить
+TOML-темой Markoff, остаётся по умолчанию.
+
 Основные реализованные направления:
 
-- DOCX -> Markdown, CSV, XLSX, JSON, YAML, TOML, PDF;
+- DOC/DOCX -> Markdown, CSV, XLSX, JSON, YAML, TOML, PDF;
 - ODT -> Markdown, HTML, CSV, XLSX, ODS, JSON, YAML, TOML, PDF;
 - Markdown -> DOCX, ODT, PDF, CSV, XLSX, ODS, JSON, YAML, TOML, PPTX, ODP, HTML;
 - CSV -> Markdown, XLSX, ODS, DOCX, ODT;
-- XLSX/XLSM и ODS -> Markdown и поддерживаемые табличные форматы;
+- XLS/XLSX/XLSM и ODS -> Markdown и поддерживаемые табличные форматы;
 - JSON/YAML/TOML -> Markdown, DOCX, ODT, PDF, PPTX, ODP, HTML, XLSX, ODS и другие JSON/YAML/TOML;
 - PDF -> Markdown, JSON, YAML, TOML;
-- PPTX -> Markdown, JSON, YAML, TOML;
+- PPT/PPTX -> Markdown, JSON, YAML, TOML;
 - ODP -> Markdown, JSON, YAML, TOML;
 - HTML -> Markdown, JSON, YAML, TOML.
 

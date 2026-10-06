@@ -1,5 +1,9 @@
 use super::super::*;
 use epaint_default_fonts::HACK_REGULAR;
+use skrifa::{
+    FontRef, MetadataProvider,
+    instance::{LocationRef, Size},
+};
 use std::sync::OnceLock;
 use unicode_bidi::BidiInfo;
 use unicode_segmentation::UnicodeSegmentation;
@@ -31,41 +35,36 @@ pub(in crate::pdf_writer) fn normalize_anchor(anchor: &str) -> String {
     slugify(anchor)
 }
 
-fn primary_face(style: &InlineStyle) -> &'static ttf_parser::Face<'static> {
-    static REGULAR: OnceLock<ttf_parser::Face<'static>> = OnceLock::new();
-    static BOLD: OnceLock<ttf_parser::Face<'static>> = OnceLock::new();
-    static ITALIC: OnceLock<ttf_parser::Face<'static>> = OnceLock::new();
-    static BOLD_ITALIC: OnceLock<ttf_parser::Face<'static>> = OnceLock::new();
-    static CODE: OnceLock<ttf_parser::Face<'static>> = OnceLock::new();
+fn primary_face(style: &InlineStyle) -> &'static FontRef<'static> {
+    static REGULAR: OnceLock<FontRef<'static>> = OnceLock::new();
+    static BOLD: OnceLock<FontRef<'static>> = OnceLock::new();
+    static ITALIC: OnceLock<FontRef<'static>> = OnceLock::new();
+    static BOLD_ITALIC: OnceLock<FontRef<'static>> = OnceLock::new();
+    static CODE: OnceLock<FontRef<'static>> = OnceLock::new();
 
     if style.code {
-        CODE.get_or_init(|| {
-            ttf_parser::Face::parse(HACK_REGULAR, 0).expect("embedded Hack font is valid")
-        })
+        CODE.get_or_init(|| FontRef::new(HACK_REGULAR).expect("embedded Hack font is valid"))
     } else if style.bold && style.italic {
         BOLD_ITALIC.get_or_init(|| {
-            ttf_parser::Face::parse(dejavu::sans::bold_oblique(), 0)
+            FontRef::new(dejavu::sans::bold_oblique())
                 .expect("embedded DejaVu bold oblique font is valid")
         })
     } else if style.bold {
         BOLD.get_or_init(|| {
-            ttf_parser::Face::parse(dejavu::sans::bold(), 0)
-                .expect("embedded DejaVu bold font is valid")
+            FontRef::new(dejavu::sans::bold()).expect("embedded DejaVu bold font is valid")
         })
     } else if style.italic {
         ITALIC.get_or_init(|| {
-            ttf_parser::Face::parse(dejavu::sans::oblique(), 0)
-                .expect("embedded DejaVu oblique font is valid")
+            FontRef::new(dejavu::sans::oblique()).expect("embedded DejaVu oblique font is valid")
         })
     } else {
         REGULAR.get_or_init(|| {
-            ttf_parser::Face::parse(dejavu::sans::regular(), 0)
-                .expect("embedded DejaVu font is valid")
+            FontRef::new(dejavu::sans::regular()).expect("embedded DejaVu font is valid")
         })
     }
 }
 
-fn font_face(style: &InlineStyle) -> &'static ttf_parser::Face<'static> {
+fn font_face(style: &InlineStyle) -> &'static FontRef<'static> {
     primary_face(style)
 }
 
@@ -76,7 +75,7 @@ pub(in crate::pdf_writer) fn uses_emoji_font(grapheme: &str, code: bool) -> bool
     };
     let unavailable_in_primary_font = grapheme
         .chars()
-        .any(|character| primary_face(&style).glyph_index(character).is_none());
+        .any(|character| primary_face(&style).charmap().map(character).is_none());
     unavailable_in_primary_font
         && twemoji_assets::png::PngTwemojiAsset::from_emoji(grapheme).is_some()
 }
@@ -85,15 +84,16 @@ fn grapheme_width(grapheme: &str, style: &InlineStyle, font_size: f32) -> f32 {
     if uses_emoji_font(grapheme, style.code) {
         return font_size;
     }
+    let face = font_face(style);
+    let charmap = face.charmap();
+    let metrics = face.glyph_metrics(Size::new(font_size), LocationRef::default());
     grapheme
         .chars()
         .map(|character| {
-            let face = font_face(style);
-            let Some(glyph) = face.glyph_index(character) else {
+            let Some(glyph) = charmap.map(character) else {
                 return font_size * 0.6;
             };
-            let advance = face.glyph_hor_advance(glyph).unwrap_or(face.units_per_em());
-            font_size * f32::from(advance) / f32::from(face.units_per_em())
+            metrics.advance_width(glyph).unwrap_or(font_size)
         })
         .sum()
 }

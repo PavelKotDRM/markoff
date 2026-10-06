@@ -8,10 +8,12 @@
 //!
 //! # Supported formats
 //!
-//! Conversions include Markdown, DOCX, ODT, PDF, PPTX, ODP, HTML, XLSX, ODS,
-//! CSV, JSON, YAML, and TOML. Not every format pair is available; an unsupported pair returns
-//! [`MarkoffError::NotImplemented`]. Office and PDF conversions may preserve
-//! less layout information than text-based conversions.
+//! Conversions include Markdown, legacy DOC/XLS/PPT, DOCX, ODT, PDF, PPTX, ODP,
+//! HTML, XLSX, ODS, CSV, JSON, YAML, and TOML. Legacy binary inputs are read
+//! with `office_oxide`; writing legacy formats uses LibreOffice. Not every format
+//! pair is available; an unsupported pair returns [`MarkoffError::NotImplemented`].
+//! Office and PDF conversions may preserve less layout information than text-based
+//! conversions.
 //!
 //! # Choosing a conversion API
 //!
@@ -72,6 +74,7 @@ mod docx_writer;
 mod error;
 mod html;
 mod html_tokenizer;
+mod legacy_office;
 mod model;
 mod opendocument;
 mod pdf;
@@ -79,6 +82,7 @@ mod pdf_writer;
 mod pptx;
 mod pptx_reader;
 mod style;
+mod style_import;
 mod tables;
 mod xlsx;
 mod xml_utils;
@@ -89,6 +93,7 @@ pub use style::{
     StyleColor, StylePageOrientation, StylePageSize, StyleTextAlign, StyleThemePreview,
     default_style_theme_toml, load_style_theme_preview, write_default_style_theme,
 };
+pub use style_import::write_style_theme_from_document;
 
 use csv_format::{convert_csv_to_markdown, convert_markdown_to_csv};
 use data::{convert_data_to_xlsx, convert_xlsx_to_data};
@@ -153,12 +158,12 @@ pub fn convert_document(request: &ConversionRequest) -> Result<(), MarkoffError>
     if request.style.is_some()
         && !matches!(
             request.to,
-            Format::Pdf | Format::Html | Format::Docx | Format::Odt
+            Format::Pdf | Format::Html | Format::Doc | Format::Docx | Format::Odt
         )
     {
         return Err(MarkoffError::InvalidOption {
             message: format!(
-                "style themes are supported only for PDF, HTML, DOCX, and ODT output, not {}",
+                "style themes are supported only for PDF, HTML, DOC/DOCX, and ODT output, not {}",
                 request.to
             ),
         });
@@ -183,7 +188,14 @@ pub fn convert_document(request: &ConversionRequest) -> Result<(), MarkoffError>
 }
 
 fn route_conversion(request: &ConversionRequest) -> Result<(), MarkoffError> {
+    if legacy_office::modern_equivalent(request.from).is_some() {
+        return route_legacy_input(request);
+    }
+    if legacy_office::modern_equivalent(request.to).is_some() {
+        return route_legacy_output(request);
+    }
     match request.from {
+        Format::Doc | Format::Xls | Format::Ppt => not_implemented(request),
         Format::Docx => route_docx(request),
         Format::Odt => route_odt(request),
         Format::Pdf => route_pdf(request),
@@ -196,6 +208,59 @@ fn route_conversion(request: &ConversionRequest) -> Result<(), MarkoffError> {
         Format::Odp => route_odp(request),
         Format::Html => route_html(request),
     }
+}
+
+fn route_legacy_input(request: &ConversionRequest) -> Result<(), MarkoffError> {
+    let Some(modern_format) = legacy_office::modern_equivalent(request.from) else {
+        return not_implemented(request);
+    };
+    if request.to == modern_format && request.style.is_some() {
+        return Err(MarkoffError::InvalidOption {
+            message: "style themes are applied when generating a document, not when converting a legacy file to its OOXML equivalent".to_string(),
+        });
+    }
+    let workspace = legacy_office::OfficeWorkspace::new()?;
+    let input = legacy_office::convert_to_modern(&request.input, request.from, &workspace)?;
+    if request.to == modern_format {
+        std::fs::copy(input, &request.output)?;
+        return Ok(());
+    }
+    let modern_request = ConversionRequest {
+        input,
+        from: modern_format,
+        ..request.clone()
+    };
+    route_conversion(&modern_request)
+}
+
+fn route_legacy_output(request: &ConversionRequest) -> Result<(), MarkoffError> {
+    let Some(modern_format) = legacy_office::modern_equivalent(request.to) else {
+        return not_implemented(request);
+    };
+    let workspace = legacy_office::OfficeWorkspace::new()?;
+    if request.from == modern_format {
+        if request.style.is_some() {
+            return Err(MarkoffError::InvalidOption {
+                message: "style themes are applied when generating a document, not when converting an existing OOXML file to a legacy format".to_string(),
+            });
+        }
+        return legacy_office::convert_from_modern(
+            &request.input,
+            request.to,
+            &request.output,
+            &workspace,
+        );
+    }
+
+    let mut modern_output = workspace.path().join("markoff-converted");
+    modern_output.set_extension(modern_format.to_string());
+    let modern_request = ConversionRequest {
+        output: modern_output.clone(),
+        to: modern_format,
+        ..request.clone()
+    };
+    route_conversion(&modern_request)?;
+    legacy_office::convert_from_modern(&modern_output, request.to, &request.output, &workspace)
 }
 
 fn request_theme(request: &ConversionRequest) -> Result<DocumentTheme, MarkoffError> {
@@ -525,9 +590,11 @@ pub fn supports_tables_only(from: Format, to: Format) -> bool {
         matches!(
             format,
             Format::Markdown
+                | Format::Doc
                 | Format::Docx
                 | Format::Odt
                 | Format::Pdf
+                | Format::Ppt
                 | Format::Pptx
                 | Format::Odp
                 | Format::Html
@@ -537,9 +604,11 @@ pub fn supports_tables_only(from: Format, to: Format) -> bool {
         matches!(
             format,
             Format::Markdown
+                | Format::Doc
                 | Format::Docx
                 | Format::Odt
                 | Format::Pdf
+                | Format::Ppt
                 | Format::Pptx
                 | Format::Odp
                 | Format::Html

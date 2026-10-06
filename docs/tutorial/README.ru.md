@@ -55,6 +55,13 @@ Docker.
 - Docker;
 - отдельная установка Pdfium.
 
+Старые файлы Microsoft Office `.doc`, `.xls` и `.ppt` читаются через
+`office_oxide`. Для записи в эти форматы требуется отдельно установленный
+LibreOffice: добавьте `soffice`/`libreoffice` в `PATH` либо задайте
+`MARKOFF_LIBREOFFICE` с путём к исполняемому файлу. При преобразовании через
+OOXML макросы, встроенные объекты и некоторые элементы оформления могут не
+сохраниться.
+
 Для GUI нужна графическая сессия операционной системы. В Linux это рабочая
 сессия X11 или Wayland; запуск GUI на сервере без графического окружения не
 сработает. Консольное приложение можно использовать на сервере или в
@@ -573,17 +580,40 @@ PDF также можно добавить как входной файл; дл�
 ### 5.4. Управление стилями и предварительный просмотр темы
 
 Дополнительная тема оформления поддерживается для выходных форматов PDF, HTML,
-DOCX и ODT. Она необязательна: если файл темы не выбран и `--style` не указан,
+DOC/DOCX и ODT. Она необязательна: если файл темы не выбран и `--style` не указан,
 Markoff использует прежнее встроенное оформление выбранного формата.
 
 В GUI:
 
-1. Выберите PDF, HTML, DOCX или ODT в поле **Convert to:**.
+1. Выберите PDF, HTML, DOC, DOCX или ODT в поле **Convert to:**.
 2. Нажмите **Choose...** рядом с полем **Style:**.
 3. Выберите файл с расширением `.toml`.
 4. Окно **Style preview** откроется автоматически.
 5. После изменения TOML-файла нажмите **Preview**, чтобы перечитать его с диска.
 6. Нажмите **Clear**, чтобы отключить тему и вернуться к стандартному оформлению.
+
+#### Импорт темы из готового документа или таблицы
+
+Чтобы взять оформление за основу из существующего файла:
+
+- в GUI нажмите **Import...** рядом с настройками **Style:**, выберите
+  DOC/DOCX, XLS/XLSX/XLSM, PPT/PPTX или ODS, а затем укажите имя нового TOML-файла;
+  импортированная тема сразу выбирается и открывается в **Style preview**;
+- в CLI укажите исходный файл и путь к теме:
+
+```powershell
+.\markoff.exe style-import .\reference.doc -o .\corporate.toml
+.\markoff.exe style-import .\reference.docx -o .\corporate.toml
+.\markoff.exe style-import .\workbook.xlsx -o .\spreadsheet-theme.toml
+.\markoff.exe style-import .\slides.ppt -o .\presentation-theme.toml
+.\markoff.exe style-import .\reference.docx -o .\corporate.toml --overwrite
+```
+
+Для импорта стиля из старых `.doc`, `.xls` и `.ppt` LibreOffice не нужен.
+Из Word извлекаются поддерживаемые параметры основного текста, заголовков и
+страницы; из таблиц — шрифт и оформление ячеек; из презентаций — шрифты и
+цвета темы. Не все детали оформления Office имеют эквивалент в теме Markoff;
+такие свойства получают значения по умолчанию.
 
 #### Создание шаблона темы со значениями по умолчанию
 
@@ -594,7 +624,7 @@ Markoff использует прежнее встроенное оформле�
   доступна при любом целевом формате: она только сохраняет файл шаблона и
   показывает под панелью путь к нему (или причину ошибки), не меняя выбранную
   тему;
-- в GUI для PDF, HTML, DOCX или ODT можно также нажать **Style → New...**:
+- в GUI для PDF, HTML, DOC, DOCX или ODT можно также нажать **Style → New...**:
   шаблон сохраняется, сразу выбирается как текущая тема и открывается в
   **Style preview**;
 - в CLI выполните:
@@ -633,7 +663,7 @@ Markoff использует прежнее встроенное оформле�
 GUI использует собственные шрифты для отрисовки окна, поэтому названия
 `font_family`, `headings.font_family` и `code.font_family` показываются как
 параметры, но не загружают произвольный системный шрифт в само окно. Эти
-семейства применяются в создаваемых HTML, DOCX и ODT. PDF использует
+семейства применяются в создаваемых HTML, DOC/DOCX и ODT. PDF использует
 комплектные Unicode-шрифты, но применяет все остальные параметры темы.
 
 Ту же тему можно передать через CLI:
@@ -721,11 +751,11 @@ stripe_background = "#F7FAFC"
 
 Ограничения форматов:
 
-- `images.max_width_percent` действует в PDF и HTML: DOCX и ODT, создаваемые
+- `images.max_width_percent` действует в PDF и HTML: DOC/DOCX и ODT, создаваемые
   Markoff, не встраивают изображения;
 - в HTML размер страницы, поля и колонтитулы задаются через CSS `@page` и
   видны при печати или сохранении в PDF из браузера;
-- в DOCX и ODT `{page}`/`{pages}` становятся полями номера страницы и числа
+- в DOC/DOCX и ODT `{page}`/`{pages}` становятся полями номера страницы и числа
   страниц, которые обновляет текстовый редактор.
 
 Все секции и параметры необязательны. Неуказанные параметры получают
@@ -756,17 +786,17 @@ stripe_background = "#F7FAFC"
 
 | Формат | Расширения | Назначение |
 | --- | --- | --- |
-| Word | `.docx` | Документы Microsoft Word |
+| Word | `.doc`, `.docx` | Документы Microsoft Word |
 | OpenDocument Text | `.odt` | Текстовые документы OpenDocument |
 | PDF | `.pdf` | Входной PDF с текстовым слоем или целевой формат |
 | Markdown | `.md`, `.markdown` | Текстовая разметка |
-| Excel | `.xlsx`, `.xlsm` | Табличные книги |
+| Excel | `.xls`, `.xlsx`, `.xlsm` | Табличные книги |
 | OpenDocument Spreadsheet | `.ods` | Табличные книги OpenDocument |
 | JSON | `.json` | Структурированные данные или схема документа |
 | CSV | `.csv` | Табличные данные |
 | YAML | `.yaml`, `.yml` | Структурированные данные или схема документа |
 | TOML | `.toml` | Структурированные данные или схема документа |
-| PowerPoint | `.pptx` | Презентации |
+| PowerPoint | `.ppt`, `.pptx` | Презентации |
 | OpenDocument Presentation | `.odp` | Презентации OpenDocument |
 | HTML | `.html`, `.htm` | HTML-документы |
 
@@ -774,15 +804,15 @@ stripe_background = "#F7FAFC"
 
 | Источник | Поддерживаемые цели |
 | --- | --- |
-| DOCX | Markdown, HTML, CSV, XLSX, JSON, YAML, TOML, PDF |
+| DOC/DOCX | Markdown, HTML, CSV, XLS/XLSX, JSON, YAML, TOML, PDF, DOC/DOCX |
 | ODT | Markdown, HTML, CSV, XLSX, ODS, JSON, YAML, TOML, PDF |
-| Markdown | DOCX, ODT, PDF, CSV, XLSX, ODS, JSON, YAML, TOML, PPTX, ODP, HTML |
-| CSV | Markdown, XLSX, ODS, DOCX, ODT |
-| XLSX/XLSM | Markdown, CSV, JSON, YAML, TOML, DOCX, ODS |
+| Markdown | DOC/DOCX, ODT, PDF, CSV, XLS/XLSX, ODS, JSON, YAML, TOML, PPT/PPTX, ODP, HTML |
+| CSV | Markdown, XLS/XLSX, ODS, DOC/DOCX, ODT |
+| XLS/XLSX/XLSM | Markdown, CSV, JSON, YAML, TOML, DOC/DOCX, ODS |
 | ODS | Markdown, CSV, JSON, YAML, TOML, DOCX, ODT, XLSX |
 | JSON/YAML/TOML | Markdown, DOCX, ODT, PDF, PPTX, ODP, HTML, XLSX, ODS, другие JSON/YAML/TOML |
 | PDF | Markdown, JSON, YAML, TOML |
-| PPTX | Markdown, JSON, YAML, TOML |
+| PPT/PPTX | Markdown, JSON, YAML, TOML, PPT/PPTX |
 | ODP | Markdown, JSON, YAML, TOML |
 | HTML | Markdown, JSON, YAML, TOML |
 

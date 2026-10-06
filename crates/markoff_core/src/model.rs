@@ -7,11 +7,13 @@ use thiserror::Error;
 ///
 /// File extensions are parsed case-insensitively by [`Format::from_extension`].
 /// Extensions are notated without a leading dot. Markdown accepts `md` and
-/// `markdown`; Excel accepts `xlsx` and `xlsm`; OpenDocument accepts `odt`,
-/// `ods`, and `odp`; YAML accepts `yaml` and `yml`; and HTML accepts `html`
-/// and `htm`.
+/// `markdown`; legacy Microsoft Office formats accept `doc`, `xls`, and `ppt`;
+/// Excel accepts `xlsx` and `xlsm`; OpenDocument accepts `odt`, `ods`, and
+/// `odp`; YAML accepts `yaml` and `yml`; and HTML accepts `html` and `htm`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Format {
+    /// Legacy Microsoft Word document format (Word 97-2003).
+    Doc,
     /// Microsoft Word document format.
     Docx,
     /// OpenDocument Text document format.
@@ -22,6 +24,8 @@ pub enum Format {
     Markdown,
     /// Microsoft Excel workbook format.
     Xlsx,
+    /// Legacy Microsoft Excel workbook format (Excel 97-2003).
+    Xls,
     /// OpenDocument Spreadsheet format.
     Ods,
     /// JavaScript Object Notation.
@@ -34,6 +38,8 @@ pub enum Format {
     Toml,
     /// Microsoft PowerPoint presentation format.
     Pptx,
+    /// Legacy Microsoft PowerPoint presentation format (PowerPoint 97-2003).
+    Ppt,
     /// OpenDocument Presentation format.
     Odp,
     /// HyperText Markup Language.
@@ -43,17 +49,20 @@ pub enum Format {
 impl fmt::Display for Format {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let value = match self {
+            Self::Doc => "doc",
             Self::Docx => "docx",
             Self::Odt => "odt",
             Self::Pdf => "pdf",
             Self::Markdown => "md",
             Self::Xlsx => "xlsx",
+            Self::Xls => "xls",
             Self::Ods => "ods",
             Self::Json => "json",
             Self::Csv => "csv",
             Self::Yaml => "yaml",
             Self::Toml => "toml",
             Self::Pptx => "pptx",
+            Self::Ppt => "ppt",
             Self::Odp => "odp",
             Self::Html => "html",
         };
@@ -73,17 +82,20 @@ impl Format {
     /// Returns an error if the extension is not recognized by the converter.
     pub fn from_extension(extension: &str) -> Result<Self, MarkoffError> {
         match extension.trim().to_ascii_lowercase().as_str() {
+            "doc" => Ok(Self::Doc),
             "docx" => Ok(Self::Docx),
             "odt" => Ok(Self::Odt),
             "pdf" => Ok(Self::Pdf),
             "md" | "markdown" => Ok(Self::Markdown),
             "xlsx" | "xlsm" => Ok(Self::Xlsx),
+            "xls" => Ok(Self::Xls),
             "ods" => Ok(Self::Ods),
             "json" => Ok(Self::Json),
             "csv" => Ok(Self::Csv),
             "yaml" | "yml" => Ok(Self::Yaml),
             "toml" => Ok(Self::Toml),
             "pptx" => Ok(Self::Pptx),
+            "ppt" => Ok(Self::Ppt),
             "odp" => Ok(Self::Odp),
             "html" | "htm" => Ok(Self::Html),
             other => Err(MarkoffError::UnsupportedFormat {
@@ -230,4 +242,16 @@ pub fn detect_format<P: AsRef<Path>>(path: P) -> Result<Format, MarkoffError> {
         .and_then(std::ffi::OsStr::to_str)
         .unwrap_or("");
     Format::from_extension(extension)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Format;
+
+    #[test]
+    fn detects_legacy_microsoft_office_extensions() {
+        assert_eq!(Format::from_extension("DOC").unwrap(), Format::Doc);
+        assert_eq!(Format::from_extension("xls").unwrap(), Format::Xls);
+        assert_eq!(Format::from_extension("Ppt").unwrap(), Format::Ppt);
+    }
 }

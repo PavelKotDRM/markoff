@@ -116,10 +116,13 @@ pub(super) fn load_source_preview(input: &Path) -> SourcePreview {
         }),
         Ok(
             format @ (Format::Docx
+            | Format::Doc
             | Format::Odt
             | Format::Pdf
+            | Format::Xls
             | Format::Xlsx
             | Format::Ods
+            | Format::Ppt
             | Format::Pptx
             | Format::Odp
             | Format::Html),

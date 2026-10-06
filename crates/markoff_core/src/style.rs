@@ -510,7 +510,10 @@ pub fn load_style_theme_preview(path: &Path) -> Result<StyleThemePreview, Markof
 /// used for any property omitted from a partial theme.
 #[must_use]
 pub fn default_style_theme_toml() -> String {
-    let theme = StyleThemePreview::default();
+    style_theme_toml(&StyleThemePreview::default())
+}
+
+pub(crate) fn style_theme_toml(theme: &StyleThemePreview) -> String {
     let sizes = theme
         .heading_sizes_pt
         .iter()
@@ -523,11 +526,16 @@ pub fn default_style_theme_toml() -> String {
         .map(|color| format!("\"{}\"", color.css()))
         .collect::<Vec<_>>()
         .join(", ");
+    let level_colors_setting = if theme.heading_colors == [theme.heading_color; 6] {
+        format!("# level_colors = [{level_colors}]")
+    } else {
+        format!("level_colors = [{level_colors}]")
+    };
     format!(
         r##"# Markoff style theme.
-# Applies to PDF, HTML, DOCX, and ODT output:
+# Applies to PDF, HTML, DOC/DOCX, and ODT output:
 #   markoff convert input.md -o output.pdf --style style-theme.toml
-# Every value below is the default used when a property is omitted.
+# Omitted properties use Markoff's default values.
 # Remove lines you do not need; unknown keys are rejected.
 # Sizes, spacing, indents, and margins are in points (1 pt = 1/72 inch).
 # Colors use the #RRGGBB format; "none" disables an optional background.
@@ -555,7 +563,7 @@ font_family = {heading_font_family}
 # Heading text color for all levels.
 color = "{heading_color}"
 # Optional separate colors for levels 1-6; overrides "color".
-# level_colors = [{level_colors}]
+{level_colors_setting}
 # Sizes for heading levels 1-6: exactly six positive numbers.
 sizes_pt = [{sizes}]
 # Space before and after each heading, zero or greater.
@@ -570,7 +578,7 @@ italic = {heading_italic}
 size = "{page_size}"
 # "portrait" or "landscape".
 orientation = "{page_orientation}"
-# Page margins for PDF, DOCX, and ODT; HTML applies them to <body>.
+# Page margins for PDF, DOC/DOCX, and ODT; HTML applies them to <body>.
 margin_top_pt = {margin_top_pt}
 margin_right_pt = {margin_right_pt}
 margin_bottom_pt = {margin_bottom_pt}
@@ -659,6 +667,7 @@ max_width_percent = {image_max_width_percent}
         first_line_indent_pt = toml_number(theme.first_line_indent_pt),
         heading_font_family = toml_string(&theme.heading_font_family),
         heading_color = theme.heading_color.css(),
+        level_colors_setting = level_colors_setting,
         heading_spacing_before_pt = toml_number(theme.heading_spacing_before_pt),
         heading_spacing_after_pt = toml_number(theme.heading_spacing_after_pt),
         heading_bold = theme.heading_bold,
@@ -711,6 +720,18 @@ max_width_percent = {image_max_width_percent}
 /// is `false`, [`MarkoffError::OutputDirectory`] when the parent directory
 /// cannot be created, or [`MarkoffError::Io`] when writing fails.
 pub fn write_default_style_theme(path: &Path, overwrite: bool) -> Result<(), MarkoffError> {
+    write_style_theme(path, &StyleThemePreview::default(), overwrite)
+}
+
+pub(crate) fn write_style_theme(
+    path: &Path,
+    theme: &StyleThemePreview,
+    overwrite: bool,
+) -> Result<(), MarkoffError> {
+    write_theme_toml(path, &style_theme_toml(theme), overwrite)
+}
+
+fn write_theme_toml(path: &Path, source: &str, overwrite: bool) -> Result<(), MarkoffError> {
     if !overwrite && path.exists() {
         return Err(MarkoffError::OutputExists {
             path: path.display().to_string(),
@@ -724,7 +745,7 @@ pub fn write_default_style_theme(path: &Path, overwrite: bool) -> Result<(), Mar
             path: path.display().to_string(),
         })?;
     }
-    std::fs::write(path, default_style_theme_toml())?;
+    std::fs::write(path, source)?;
     Ok(())
 }
 

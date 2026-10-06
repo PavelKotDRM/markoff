@@ -39,6 +39,7 @@ The project has moved beyond the initial stub stage:
 - `DOCX tables -> CSV / XLSX / JSON / YAML / TOML`, plus `CSV / XLSX -> DOCX`
 - `PDF -> Markdown / JSON / YAML / TOML` for documents with an embedded text layer, and `Markdown / DOCX / JSON / YAML / TOML -> PDF`
 - `PPTX <-> Markdown` for slide titles and body text/bullets
+- legacy `DOC`, `XLS`, and `PPT` input through `office_oxide`, and output through LibreOffice
 - `ODP <-> Markdown` for slide titles and body text/bullets
 - `HTML <-> Markdown` for headings, emphasis, links, images, lists, blockquotes, code blocks, and tables
 - `PDF / PPTX / HTML -> JSON / YAML / TOML` and JSON/YAML/TOML back to Markdown, DOCX, PDF, PPTX, or HTML
@@ -185,7 +186,14 @@ Use `-` as the input path to read from standard input and as the output path to 
 Get-Content .\table.csv | cargo run -p markoff_cli -- convert - --from csv --to md -o -
 ```
 
-Binary Office files (`.docx`, `.odt`, `.xlsx`, `.xlsm`, `.ods`, `.pptx`, `.odp`) cannot be read from stdin or written to stdout.
+Binary Office files (`.doc`, `.docx`, `.odt`, `.xls`, `.xlsx`, `.xlsm`, `.ods`, `.ppt`, `.pptx`, `.odp`) cannot be read from stdin or written to stdout.
+
+Legacy `.doc`, `.xls`, and `.ppt` input is converted to OOXML with
+`office_oxide`. Writing legacy files requires a separately installed
+LibreOffice: add `soffice` or `libreoffice` to `PATH`, or set
+`MARKOFF_LIBREOFFICE` to the executable path. Legacy files are converted through
+OOXML intermediates; conversion may change unsupported formatting or discard
+macros and embedded objects.
 
 ### Batch conversion
 
@@ -220,13 +228,20 @@ cargo run -p markoff_cli -- gui
 
 The toolbar also offers **Tables only** for supported document ↔ JSON/YAML/TOML conversions, switches between dark and light themes, and opens build information in **About**. Files are converted one at a time from the selected queue entry; adding the same source path twice does not create a duplicate job.
 
-PDF, HTML, DOCX, and ODT output can optionally use a TOML style theme:
+PDF, HTML, DOC/DOCX, and ODT output can optionally use a TOML style theme:
 
 ```powershell
 markoff convert report.md --to pdf --style docs\examples\style-theme.toml
 ```
 
 The same file can be selected with **Style → Choose...** in the GUI.
+Create a starting theme from an existing Office file with
+`markoff style-import reference.doc -o theme.toml`; the GUI also offers
+**Style → Import...** for DOC/DOCX, XLS/XLSX/XLSM, PPT/PPTX, and ODS sources.
+Legacy input files are read with `office_oxide`; legacy output uses the
+LibreOffice dependency described above. Imported formatting is mapped to the
+theme properties supported by markoff; details
+that cannot be represented by a theme keep their defaults.
 To start from an editable template containing every setting with its default
 value and a comment, run `markoff style-template -o theme.toml` (omit `-o` to
 print to stdout; add `--overwrite` to replace an existing file). In the GUI,

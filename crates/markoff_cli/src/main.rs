@@ -26,9 +26,14 @@ const BUILD_INFO: &str = concat!(
     name = "markoff",
     version,
     long_version = BUILD_INFO,
-    about = "Bi-directional Office <-> Markdown converter",
-    long_about = "Convert Office documents, Markdown, structured data files, and PDF.",
-    after_help = "FORMATS:\n  docx, odt, pdf, md/markdown, xlsx/xlsm, ods, json, csv, yaml/yml, toml,\n  pptx, odp, html/htm\n  PDF input converts to Markdown, JSON, YAML, or TOML for documents with\n  a text layer. PDF output is available from Markdown, DOCX, ODT, JSON, YAML,\n  and TOML; supported formatting, tables, code, links, footnotes, bookmarks,\n  and raster images are rendered. Internal links and HTTP(S)/mailto/tel links\n  are clickable; content is reflowed onto A4 pages.\n  PPTX/ODP presentations convert slide titles and body text/bullets to and\n  from Markdown headings/lists; shape layout, images, and speaker notes are\n  not preserved. ODT preserves supported document structure and inline styles.\n  ODS converts Markdown tables and workbook sheets.\n  HTML converts to and from Markdown (headings, emphasis, links, images,\n  lists, blockquotes, code blocks, and tables); page layout/CSS and scripts\n  are not preserved.\n  JSON/YAML/TOML document schemas preserve structure (headings, lists,\n  tables, footnotes, images as base64), not just tables. Other valid\n  JSON/YAML/TOML values are printed as source code in PDF.\n  DOCX/PDF images are extracted into an 'image/' folder next to Markdown\n  output, or embedded as base64 in JSON/YAML/TOML output.\n\nOPTIONS (convert/batch):\n  --overwrite         Overwrite the output file(s) if they already exist;\n                      otherwise an error is raised when the destination\n                      exists.\n  --delimiter <CHAR>  CSV field delimiter: a single character, or 'tab'.\n                      Defaults to ','.\n  --style <FILE>      Optional TOML style theme for PDF, HTML, DOCX, and ODT\n                      output. Omitted properties use default values.\n\nSTYLE TEMPLATE:\n  markoff style-template -o theme.toml writes an editable theme with every\n  setting and its default value. Without -o it prints to stdout.\n\nSTREAMING:\n  Use '-' as INPUT or --output to read/write stdin/stdout. Streaming supports\n  text formats only: Markdown, JSON, CSV, YAML, TOML, and HTML.\n\nEXAMPLES:\n  markoff convert report.csv --to md\n  markoff convert report.pdf --to md\n  markoff convert report.md -o report.odt\n  markoff convert workbook.ods --to md\n  markoff convert report.md -o report.pdf\n  markoff convert report.docx --to pdf\n  markoff convert report.json --to pdf\n  markoff convert report.md -o report.docx --overwrite\n  markoff convert report.tsv --to md --delimiter tab\n  markoff convert slides.odp --to md\n  markoff convert report.md -o page.html\n  markoff style-template -o theme.toml\n  markoff convert report.md -o report.pdf --style theme.toml\n  markoff convert - --from json --to yaml -o -\n  markoff batch documents --pattern '*.odt' --to md -o converted\n  markoff batch documents --pattern '*.docx' --to md -o converted --overwrite"
+    about = "Office document converter (legacy export uses LibreOffice)",
+    long_about = "Convert Office documents, Markdown, structured data files, and PDF. Legacy DOC/XLS/PPT input is handled natively; writing legacy files requires LibreOffice.",
+    after_help = "FORMATS:\n  docx, odt, pdf, md/markdown, xlsx/xlsm, ods, json, csv, yaml/yml, toml,\n  pptx, odp, html/htm\n  PDF input converts to Markdown, JSON, YAML, or TOML for documents with\n  a text layer. PDF output is available from Markdown, DOCX, ODT, JSON, YAML,\n  and TOML; supported formatting, tables, code, links, footnotes, bookmarks,\n  and raster images are rendered. Internal links and HTTP(S)/mailto/tel links\n  are clickable; content is reflowed onto A4 pages.\n  PPTX/ODP presentations convert slide titles and body text/bullets to and\n  from Markdown headings/lists; shape layout, images, and speaker notes are\n  not preserved. ODT preserves supported document structure and inline styles.\n  ODS converts Markdown tables and workbook sheets.\n  HTML converts to and from Markdown (headings, emphasis, links, images,\n  lists, blockquotes, code blocks, and tables); page layout/CSS and scripts\n  are not preserved.\n  JSON/YAML/TOML document schemas preserve structure (headings, lists,\n  tables, footnotes, images as base64), not just tables. Other valid\n  JSON/YAML/TOML values are printed as source code in PDF.\n  DOCX/PDF images are extracted into an 'image/' folder next to Markdown\n  output, or embedded as base64 in JSON/YAML/TOML output.\n\nOPTIONS (convert/batch):\n  --overwrite         Overwrite the output file(s) if they already exist;\n                      otherwise an error is raised when the destination\n                      exists.\n  --delimiter <CHAR>  CSV field delimiter: a single character, or 'tab'.\n                      Defaults to ','.\n  --style <FILE>      Optional TOML style theme for PDF, HTML, DOCX, and ODT\n                      output. Omitted properties use default values.\n\nSTYLE TEMPLATE:\n  markoff style-template -o theme.toml writes an editable theme with every\n      setting and its default value. Without -o it prints to stdout.
+
+STYLE IMPORT:
+    markoff style-import reference.doc -o theme.toml imports supported formatting
+    from DOC/DOCX, XLS/XLSX/XLSM, PPT/PPTX, or ODS into a TOML theme.\n\nSTREAMING:\n  Use '-' as INPUT or --output to read/write stdin/stdout. Streaming supports\n  text formats only: Markdown, JSON, CSV, YAML, TOML, and HTML.\n\nEXAMPLES:\n  markoff convert report.csv --to md\n  markoff convert report.pdf --to md\n  markoff convert report.md -o report.odt\n  markoff convert workbook.ods --to md\n  markoff convert report.md -o report.pdf\n  markoff convert report.docx --to pdf\n  markoff convert report.json --to pdf\n  markoff convert report.md -o report.docx --overwrite\n  markoff convert report.tsv --to md --delimiter tab\n  markoff convert slides.odp --to md\n  markoff convert report.md -o page.html\n  markoff style-template -o theme.toml\n  markoff convert report.md -o report.pdf --style theme.toml\n  markoff convert - --from json --to yaml -o -\n  markoff batch documents --pattern '*.odt' --to md -o converted\n      markoff batch documents --pattern '*.docx' --to md -o converted --overwrite",
+      after_long_help = "LEGACY OFFICE FORMATS:\n  .doc, .xls, and .ppt input is converted to OOXML with office_oxide.\n  Writing these legacy formats requires LibreOffice. Install it with\n  `soffice` or `libreoffice` on PATH, or set MARKOFF_LIBREOFFICE."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -60,7 +65,7 @@ enum Commands {
         /// CSV field delimiter (single character, or 'tab'). Defaults to ','.
         #[arg(long, value_name = "CHAR")]
         delimiter: Option<String>,
-        /// TOML style theme for PDF, HTML, DOCX, or ODT output.
+        /// TOML style theme for PDF, HTML, DOC/DOCX, or ODT output.
         #[arg(long, value_name = "FILE")]
         style: Option<PathBuf>,
     },
@@ -87,7 +92,7 @@ enum Commands {
         /// CSV field delimiter (single character, or 'tab'). Defaults to ','.
         #[arg(long, value_name = "CHAR")]
         delimiter: Option<String>,
-        /// TOML style theme for PDF, HTML, DOCX, or ODT output.
+        /// TOML style theme for PDF, HTML, DOC/DOCX, or ODT output.
         #[arg(long, value_name = "FILE")]
         style: Option<PathBuf>,
     },
@@ -96,6 +101,18 @@ enum Commands {
         /// Destination TOML file. Prints to stdout when omitted or '-'.
         #[arg(short, long, value_name = "FILE")]
         output: Option<PathBuf>,
+        /// Overwrite the destination file if it already exists.
+        #[arg(long)]
+        overwrite: bool,
+    },
+    /// Create a TOML style theme from an existing Office document or spreadsheet.
+    StyleImport {
+        /// Source DOC/DOCX, XLS/XLSX/XLSM, PPT/PPTX, or ODS file.
+        #[arg(value_name = "INPUT")]
+        input: PathBuf,
+        /// Destination TOML theme file.
+        #[arg(short, long, value_name = "FILE")]
+        output: PathBuf,
         /// Overwrite the destination file if it already exists.
         #[arg(long)]
         overwrite: bool,
@@ -115,6 +132,11 @@ fn write_style_template(
         }
         _ => stdout.write_all(markoff_core::default_style_theme_toml().as_bytes())?,
     }
+    Ok(())
+}
+
+fn write_imported_style_theme(input: &Path, output: &Path, overwrite: bool) -> anyhow::Result<()> {
+    markoff_core::write_style_theme_from_document(input, output, overwrite)?;
     Ok(())
 }
 
@@ -437,6 +459,13 @@ fn main() -> anyhow::Result<()> {
         Some(Commands::StyleTemplate { output, overwrite }) => {
             write_style_template(output.as_deref(), overwrite, &mut std::io::stdout().lock())?;
         }
+        Some(Commands::StyleImport {
+            input,
+            output,
+            overwrite,
+        }) => {
+            write_imported_style_theme(&input, &output, overwrite)?;
+        }
         Some(Commands::Gui) => {
             markoff_gui::run().map_err(|error| anyhow::anyhow!(error.to_string()))?;
         }
@@ -524,6 +553,29 @@ mod tests {
         assert!(write_style_template(Some(&path), false, &mut io::sink()).is_err());
         write_style_template(Some(&path), true, &mut io::sink()).unwrap();
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn style_import_accepts_source_and_output_paths() {
+        let cli = Cli::try_parse_from([
+            "markoff",
+            "style-import",
+            "reference.doc",
+            "-o",
+            "corporate.toml",
+        ])
+        .unwrap();
+        let Some(Commands::StyleImport {
+            input,
+            output,
+            overwrite,
+        }) = cli.command
+        else {
+            panic!("expected style-import command");
+        };
+        assert_eq!(input, PathBuf::from("reference.doc"));
+        assert_eq!(output, PathBuf::from("corporate.toml"));
+        assert!(!overwrite);
     }
 
     fn stream_conversion_options() -> ConvertOptions<'static> {
