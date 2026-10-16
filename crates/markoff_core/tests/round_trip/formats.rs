@@ -10,7 +10,7 @@ fn assert_odf_package(path: &Path, expected_mime: &str) {
     let file = fs::File::open(path).unwrap();
     let mut archive = zip::ZipArchive::new(file).unwrap();
     let first = archive.by_index(0).unwrap();
-    assert_eq!(first.name(), "mimetype");
+    assert_eq!(first.name().unwrap(), "mimetype");
     assert_eq!(first.compression(), zip::CompressionMethod::Stored);
     drop(first);
 
@@ -35,7 +35,7 @@ fn odf_parts(path: &Path) -> BTreeMap<String, Vec<u8>> {
         let mut entry = archive.by_index(index).unwrap();
         let mut data = Vec::new();
         entry.read_to_end(&mut data).unwrap();
-        parts.insert(entry.name().to_string(), data);
+        parts.insert(entry.name().unwrap().into_owned(), data);
     }
     parts
 }

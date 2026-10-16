@@ -66,6 +66,15 @@ Install the current stable [Rust toolchain](https://www.rust-lang.org/tools/inst
 cargo build --workspace
 ```
 
+XLSX/XLSM input and XLSX output use the existing `zip` and `quick-xml`
+dependencies directly; neither `calamine` nor `rust_xlsxwriter` is required.
+`office_oxide` must be at least 0.1.15 to use `zip` 9 instead of the withdrawn
+`zip` 8 releases. Supported cell values are strings,
+numbers, booleans, and empty cells, including shared/inline strings and cached
+formula results. Date/time and error cells return explicit errors rather than
+being silently converted to strings or numbers. Formula evaluation and macro
+execution are not supported.
+
 Run the test suite before using a locally built version:
 
 ```powershell
