@@ -548,7 +548,7 @@ fn rewrite_package(package: &[u8], output: &Path, content_xml: &str) -> Result<(
         let mut data = Vec::new();
         entry.read_to_end(&mut data)?;
         entries.push(PackageEntry {
-            name: entry.name().to_string(),
+            name: entry.name().map_err(invalid_data)?.into_owned(),
             data,
             compression: entry.compression(),
             directory: entry.is_dir(),
