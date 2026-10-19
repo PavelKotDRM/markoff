@@ -545,10 +545,11 @@ fn rewrite_package(package: &[u8], output: &Path, content_xml: &str) -> Result<(
     let mut entries = Vec::with_capacity(archive.len());
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index).map_err(invalid_data)?;
+        let name = entry.name().map_err(invalid_data)?.into_owned();
         let mut data = Vec::new();
         entry.read_to_end(&mut data)?;
         entries.push(PackageEntry {
-            name: entry.name().to_string(),
+            name,
             data,
             compression: entry.compression(),
             directory: entry.is_dir(),
