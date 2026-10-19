@@ -44,7 +44,7 @@ The project has moved beyond the initial stub stage:
 - `HTML <-> Markdown` for headings, emphasis, links, images, lists, blockquotes, code blocks, and tables
 - `PDF / PPTX / HTML -> JSON / YAML / TOML` and JSON/YAML/TOML back to Markdown, DOCX, PDF, PPTX, or HTML
 - CLI `convert` with text stdin/stdout and `batch` with glob patterns and progress bars
-- GUI conversion queue with file picker, drag-and-drop, selectable target format, a compatible-pairs-only **Tables only** toggle, themes, and a format-aware preview (rendered Markdown, collapsible JSON/YAML/TOML tree, or plain text)
+- GUI conversion queue with file picker, drag-and-drop, all core formats, convert-selected/convert-all actions, an optional output folder, a compatible-pairs-only **Tables only** toggle, style tools, in-app help, and format-aware previews
 - Unit, integration, and property-based core tests covering DOCX and XLSX round-trips
 
 ### Still pending
@@ -221,12 +221,12 @@ cargo run -p markoff_cli -- gui
 ```
 
 1. Select **Add files** or drag files into the application window.
-2. Choose the desired target format in **Convert to**.
-3. Output filenames update automatically when you change the target format.
-4. Choose a file in the queue and select **Convert selected**.
-5. Inspect the source and result previews. The converted file is saved beside the original source using the selected target extension; hover over its status for the output path or error.
+2. Choose the desired target format in **Convert to**. Output filenames update automatically when you change the target format.
+3. Use **Output** to choose a shared destination folder, or keep **Next to source**.
+4. Choose **Convert selected** for one file or **Convert all** for pending and failed queue entries.
+5. Inspect the source and result previews. Hover over a queue status for the output path or error.
 
-The toolbar also offers **Tables only** for supported document ↔ JSON/YAML/TOML conversions, switches between dark and light themes, and opens build information in **About**. Files are converted one at a time from the selected queue entry; adding the same source path twice does not create a duplicate job.
+The toolbar also offers **Tables only** for supported document ↔ JSON/YAML/TOML conversions, a CSV delimiter, dark/light themes, and **Help** with supported formats and limitations. Successful items are skipped by **Convert all** unless overwrite is enabled. Adding the same source path twice does not create a duplicate job.
 
 PDF, HTML, DOC/DOCX, and ODT output can optionally use a TOML style theme:
 
@@ -373,4 +373,4 @@ and is passing successfully at the moment.
 
 ## Notes
 
-This project is no longer a blank scaffold. The core engine now performs real conversions for the documented text-based formats, and the next step is to turn that engine into a richer CLI experience and then into the graphical workflow described in the technical specification.
+The core engine and both user interfaces are implemented for the documented workflows. Contributions can extend format coverage, improve conversion fidelity, and refine the CLI and GUI experience.

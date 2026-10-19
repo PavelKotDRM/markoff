@@ -4,7 +4,7 @@ use egui_extras::{Column, TableBuilder};
 use markoff_core::{
     ConversionRequest, Format, convert_document, detect_format, supports_tables_only,
 };
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[path = "preview.rs"]
 mod preview;
@@ -93,8 +93,10 @@ struct MarkoffApp {
     jobs: Vec<ConversionJob>,
     selected: Option<usize>,
     target: Format,
+    output_directory: Option<PathBuf>,
     dark_mode: bool,
     show_about: bool,
+    show_help: bool,
     overwrite: bool,
     tables_only: bool,
     csv_delimiter: String,
@@ -112,14 +114,31 @@ enum StyleNotice {
     Failed(String),
 }
 
+fn make_output_path(input: &Path, output_directory: Option<&Path>, target: Format) -> PathBuf {
+    let mut output = output_directory.map_or_else(
+        || input.to_path_buf(),
+        |directory| {
+            directory.join(
+                input
+                    .file_name()
+                    .unwrap_or_else(|| std::ffi::OsStr::new("output")),
+            )
+        },
+    );
+    output.set_extension(target.to_string());
+    output
+}
+
 impl Default for MarkoffApp {
     fn default() -> Self {
         Self {
             jobs: Vec::new(),
             selected: None,
             target: Format::Markdown,
+            output_directory: None,
             dark_mode: true,
             show_about: false,
+            show_help: false,
             overwrite: false,
             tables_only: false,
             csv_delimiter: ",".to_string(),
@@ -138,8 +157,7 @@ impl MarkoffApp {
         if self.jobs.iter().any(|job| job.input == input) {
             return;
         }
-        let mut output = input.clone();
-        output.set_extension(self.target.to_string());
+        let output = make_output_path(&input, self.output_directory.as_deref(), self.target);
         self.jobs.push(ConversionJob {
             source_preview: load_source_preview(&input),
             result_preview: SourcePreview::message("Converted output will appear here."),
@@ -152,8 +170,10 @@ impl MarkoffApp {
     }
 
     fn update_outputs(&mut self) {
+        let target = self.target;
+        let output_directory = self.output_directory.as_deref();
         for job in &mut self.jobs {
-            job.output.set_extension(self.target.to_string());
+            job.output = make_output_path(&job.input, output_directory, target);
             job.status = JobStatus::Pending;
             job.message.clear();
             job.result_preview = SourcePreview::message("Converted output will appear here.");
@@ -170,23 +190,46 @@ impl MarkoffApp {
     }
 
     fn convert_selected(&mut self) {
-        let Some(job) = self.selected.and_then(|index| self.jobs.get_mut(index)) else {
+        if let Some(index) = self.selected {
+            self.convert_job(index);
+        }
+    }
+
+    fn convert_all(&mut self) {
+        let jobs_to_convert = self
+            .jobs
+            .iter()
+            .enumerate()
+            .filter_map(|(index, job)| {
+                (job.status != JobStatus::Success || self.overwrite).then_some(index)
+            })
+            .collect::<Vec<_>>();
+        for index in jobs_to_convert {
+            self.convert_job(index);
+        }
+    }
+
+    fn convert_job(&mut self, index: usize) {
+        let Some(job) = self.jobs.get(index) else {
             return;
         };
         self.preview_pane = PreviewPane::Result;
         let delimiter = match self.csv_delimiter.as_bytes() {
             [delimiter] if delimiter.is_ascii() => *delimiter,
             _ => {
+                let job = &mut self.jobs[index];
                 job.status = JobStatus::Failed;
                 job.message = "CSV delimiter must be a single ASCII character.".to_string();
                 job.result_preview = SourcePreview::message(job.message.clone());
                 return;
             }
         };
-        let result = detect_format(&job.input).and_then(|from| {
+        let input = job.input.clone();
+        let output = job.output.clone();
+        let result = detect_format(&input).and_then(|from| {
             convert_document(&ConversionRequest {
-                input: job.input.clone(),
-                output: job.output.clone(),
+                input,
+                output: output.clone(),
                 from,
                 to: self.target,
                 overwrite: self.overwrite,
@@ -195,11 +238,12 @@ impl MarkoffApp {
                 style: self.style.clone(),
             })
         });
+        let job = &mut self.jobs[index];
         match result {
             Ok(()) => {
                 job.status = JobStatus::Success;
-                job.message = format!("Saved to {}", job.output.display());
-                job.result_preview = load_source_preview(&job.output);
+                job.message = format!("Saved to {}", output.display());
+                job.result_preview = load_source_preview(&output);
             }
             Err(error) => {
                 job.status = JobStatus::Failed;
@@ -268,7 +312,7 @@ impl eframe::App for MarkoffApp {
         }
 
         egui::Panel::top("toolbar").show(ui, |ui| {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 if ui.button("Add files").clicked()
                     && let Some(files) = rfd::FileDialog::new().pick_files()
                 {
@@ -276,30 +320,72 @@ impl eframe::App for MarkoffApp {
                         self.add_file(file);
                     }
                 }
+                let output_label = self
+                    .output_directory
+                    .as_ref()
+                    .map_or("Next to source", |path| {
+                        path.file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or("Output folder")
+                    });
+                if ui
+                    .button(format!("Output: {output_label}"))
+                    .on_hover_text(
+                        self.output_directory.as_ref().map_or_else(
+                            || "Save each result next to its source file.".to_string(),
+                            |path| path.display().to_string(),
+                        ),
+                    )
+                    .clicked()
+                    && let Some(path) = rfd::FileDialog::new().pick_folder()
+                {
+                    self.output_directory = Some(path);
+                    self.update_outputs();
+                }
+                if ui
+                    .add_enabled(
+                        self.output_directory.is_some(),
+                        egui::Button::new("Reset output"),
+                    )
+                    .on_hover_text("Save each converted file next to its source again.")
+                    .clicked()
+                {
+                    self.output_directory = None;
+                    self.update_outputs();
+                }
                 ui.separator();
                 ui.label("Convert to:");
                 let previous_target = self.target;
                 egui::ComboBox::from_id_salt("target_format")
                     .selected_text(self.target.to_string())
                     .show_ui(ui, |ui| {
+                        ui.weak("Documents");
                         for format in [
                             Format::Markdown,
                             Format::Pdf,
                             Format::Doc,
                             Format::Docx,
                             Format::Odt,
+                            Format::Html,
+                        ] {
+                            ui.selectable_value(&mut self.target, format, format.to_string());
+                        }
+                        ui.separator();
+                        ui.weak("Spreadsheets and data");
+                        for format in [
+                            Format::Xls,
+                            Format::Xlsx,
+                            Format::Ods,
                             Format::Json,
                             Format::Csv,
                             Format::Yaml,
                             Format::Toml,
-                            Format::Xls,
-                            Format::Xlsx,
-                            Format::Ods,
-                            Format::Html,
-                            Format::Ppt,
-                            Format::Pptx,
-                            Format::Odp,
                         ] {
+                            ui.selectable_value(&mut self.target, format, format.to_string());
+                        }
+                        ui.separator();
+                        ui.weak("Presentations");
+                        for format in [Format::Ppt, Format::Pptx, Format::Odp] {
                             ui.selectable_value(&mut self.target, format, format.to_string());
                         }
                     });
@@ -413,8 +499,32 @@ impl eframe::App for MarkoffApp {
                 {
                     self.export_style_template(path);
                 }
-                if ui.button("Convert selected").clicked() {
+                if ui
+                    .add_enabled(
+                        self.selected.is_some(),
+                        egui::Button::new("Convert selected"),
+                    )
+                    .on_hover_text("Convert the selected queue item.")
+                    .clicked()
+                {
                     self.convert_selected();
+                }
+                let pending_count = self
+                    .jobs
+                    .iter()
+                    .filter(|job| job.status != JobStatus::Success || self.overwrite)
+                    .count();
+                if ui
+                    .add_enabled(
+                        pending_count > 0,
+                        egui::Button::new(format!("Convert all ({pending_count})")),
+                    )
+                    .on_hover_text(
+                        "Convert pending and failed items. Successful items are skipped unless overwrite is enabled.",
+                    )
+                    .clicked()
+                {
+                    self.convert_all();
                 }
                 if ui
                     .button(if self.dark_mode { "Light" } else { "Dark" })
@@ -426,6 +536,9 @@ impl eframe::App for MarkoffApp {
                     } else {
                         egui::Visuals::light()
                     });
+                }
+                if ui.button("Help").clicked() {
+                    self.show_help = true;
                 }
                 if ui.button("About").clicked() {
                     self.show_about = true;
@@ -454,12 +567,37 @@ impl eframe::App for MarkoffApp {
         });
 
         egui::Panel::left("queue").resizable(true).show(ui, |ui| {
-            ui.heading("Queue");
-            ui.label("Drop files anywhere in this window.");
+            ui.horizontal(|ui| {
+                ui.heading("Queue");
+                if !self.jobs.is_empty() && ui.small_button("Clear").clicked() {
+                    self.jobs.clear();
+                    self.selected = None;
+                    self.preview_pane = PreviewPane::Source;
+                }
+            });
+            let succeeded = self
+                .jobs
+                .iter()
+                .filter(|job| job.status == JobStatus::Success)
+                .count();
+            let failed = self
+                .jobs
+                .iter()
+                .filter(|job| job.status == JobStatus::Failed)
+                .count();
+            ui.small(format!(
+                "{} files | {succeeded} done | {failed} failed",
+                self.jobs.len()
+            ));
             let mut remove = None;
+            if self.jobs.is_empty() {
+                ui.add_space(12.0);
+                ui.weak("Add files or drop them anywhere in this window to start.");
+            }
             TableBuilder::new(ui)
                 .striped(true)
                 .column(Column::remainder())
+                .column(Column::auto())
                 .column(Column::auto())
                 .header(22.0, |mut header| {
                     header.col(|ui| {
@@ -480,19 +618,25 @@ impl eframe::App for MarkoffApp {
                                     .unwrap_or("unnamed");
                                 if ui
                                     .selectable_label(self.selected == Some(index), name)
+                                    .on_hover_text(job.input.display().to_string())
                                     .clicked()
                                 {
                                     self.selected = Some(index);
                                 }
                             });
                             row.col(|ui| {
-                                if ui
-                                    .small_button(job.status.label())
-                                    .on_hover_text(if job.message.is_empty() {
-                                        job.output.display().to_string()
+                                ui.label(job.status.label()).on_hover_text(
+                                    if job.message.is_empty() {
+                                        format!("Output: {}", job.output.display())
                                     } else {
                                         job.message.clone()
-                                    })
+                                    },
+                                );
+                            });
+                            row.col(|ui| {
+                                if ui
+                                    .small_button("x")
+                                    .on_hover_text("Remove from queue")
                                     .clicked()
                                 {
                                     remove = Some(index);
@@ -512,6 +656,22 @@ impl eframe::App for MarkoffApp {
             let result_preview = selected_job.map(|job| &job.result_preview);
             let markdown_cache = &mut self.markdown_cache;
 
+            if let Some(job) = selected_job {
+                ui.horizontal_wrapped(|ui| {
+                    ui.strong(
+                        job.input
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or("Selected file"),
+                    );
+                    ui.weak(format!(
+                        "{} -> {}",
+                        job.input.display(),
+                        job.output.display()
+                    ));
+                });
+                ui.separator();
+            }
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.preview_pane, PreviewPane::Source, "Source");
                 ui.selectable_value(&mut self.preview_pane, PreviewPane::Result, "Result");
@@ -571,6 +731,60 @@ impl eframe::App for MarkoffApp {
                     ui.label("Document conversion workspace");
                     ui.separator();
                     ui.monospace(format!("{BUILD_INFO}\nRenderer: {RENDERER}"));
+                });
+        }
+        if self.show_help {
+            egui::Window::new("markoff help")
+                .open(&mut self.show_help)
+                .default_width(620.0)
+                .default_height(620.0)
+                .resizable(true)
+                .show(ui.ctx(), |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        ui.heading("Convert files");
+                        ui.label(
+                            "Add one or more files or drop them into the window. Choose an output format, review the destination, then convert the selected item or the whole queue. Files are processed locally.",
+                        );
+                        ui.label(
+                            "By default results are saved beside each source. Choose Output to select a shared destination folder. Existing files are protected unless Overwrite existing files is enabled.",
+                        );
+                        ui.add_space(8.0);
+
+                        ui.heading("Formats");
+                        ui.label(
+                            "Documents: DOC, DOCX, ODT, PDF, Markdown (MD); presentations: PPT, PPTX, ODP; spreadsheets and data: XLS, XLSX/XLSM, ODS, CSV, JSON, YAML/YML, TOML; web: HTML/HTM.",
+                        );
+                        ui.label(
+                            "Common routes include Markdown with DOCX/ODT/PDF/HTML/PPTX/ODP, documents with structured JSON/YAML/TOML, CSV with Markdown, Markdown tables with XLSX/ODS, and structured/tabular data with XLSX/ODS.",
+                        );
+                        ui.label(
+                            "Supported directions depend on the selected input/output pair. If a pair is unavailable, markoff displays a conversion error. See the project tutorial for the full conversion matrix.",
+                        );
+                        ui.add_space(8.0);
+
+                        ui.heading("Options and themes");
+                        ui.label(
+                            "Tables only keeps table blocks for supported document <-> JSON/YAML/TOML conversions. CSV delimiter sets the one-character field separator.",
+                        );
+                        ui.label(
+                            "Themes affect PDF, HTML, DOC/DOCX, and ODT output. Choose or create a TOML theme, import one from a supported Office file, preview it, or export an editable default template.",
+                        );
+                        ui.add_space(8.0);
+
+                        ui.heading("Preview and queue");
+                        ui.label(
+                            "Select a queue row to preview its source and converted result. Structured JSON/YAML/TOML is shown as a tree; supported documents are previewed as Markdown. Hover over a status to see the destination or error.",
+                        );
+                        ui.label(
+                            "Convert all processes pending and failed items. Already successful items are skipped unless overwrite is enabled. Remove a single item with x or clear the entire queue.",
+                        );
+                        ui.add_space(8.0);
+
+                        ui.heading("Important limitations");
+                        ui.label(
+                            "Scanned PDFs without a text layer need OCR outside markoff. DOC/XLS/PPT input is supported; writing these legacy formats requires LibreOffice. Some layout and Office-specific features are not preserved; presentation conversion keeps slide titles and body text/bullets, not shape layout, images, charts, or speaker notes. Images are not re-embedded into DOCX output.",
+                        );
+                    });
                 });
         }
         if self.show_style_preview
@@ -888,6 +1102,50 @@ mod tests {
         for path in [first, selected, last] {
             fs::remove_file(path).unwrap();
         }
+    }
+
+    #[test]
+    fn converts_pending_queue_items_and_skips_successful_items() {
+        let first = temporary_path("batch_first", "md");
+        let second = temporary_path("batch_second", "md");
+        let output_directory = temporary_path("batch_output", "dir");
+        fs::create_dir(&output_directory).unwrap();
+        fs::write(&first, "# First\n").unwrap();
+        fs::write(&second, "# Second\n").unwrap();
+
+        let mut app = MarkoffApp {
+            target: Format::Json,
+            output_directory: Some(output_directory.clone()),
+            ..MarkoffApp::default()
+        };
+        app.add_file(first.clone());
+        app.add_file(second.clone());
+        let outputs = app
+            .jobs
+            .iter()
+            .map(|job| job.output.clone())
+            .collect::<Vec<_>>();
+
+        app.convert_all();
+
+        assert!(app.jobs.iter().all(|job| job.status == JobStatus::Success));
+        assert!(outputs.iter().all(|path| path.exists()));
+        assert!(
+            outputs
+                .iter()
+                .all(|path| path.parent() == Some(output_directory.as_path()))
+        );
+
+        app.convert_all();
+        assert!(app.jobs.iter().all(|job| job.status == JobStatus::Success));
+
+        for path in [first, second] {
+            fs::remove_file(path).unwrap();
+        }
+        for output in outputs {
+            fs::remove_file(output).unwrap();
+        }
+        fs::remove_dir(output_directory).unwrap();
     }
 
     #[test]
