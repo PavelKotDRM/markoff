@@ -62,11 +62,14 @@ fn heading_text(paragraph: &str) -> Option<&str> {
 }
 
 fn convert_formula_paragraph(paragraph: &str) -> String {
+    if paragraph.starts_with('$') {
+        return normalize_math_delimiters(paragraph);
+    }
     if let Some((label, rest)) = paragraph.split_once("  \n")
         && label.trim_end().ends_with(':')
     {
         if rest.trim_start().starts_with('$') {
-            return format!("{label}  \n{}", unescape_math_backslashes(rest));
+            return format!("{label}  \n{}", normalize_math_delimiters(rest));
         }
         let body_lines = rest.split("  \n").collect::<Vec<_>>();
         if body_lines.len() > 1
@@ -85,13 +88,30 @@ fn convert_formula_paragraph(paragraph: &str) -> String {
     }
     if let Some((label, formula)) = paragraph.split_once(": ") {
         if formula.trim_start().starts_with('$') {
-            return format!("{label}: {}", unescape_math_backslashes(formula));
+            return format!("{label}: {}", normalize_math_delimiters(formula));
         }
         if looks_like_formula(formula) {
             return format!("{label}: ${}$", latex_math_from_plain_text(formula));
         }
     }
     paragraph.to_string()
+}
+
+fn normalize_math_delimiters(text: &str) -> String {
+    let text = text.trim();
+    if let Some(expression) = text
+        .strip_prefix("$$")
+        .and_then(|value| value.strip_suffix("$$"))
+    {
+        format!("$${}$$", latex_math_from_plain_text(expression))
+    } else if let Some(expression) = text
+        .strip_prefix('$')
+        .and_then(|value| value.strip_suffix('$'))
+    {
+        format!("${}$", latex_math_from_plain_text(expression))
+    } else {
+        unescape_math_backslashes(text)
+    }
 }
 
 fn looks_like_formula(text: &str) -> bool {

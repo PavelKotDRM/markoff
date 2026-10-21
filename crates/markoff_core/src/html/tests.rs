@@ -57,6 +57,20 @@ fn parses_hand_written_html_with_void_elements_and_table() {
 }
 
 #[test]
+fn parses_unicode_in_html_tag_attributes_without_panicking() {
+    let html = unique_temp_path("html_unicode_attribute", "html");
+    let markdown_out = unique_temp_path("html_unicode_attribute_output", "md");
+    fs::write(&html, "<p a=\"abВ\">Visible text</p>").unwrap();
+
+    convert_html_to_markdown(&html, &markdown_out).unwrap();
+
+    assert_eq!(fs::read_to_string(&markdown_out).unwrap(), "Visible text\n");
+
+    fs::remove_file(html).ok();
+    fs::remove_file(markdown_out).ok();
+}
+
+#[test]
 fn reports_unclosed_comments_without_writing_partial_output() {
     let html = unique_temp_path("html_unclosed_comment", "html");
     let markdown_out = unique_temp_path("html_unclosed_comment_output", "md");

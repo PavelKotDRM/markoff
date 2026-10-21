@@ -37,7 +37,11 @@ pub(crate) fn markdown_from_docx_run(
         VerticalAlign::Superscript => format!("$^{{{}}}$", latex_escape(core)),
         VerticalAlign::Subscript => format!("$_{{{}}}$", latex_escape(core)),
         VerticalAlign::Baseline => {
-            let mut rendered = markdown_escape(core, MarkdownEscapeContext::Docx);
+            let mut rendered = if is_math_span(core) {
+                core.to_string()
+            } else {
+                markdown_escape(core, MarkdownEscapeContext::Docx)
+            };
             match (style.bold, style.italic) {
                 (true, true) => rendered = format!("***{rendered}***"),
                 (true, false) => rendered = format!("**{rendered}**"),
@@ -67,4 +71,9 @@ pub(crate) fn markdown_from_docx_run(
         rendered = format!("[{rendered}]({destination})");
     }
     format!("{leading}{rendered}{trailing}")
+}
+
+fn is_math_span(text: &str) -> bool {
+    (text.starts_with("$$") && text.ends_with("$$") && text.len() > 4)
+        || (text.starts_with('$') && text.ends_with('$') && text.len() > 2)
 }

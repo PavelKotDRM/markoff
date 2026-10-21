@@ -8,24 +8,40 @@ use std::collections::BTreeMap;
 pub(super) fn read_footnotes(
     archive: &mut zip::ZipArchive<std::fs::File>,
 ) -> Result<BTreeMap<i64, String>, MarkoffError> {
+    read_notes(archive, "footnotes", "footnote")
+}
+
+pub(super) fn read_endnotes(
+    archive: &mut zip::ZipArchive<std::fs::File>,
+) -> Result<BTreeMap<i64, String>, MarkoffError> {
+    read_notes(archive, "endnotes", "endnote")
+}
+
+fn read_notes(
+    archive: &mut zip::ZipArchive<std::fs::File>,
+    part_name: &str,
+    note_element: &str,
+) -> Result<BTreeMap<i64, String>, MarkoffError> {
     use quick_xml::Reader;
     use quick_xml::events::Event;
     use std::io::Read;
 
     let mut document = String::new();
     {
-        let Ok(mut file) = archive.by_name("word/footnotes.xml") else {
+        let part_path = format!("word/{part_name}.xml");
+        let Ok(mut file) = archive.by_name(&part_path) else {
             return Ok(BTreeMap::new());
         };
         file.read_to_string(&mut document)?;
     }
-    let relationships = if let Ok(mut file) = archive.by_name("word/_rels/footnotes.xml.rels") {
-        let mut relationships = String::new();
-        file.read_to_string(&mut relationships)?;
-        parse_relationships(&relationships)?
-    } else {
-        BTreeMap::new()
-    };
+    let relationships =
+        if let Ok(mut file) = archive.by_name(&format!("word/_rels/{part_name}.xml.rels")) {
+            let mut relationships = String::new();
+            file.read_to_string(&mut relationships)?;
+            parse_relationships(&relationships)?
+        } else {
+            BTreeMap::new()
+        };
 
     let mut reader = Reader::from_str(&document);
     reader.config_mut().trim_text(false);
@@ -46,7 +62,7 @@ pub(super) fn read_footnotes(
     loop {
         match reader.read_event().map_err(invalid_data)? {
             Event::Start(event) | Event::Empty(event) => match event.local_name().as_ref() {
-                "footnote" => {
+                name if name == note_element => {
                     footnote_id = event
                         .attributes()
                         .flatten()
@@ -141,7 +157,7 @@ pub(super) fn read_footnotes(
                         paragraphs.push(paragraph.clone());
                     }
                 }
-                "footnote" => {
+                name if name == note_element => {
                     if let Some(id) = footnote_id.take()
                         && id > 0
                     {

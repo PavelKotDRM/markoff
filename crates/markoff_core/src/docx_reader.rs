@@ -1,7 +1,8 @@
 use crate::MarkoffError;
-use crate::docx_footnotes::read_footnotes;
+use crate::docx_footnotes::{read_endnotes, read_footnotes};
 use crate::docx_inline::{DocxRunStyle, VerticalAlign, pageref_target};
 use crate::docx_markdown::{heading_anchor, list_prefix, table_from_rows, textual_list_item};
+use crate::docx_math::MathNode;
 use crate::docx_postprocess::{convert_formula_section, convert_textual_footnotes};
 use crate::docx_resources::{read_media_part, read_numbering, read_relationships};
 use crate::docx_runs::{
@@ -135,6 +136,75 @@ fn render_table(rows: &[Vec<TableCell>]) -> String {
     html
 }
 
+fn handle_math_event(
+    event: &quick_xml::events::Event<'_>,
+    stack: &mut Vec<MathNode>,
+    paragraph: &mut String,
+    pending_run: &mut Option<PendingRun>,
+) -> Result<bool, MarkoffError> {
+    use quick_xml::events::Event;
+
+    match event {
+        Event::Start(event) => {
+            let name = event.local_name().as_ref().to_owned();
+            let starts_math = matches!(name.as_str(), "oMath" | "oMathPara");
+            if stack.is_empty() && !starts_math {
+                return Ok(false);
+            }
+            stack.push(MathNode::new(name, attribute_value(event, "val")?));
+        }
+        Event::Empty(event) => {
+            let name = event.local_name().as_ref().to_owned();
+            let starts_math = matches!(name.as_str(), "oMath" | "oMathPara");
+            if stack.is_empty() && !starts_math {
+                return Ok(false);
+            }
+            let node = MathNode::new(name, attribute_value(event, "val")?);
+            if let Some(parent) = stack.last_mut() {
+                parent.push_child(node);
+            } else {
+                flush_pending_run(paragraph, pending_run);
+                let display = node.is_display() || paragraph.is_empty();
+                paragraph.push_str(&node.into_markdown(display));
+            }
+        }
+        Event::End(_) if !stack.is_empty() => {
+            let Some(node) = stack.pop() else {
+                return Ok(false);
+            };
+            if let Some(parent) = stack.last_mut() {
+                parent.push_child(node);
+            } else {
+                flush_pending_run(paragraph, pending_run);
+                let display = node.is_display() || paragraph.is_empty();
+                paragraph.push_str(&node.into_markdown(display));
+            }
+        }
+        Event::Text(event) if !stack.is_empty() => {
+            let text = quick_xml::escape::unescape(event.as_ref()).map_err(invalid_data)?;
+            if let Some(node) = stack.last_mut() {
+                node.push_text(&text);
+            }
+        }
+        Event::GeneralRef(event) if !stack.is_empty() => {
+            let text = resolve_general_ref(event)?;
+            if let Some(node) = stack.last_mut() {
+                node.push_text(&text);
+            }
+        }
+        Event::Eof if !stack.is_empty() => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "unterminated Office Math expression",
+            )
+            .into());
+        }
+        _ if !stack.is_empty() => {}
+        _ => return Ok(false),
+    }
+    Ok(true)
+}
+
 pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<(), MarkoffError> {
     use quick_xml::Reader;
     use quick_xml::events::Event;
@@ -149,6 +219,7 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
         .read_to_string(&mut document)?;
     let numbering = read_numbering(&mut archive)?;
     let footnotes = read_footnotes(&mut archive)?;
+    let endnotes = read_endnotes(&mut archive)?;
     let relationships = read_relationships(&mut archive)?;
     let image_dir = output
         .parent()
@@ -160,7 +231,9 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
     let mut markdown = Vec::new();
     let mut paragraph = String::new();
     let mut raw_paragraph = String::new();
+    let mut math_stack = Vec::new();
     let mut run = String::new();
+    let mut run_depth = 0usize;
     let mut pending_run: Option<PendingRun> = None;
     let mut heading_level = None;
     let mut code_block = false;
@@ -178,7 +251,9 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
     let mut paragraph_has_code = false;
     let mut paragraph_has_plain_text = false;
     let mut in_paragraph = false;
+    let mut paragraph_depth = 0usize;
     let mut referenced_footnotes = BTreeSet::new();
+    let mut referenced_endnotes = BTreeSet::new();
     let mut table_rows = Vec::new();
     let mut table_row = Vec::new();
     let mut table_cell_paragraphs = Vec::new();
@@ -191,7 +266,11 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
     let mut image_alt = String::new();
 
     loop {
-        match reader.read_event().map_err(invalid_data)? {
+        let event = reader.read_event().map_err(invalid_data)?;
+        if handle_math_event(&event, &mut math_stack, &mut paragraph, &mut pending_run)? {
+            continue;
+        }
+        match event {
             Event::Start(event) | Event::Empty(event) => match event.local_name().as_ref() {
                 "tbl" => {
                     in_table = true;
@@ -220,27 +299,35 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                     );
                 }
                 "p" => {
-                    in_paragraph = true;
-                    paragraph.clear();
-                    raw_paragraph.clear();
-                    heading_level = None;
-                    code_block = false;
-                    quote = false;
-                    horizontal_rule = false;
-                    list_numbering_id = None;
-                    list_level = 0;
-                    pending_run = None;
-                    bookmarks.clear();
-                    field_instruction.clear();
-                    page_reference = None;
-                    hyperlink_target = None;
-                    in_field_result = false;
-                    paragraph_has_code = false;
-                    paragraph_has_plain_text = false;
+                    if in_paragraph {
+                        paragraph_depth += 1;
+                    } else {
+                        in_paragraph = true;
+                        paragraph_depth = 1;
+                        paragraph.clear();
+                        raw_paragraph.clear();
+                        heading_level = None;
+                        code_block = false;
+                        quote = false;
+                        horizontal_rule = false;
+                        list_numbering_id = None;
+                        list_level = 0;
+                        pending_run = None;
+                        bookmarks.clear();
+                        field_instruction.clear();
+                        page_reference = None;
+                        hyperlink_target = None;
+                        in_field_result = false;
+                        paragraph_has_code = false;
+                        paragraph_has_plain_text = false;
+                    }
                 }
                 "r" => {
-                    run.clear();
-                    run_properties.start_run();
+                    if run_depth == 0 {
+                        run.clear();
+                        run_properties.start_run();
+                    }
+                    run_depth += 1;
                 }
                 "b" => run_properties.bold = word_property_enabled(&event),
                 "i" => run_properties.italic = word_property_enabled(&event),
@@ -371,6 +458,15 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                         referenced_footnotes.insert(id);
                     }
                 }
+                "endnoteReference" => {
+                    if let Some(id) =
+                        attribute_value(&event, "id")?.and_then(|value| value.parse::<i64>().ok())
+                    {
+                        flush_pending_run(&mut paragraph, &mut pending_run);
+                        paragraph.push_str(&format!("[^endnote-{id}]"));
+                        referenced_endnotes.insert(id);
+                    }
+                }
                 "pStyle" => {
                     if let Some(value) = attribute_value(&event, "val")? {
                         heading_level = value
@@ -442,7 +538,9 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                     }
                     image_alt.clear();
                 }
+                "r" if run_depth > 1 => run_depth -= 1,
                 "r" => {
+                    run_depth = 0;
                     if !run.is_empty() {
                         raw_paragraph.push_str(&run);
                         paragraph_has_code |= run_properties.code;
@@ -463,6 +561,7 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                     flush_pending_run(&mut paragraph, &mut pending_run);
                     hyperlink_target = None;
                 }
+                "p" if paragraph_depth > 1 => paragraph_depth -= 1,
                 "p" => {
                     flush_pending_run(&mut paragraph, &mut pending_run);
                     if horizontal_rule || !paragraph.is_empty() {
@@ -528,6 +627,7 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                             });
                         }
                     }
+                    paragraph_depth = 0;
                     in_paragraph = false;
                 }
                 "tc" if in_table_cell => {
@@ -544,7 +644,11 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                     }
                 }
                 "tbl" if in_table => {
-                    if !table_rows.is_empty() {
+                    if table_rows
+                        .iter()
+                        .flatten()
+                        .any(|cell: &TableCell| !cell.content.trim().is_empty())
+                    {
                         markdown.push(render_table(&table_rows));
                     }
                     in_table = false;
@@ -563,6 +667,19 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                 for paragraph in paragraphs {
                     definition.push_str("\n\n    ");
                     definition.push_str(paragraph);
+                }
+                markdown.push(definition);
+            }
+        }
+    }
+    for id in referenced_endnotes {
+        if let Some(content) = endnotes.get(&id) {
+            let mut paragraphs = content.split("\n\n");
+            if let Some(first) = paragraphs.next() {
+                let mut definition = format!("[^endnote-{id}]: {}", first.trim());
+                for paragraph in paragraphs {
+                    definition.push_str("\n\n    ");
+                    definition.push_str(paragraph.trim());
                 }
                 markdown.push(definition);
             }

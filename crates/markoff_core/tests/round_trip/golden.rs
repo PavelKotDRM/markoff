@@ -31,21 +31,30 @@ fn golden_document_round_trip_preserves_core_markdown_content() {
 
     let source_markdown = fs::read_to_string(&markdown).unwrap();
     assert!(
-        source_markdown.contains("[**1. Heading Level 1 / Заголовок уровня 1 3**](#_heading=)"),
-        "tab between TOC title and page number should become a space, not merge digits: {source_markdown:?}"
+        source_markdown.contains("[1. Heading Level 1 / Заголовок уровня 1 4](#_Toc000000002)"),
+        "updated table of contents entry should retain its title, page, and bookmark: {source_markdown:?}"
+    );
+    assert_eq!(
+        source_markdown.matches("This is a text box").count(),
+        1,
+        "text box content should be emitted once"
+    );
+    assert!(
+        !source_markdown.contains("|  |  |  |  |  |  |  |  |  |  |"),
+        "empty placeholder tables should not be emitted"
     );
     for expected in [
-        "Текст со сноской номер 1.[^1]",
-        "Текст со второй сноской.[^2]",
-        "Текст с концевой сноской.[^i]",
-        "[^1]: Сноска 1: Это тестовая сноска.",
-        "[^2]: Сноска 2: Вторая тестовая сноска с ссылкой на https://example.com",
-        "[^i]: Концевая сноска 1: Это тестовая концевая сноска.",
-        "Встроенная формула: $E = mc^{2}$",
-        "Формула в отдельной строке:  \n$$x = (-b \\pm \\sqrt{b2 - 4ac}) / 2a$$",
-        "Матрица:  \n$$\\begin{matrix} 1 & 2 \\\\ 3 & 4 \\end{matrix}$$",
-        "Дробь:  \n$$\\frac{a + b}{c + d}$$",
-        "Интеграл:  \n$$\\int0\\infty e-x dx = 1$$",
+        "Текст со сноской номер 1[^1].",
+        "Текст со второй сноской[^2].",
+        "[^1]:  Сноска 1: Это тестовая сноска.",
+        "[^2]:  Сноска 2: Вторая тестовая сноска с ссылкой на https://example.com",
+        "Текст с концевой сноской.[^endnote-1]",
+        "[^endnote-1]: Концевая сноска 1: Это тестовая концевая сноска.",
+        "Встроенная формула: $E=mc^{2}$",
+        "$$x=\\frac{\\left(-b\\pm\\sqrt{b2-4ac}\\right)}{2a}$$",
+        "$$\\left[\\begin{matrix}1 & 2 \\\\ 3 & 4\\end{matrix}\\right]$$",
+        "$$\\frac{a+b}{c+d}$$",
+        "$$\\int_{\\infty}^{0}e-xdx=1$$",
     ] {
         assert!(
             source_markdown.contains(expected),
@@ -56,10 +65,10 @@ fn golden_document_round_trip_preserves_core_markdown_content() {
     let rendered = fs::read_to_string(&restored_markdown).unwrap();
     for expected in [
         "# 1. Heading Level 1 / Заголовок уровня 1",
-        "[**1. Heading Level 1 / Заголовок уровня 1 3**](#_heading=)",
+        "[1. Heading Level 1 / Заголовок уровня 1 4](#_Toc000000002)",
         "**полужирный текст,** *курсив,* ***полужирный курсив,*** <u>подчеркнутый текст,</u> ~~зачеркнутый текст,~~ верхний индекс x$^{2}$, нижний индекс H$_{2}$O",
-        "Встроенная формула: $E = mc^{2}$",
-        "$$\\begin{matrix} 1 & 2 \\\\ 3 & 4 \\end{matrix}$$",
+        "Встроенная формула: $E=mc^{2}$",
+        "$$\\left[\\begin{matrix}1 & 2 \\\\ 3 & 4\\end{matrix}\\right]$$",
         "**Полужирный текст.**",
         "***Полужирный курсивный текст.***",
         "И пример имени файла: report_final_v2.docx",
@@ -75,8 +84,10 @@ fn golden_document_round_trip_preserves_core_markdown_content() {
         "\\<td>160\\</td>",
         "\\<td>110\\</td>",
         "\\<td>50\\</td>",
-        "Текст со сноской номер 1.[^1]",
+        "Текст со сноской номер 1[^1].",
         "[^1]: Сноска 1: Это тестовая сноска.",
+        "Текст с концевой сноской.[^3]",
+        "[^3]: Концевая сноска 1: Это тестовая концевая сноска.",
     ] {
         assert!(
             rendered.contains(expected),

@@ -66,6 +66,7 @@ mod document_model;
 mod docx_footnotes;
 mod docx_inline;
 mod docx_markdown;
+mod docx_math;
 mod docx_postprocess;
 mod docx_reader;
 mod docx_resources;

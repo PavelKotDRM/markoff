@@ -33,7 +33,11 @@ pub(super) fn tokenize(html: &str) -> Result<Vec<Token>, Error> {
                 index += end + 3;
                 continue;
             }
-            if rest.len() >= 9 && rest[..9].eq_ignore_ascii_case("<!doctype") {
+            if rest
+                .as_bytes()
+                .get(..9)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"<!doctype"))
+            {
                 index += rest.find('>').map_or(rest.len(), |end| end + 1);
                 continue;
             }
