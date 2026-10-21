@@ -5,6 +5,116 @@ use crate::error::invalid_data;
 use crate::xml_utils::{attribute_value, parse_relationships};
 use std::collections::BTreeMap;
 
+pub(super) struct EndnoteNumbering {
+    format: String,
+    next: usize,
+    labels: BTreeMap<i64, String>,
+}
+
+impl EndnoteNumbering {
+    pub(super) fn read(
+        archive: &mut zip::ZipArchive<std::fs::File>,
+        document: &str,
+    ) -> Result<Self, MarkoffError> {
+        use std::io::Read;
+
+        let mut numbering = Self {
+            format: "lowerRoman".to_string(),
+            next: 1,
+            labels: BTreeMap::new(),
+        };
+        let mut settings = String::new();
+        match archive.by_name("word/settings.xml") {
+            Ok(mut file) => {
+                file.read_to_string(&mut settings)?;
+            }
+            Err(zip::result::ZipError::FileNotFound) => {}
+            Err(error) => return Err(invalid_data(error).into()),
+        }
+        numbering.apply_properties(&settings)?;
+        numbering.apply_properties(document)?;
+        Ok(numbering)
+    }
+
+    fn apply_properties(&mut self, xml: &str) -> Result<(), MarkoffError> {
+        use quick_xml::events::Event;
+
+        let mut reader = quick_xml::Reader::from_str(xml);
+        let mut in_properties = false;
+        loop {
+            match reader.read_event().map_err(invalid_data)? {
+                Event::Start(event) if event.local_name().as_ref() == "endnotePr" => {
+                    in_properties = true;
+                }
+                Event::Start(event) | Event::Empty(event) if in_properties => {
+                    match event.local_name().as_ref() {
+                        "numFmt" => {
+                            if let Some(format) = attribute_value(&event, "val")? {
+                                self.format = format;
+                            }
+                        }
+                        "numStart" => {
+                            if let Some(start) = attribute_value(&event, "val")? {
+                                self.next = start.parse().map_err(invalid_data)?;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Event::End(event) if event.local_name().as_ref() == "endnotePr" => {
+                    in_properties = false;
+                }
+                Event::Eof => break,
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn label(&mut self, id: i64) -> String {
+        if let Some(label) = self.labels.get(&id) {
+            return label.clone();
+        }
+        let number = match self.format.as_str() {
+            "lowerRoman" => roman_number(self.next).to_ascii_lowercase(),
+            "upperRoman" => roman_number(self.next),
+            _ => self.next.to_string(),
+        };
+        self.next += 1;
+        let label = format!("endnote-{number}");
+        self.labels.insert(id, label.clone());
+        label
+    }
+}
+
+fn roman_number(mut number: usize) -> String {
+    if number == 0 || number > 3999 {
+        return number.to_string();
+    }
+    let mut rendered = String::new();
+    for (value, symbol) in [
+        (1000, "M"),
+        (900, "CM"),
+        (500, "D"),
+        (400, "CD"),
+        (100, "C"),
+        (90, "XC"),
+        (50, "L"),
+        (40, "XL"),
+        (10, "X"),
+        (9, "IX"),
+        (5, "V"),
+        (4, "IV"),
+        (1, "I"),
+    ] {
+        while number >= value {
+            rendered.push_str(symbol);
+            number -= value;
+        }
+    }
+    rendered
+}
+
 pub(super) fn read_footnotes(
     archive: &mut zip::ZipArchive<std::fs::File>,
 ) -> Result<BTreeMap<i64, String>, MarkoffError> {
@@ -171,4 +281,43 @@ fn read_notes(
         }
     }
     Ok(footnotes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::EndnoteNumbering;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn endnote_labels_follow_numbering_not_package_ids() {
+        let mut numbering = EndnoteNumbering {
+            format: "decimal".to_string(),
+            next: 1,
+            labels: BTreeMap::new(),
+        };
+        numbering
+            .apply_properties(
+                "<w:settings xmlns:w=\"urn:test\"><w:footnotePr><w:numFmt w:val=\"decimal\"/></w:footnotePr><w:endnotePr><w:numFmt w:val=\"lowerRoman\"/><w:numStart w:val=\"4\"/></w:endnotePr></w:settings>",
+            )
+            .unwrap();
+        assert_eq!(numbering.label(42), "endnote-iv");
+        assert_eq!(numbering.label(42), "endnote-iv");
+        assert_eq!(numbering.label(7), "endnote-v");
+    }
+
+    #[test]
+    fn section_endnote_format_overrides_document_settings() {
+        let mut numbering = EndnoteNumbering {
+            format: "lowerRoman".to_string(),
+            next: 1,
+            labels: BTreeMap::new(),
+        };
+        numbering
+            .apply_properties(
+                "<w:sectPr xmlns:w=\"urn:test\"><w:endnotePr><w:numFmt w:val=\"upperRoman\"/></w:endnotePr></w:sectPr>",
+            )
+            .unwrap();
+        assert_eq!(numbering.label(10), "endnote-I");
+        assert_eq!(numbering.label(20), "endnote-II");
+    }
 }

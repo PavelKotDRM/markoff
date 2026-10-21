@@ -650,6 +650,75 @@ mod tests {
     }
 
     #[test]
+    fn golden_docx_preview_loads_svg_images_and_retains_roman_endnote() {
+        use eframe::egui::load::{ImagePoll, SizeHint};
+        use pulldown_cmark::{Event, Options, Parser, Tag};
+
+        let document = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("golden")
+            .join("Golden_Word_Test_Document_v2.docx");
+        let directory = temporary_path("preview_golden_svg", "tmp");
+        let preview = markdown_document_preview(&document, Format::Docx, directory.clone());
+        let SourcePreview::Markdown {
+            content, base_dir, ..
+        } = &preview
+        else {
+            panic!("expected a Markdown preview for the golden DOCX");
+        };
+        let markdown = markdown_with_absolute_image_paths(content, base_dir);
+        let mut reference = false;
+        let mut definition = false;
+        let mut svg_count = 0;
+        let context = eframe::egui::Context::default();
+        egui_extras::install_image_loaders(&context);
+        for event in Parser::new_ext(&markdown, Options::all()) {
+            match event {
+                Event::FootnoteReference(label) if label.as_ref() == "endnote-i" => {
+                    reference = true;
+                }
+                Event::Start(Tag::FootnoteDefinition(label)) if label.as_ref() == "endnote-i" => {
+                    definition = true;
+                }
+                Event::Start(Tag::Image { dest_url, .. }) if dest_url.ends_with(".svg") => {
+                    svg_count += 1;
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                    let image = loop {
+                        match context.try_load_image(&dest_url, SizeHint::default()) {
+                            Ok(ImagePoll::Ready { image }) => break image,
+                            Ok(ImagePoll::Pending { .. }) => {
+                                assert!(
+                                    std::time::Instant::now() < deadline,
+                                    "SVG preview {dest_url} timed out"
+                                );
+                                std::thread::sleep(std::time::Duration::from_millis(10));
+                            }
+                            Err(error) => {
+                                panic!("SVG preview {dest_url} failed to load: {error}");
+                            }
+                        }
+                    };
+                    assert!(image.width() > 0 && image.height() > 0);
+                    assert!(
+                        image.pixels.iter().any(|pixel| pixel.a() > 0),
+                        "SVG preview {dest_url} must not be transparent"
+                    );
+                }
+                _ => {}
+            }
+        }
+        assert!(
+            reference,
+            "missing Roman endnote reference in the GUI preview"
+        );
+        assert!(definition, "missing endnote definition in the GUI preview");
+        assert_eq!(svg_count, 4);
+        drop(preview);
+        assert!(!directory.exists());
+    }
+
+    #[test]
     fn failed_document_preview_reports_the_conversion_error_and_cleans_up() {
         let document = temporary_path("preview_failed_document", "docx");
         let directory = temporary_path("preview_failed_assets", "tmp");

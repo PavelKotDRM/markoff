@@ -14,7 +14,7 @@ path = "src/main.rs"
 anyhow = "1.0"
 egui = "0.37"
 egui_commonmark = "0.26"
-egui_extras = { version = "0.37", features = ["file", "image"] }
+egui_extras = { version = "0.37", features = ["file", "image", "svg_text"] }
 markoff_core = { path = "../markoff_core" }
 pulldown-cmark = "0.13"
 rfd = "0.17"

@@ -10,6 +10,7 @@ use crate::zip_utils::write_zip_part;
 mod blocks;
 mod footnotes;
 mod hyperlinks;
+mod images;
 mod lists;
 mod theme_styles;
 
@@ -17,8 +18,9 @@ use blocks::{
     docx_code_block, docx_paragraph, docx_table, is_fenced_code_block_start, is_markdown_table_row,
     is_markdown_table_start, styles_xml,
 };
-use footnotes::{extract_footnotes, render_footnotes};
+use footnotes::{NoteReference, extract_footnotes, render_endnotes, render_footnotes};
 use hyperlinks::{HyperlinkAllocator, build_heading_bookmarks};
+use images::ImageAllocator;
 use lists::{NumberingStyle, parse_markdown_lists};
 
 pub(crate) fn convert_markdown_to_docx(
@@ -26,14 +28,34 @@ pub(crate) fn convert_markdown_to_docx(
     output: &Path,
     theme: &DocumentTheme,
 ) -> Result<(), MarkoffError> {
+    use std::io::Write as _;
     use zip::write::SimpleFileOptions;
 
     let source = std::fs::read_to_string(input)?;
+    let base_dir = input
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let images = ImageAllocator::new(&source, base_dir)?;
     let (source, footnotes) = extract_footnotes(&source);
     let footnote_ids = footnotes
         .iter()
-        .map(|footnote| (footnote.label.as_str(), footnote.id))
+        .map(|footnote| {
+            (
+                footnote.label.as_str(),
+                NoteReference {
+                    id: footnote.id,
+                    kind: footnote.kind,
+                },
+            )
+        })
         .collect::<HashMap<_, _>>();
+    let has_footnotes = footnotes
+        .iter()
+        .any(|note| note.kind == footnotes::NoteKind::Footnote);
+    let has_endnotes = footnotes
+        .iter()
+        .any(|note| note.kind == footnotes::NoteKind::Endnote);
     let lines = source.lines().collect::<Vec<_>>();
     let (heading_bookmarks, heading_anchors) = build_heading_bookmarks(&lines);
     let lists = parse_markdown_lists(&source);
@@ -46,8 +68,11 @@ pub(crate) fn convert_markdown_to_docx(
     }
     let mut body = String::new();
     let mut index = 0;
-    let mut document_hyperlinks =
-        HyperlinkAllocator::new(4, lines.len().saturating_add(1), &heading_anchors);
+    let mut document_hyperlinks = HyperlinkAllocator::new(
+        images.next_relationship_id(),
+        lines.len().saturating_add(1),
+        &heading_anchors,
+    );
     while index < lines.len() {
         let line = lines[index];
         if is_markdown_table_start(&lines, index) {
@@ -60,6 +85,7 @@ pub(crate) fn convert_markdown_to_docx(
                 &rows,
                 &footnote_ids,
                 &mut document_hyperlinks,
+                &images,
                 theme,
             ));
         } else if is_fenced_code_block_start(line) {
@@ -107,6 +133,7 @@ pub(crate) fn convert_markdown_to_docx(
                         .get(paragraph_start)
                         .and_then(Option::as_ref),
                     &mut document_hyperlinks,
+                    &images,
                     theme,
                 )?);
             }
@@ -151,38 +178,84 @@ pub(crate) fn convert_markdown_to_docx(
     } else {
         "<w:sectPr/>".to_string()
     };
+    let section = if has_endnotes {
+        let label = footnotes
+            .iter()
+            .find(|note| note.kind == footnotes::NoteKind::Endnote)
+            .map(|note| note.label.trim_start_matches("endnote-"))
+            .unwrap_or_default();
+        let number_format = if !label.is_empty()
+            && label.chars().all(|character| "ivxlcdm".contains(character))
+        {
+            "lowerRoman"
+        } else if !label.is_empty() && label.chars().all(|character| "IVXLCDM".contains(character))
+        {
+            "upperRoman"
+        } else {
+            "decimal"
+        };
+        let properties =
+            format!("<w:endnotePr><w:numFmt w:val=\"{number_format}\"/></w:endnotePr>");
+        if section == "<w:sectPr/>" {
+            format!("<w:sectPr>{properties}</w:sectPr>")
+        } else {
+            section.replace("<w:pgSz", &format!("{properties}<w:pgSz"))
+        }
+    } else {
+        section
+    };
     let document = format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body>{body}{section}</w:body></w:document>"
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" xmlns:wp=\"http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing\" xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:pic=\"http://schemas.openxmlformats.org/drawingml/2006/picture\" xmlns:asvg=\"http://schemas.microsoft.com/office/drawing/2016/SVG/main\"><w:body>{body}{section}</w:body></w:document>"
     );
     let content_types = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/><Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/></Types>";
     let mut content_types = content_types.replace(
         "</Types>",
         "<Override PartName=\"/word/numbering.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml\"/><Override PartName=\"/word/styles.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml\"/></Types>",
     );
-    if !footnotes.is_empty() {
+    if has_footnotes {
         content_types = content_types.replace(
             "</Types>",
             "<Override PartName=\"/word/footnotes.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml\"/></Types>",
         );
     }
+    if has_endnotes {
+        content_types = content_types.replace(
+            "</Types>",
+            "<Override PartName=\"/word/endnotes.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.endnotes+xml\"/></Types>",
+        );
+    }
+    if !images.is_empty() {
+        content_types = content_types.replace(
+            "</Types>",
+            &format!("{}</Types>", images.content_type_entries()),
+        );
+    }
     let relationships = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"word/document.xml\"/></Relationships>";
     let mut document_relationships = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering\" Target=\"numbering.xml\"/></Relationships>".to_string();
-    if !footnotes.is_empty() {
+    if has_footnotes {
         document_relationships = document_relationships.replace(
             "</Relationships>",
             "<Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes\" Target=\"footnotes.xml\"/></Relationships>",
+        );
+    }
+    if has_endnotes {
+        document_relationships = document_relationships.replace(
+            "</Relationships>",
+            "<Relationship Id=\"rIdEndnotes\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/endnotes\" Target=\"endnotes.xml\"/></Relationships>",
         );
     }
     document_relationships = document_relationships.replace(
         "</Relationships>",
         "<Relationship Id=\"rId3\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/></Relationships>",
     );
+    let image_and_hyperlink_relationships = format!(
+        "{}{}",
+        images.relationship_entries(),
+        document_hyperlinks.relationship_entries()
+    );
     document_relationships = document_relationships.replace(
         "</Relationships>",
-        &format!(
-            "{}</Relationships>",
-            document_hyperlinks.relationship_entries()
-        ),
+        &format!("{image_and_hyperlink_relationships}</Relationships>"),
     );
     if header_part.is_some() {
         document_relationships = document_relationships.replace(
@@ -259,24 +332,66 @@ pub(crate) fn convert_markdown_to_docx(
     let options = SimpleFileOptions::default();
     let mut footnote_hyperlinks =
         HyperlinkAllocator::new(1, lines.len().saturating_add(1), &heading_anchors);
-    let footnotes_xml = (!footnotes.is_empty()).then(|| {
+    let footnotes_xml = has_footnotes.then(|| {
         if theme.enabled {
             theme_styles::apply_code_character_style(
                 &render_footnotes(
                     &footnotes,
+                    &footnote_ids,
                     &mut footnote_hyperlinks,
+                    &images,
                     "<w:pPr><w:pStyle w:val=\"FootnoteText\"/></w:pPr>",
                 ),
                 "CodeChar",
             )
         } else {
-            render_footnotes(&footnotes, &mut footnote_hyperlinks, "")
+            render_footnotes(
+                &footnotes,
+                &footnote_ids,
+                &mut footnote_hyperlinks,
+                &images,
+                "",
+            )
         }
     });
-    let footnote_relationships = footnote_hyperlinks.has_relationships().then(|| {
+    let endnotes_xml = has_endnotes.then(|| {
+        if theme.enabled {
+            theme_styles::apply_code_character_style(
+                &render_endnotes(
+                    &footnotes,
+                    &footnote_ids,
+                    &mut footnote_hyperlinks,
+                    &images,
+                    "<w:pPr><w:pStyle w:val=\"EndnoteText\"/></w:pPr>",
+                ),
+                "CodeChar",
+            )
+        } else {
+            render_endnotes(
+                &footnotes,
+                &footnote_ids,
+                &mut footnote_hyperlinks,
+                &images,
+                "",
+            )
+        }
+    });
+    let footnote_relationships = (has_footnotes
+        && (footnote_hyperlinks.has_relationships() || !images.is_empty()))
+    .then(|| {
         format!(
-            "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">{}</Relationships>",
-            footnote_hyperlinks.relationship_entries()
+            "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">{}{}</Relationships>",
+            images.relationship_entries(),
+            footnote_hyperlinks.relationship_entries(),
+        )
+    });
+    let endnote_relationships = (has_endnotes
+        && (footnote_hyperlinks.has_relationships() || !images.is_empty()))
+    .then(|| {
+        format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">{}{}</Relationships>",
+            images.relationship_entries(),
+            footnote_hyperlinks.relationship_entries(),
         )
     });
     let mut parts = vec![
@@ -299,14 +414,29 @@ pub(crate) fn convert_markdown_to_docx(
     if let Some(footnotes_xml) = &footnotes_xml {
         parts.push(("word/footnotes.xml", footnotes_xml.as_str()));
     }
+    if let Some(endnotes_xml) = &endnotes_xml {
+        parts.push(("word/endnotes.xml", endnotes_xml.as_str()));
+    }
     if let Some(footnote_relationships) = &footnote_relationships {
         parts.push((
             "word/_rels/footnotes.xml.rels",
             footnote_relationships.as_str(),
         ));
     }
+    if let Some(endnote_relationships) = &endnote_relationships {
+        parts.push((
+            "word/_rels/endnotes.xml.rels",
+            endnote_relationships.as_str(),
+        ));
+    }
     for (name, content) in parts {
         write_zip_part(&mut archive, options, name, content)?;
+    }
+    for (name, bytes) in images.parts() {
+        archive
+            .start_file(format!("word/media/{name}"), options)
+            .map_err(invalid_data)?;
+        archive.write_all(bytes)?;
     }
     archive.finish().map_err(invalid_data)?;
     Ok(())

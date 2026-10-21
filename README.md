@@ -33,7 +33,7 @@ The project has moved beyond the initial stub stage:
 - `Markdown Tables <-> ODS`, including multi-sheet workbooks
 - `JSON / CSV / YAML / TOML <-> XLSX` for arrays of objects and tabular sheets
 - `JSON / CSV / YAML / TOML <-> ODS` for arrays of objects and typed tabular cells
-- `DOCX <-> Markdown` for headings, paragraphs, tables, nested bulleted/numbered lists, bold/italic/strikethrough/underline text, inline and fenced code, blockquotes, horizontal rules, footnotes, bookmarks, and `PAGEREF` links
+- `DOCX <-> Markdown` for headings, paragraphs, tables, nested bulleted/numbered lists, bold/italic/strikethrough/underline text, inline and fenced code, blockquotes, horizontal rules, footnotes/endnotes, bookmarks, images, and `PAGEREF` links
 - `ODT <-> Markdown` for supported document structure and inline formatting
 - `DOCX -> HTML` through Markdown, preserving supported document elements
 - `DOCX tables -> CSV / XLSX / JSON / YAML / TOML`, plus `CSV / XLSX -> DOCX`
@@ -49,7 +49,6 @@ The project has moved beyond the initial stub stage:
 
 ### Still pending
 
-- Re-embedding images into DOCX when converting from Markdown or structured data
 - PPTX shape layout, embedded images/charts, and speaker notes are not preserved (only slide titles and body text/bullets)
 
 ## Architecture
@@ -265,11 +264,12 @@ applies to PDF and HTML, and HTML page settings apply when printing.
 ## Format behavior and limitations
 
 - DOCX, ODT, and Markdown preserve supported headings, paragraphs, nested ordered and bulleted lists, tables, bold/italic/strikethrough/underline text, inline and fenced code blocks, blockquotes, horizontal rules, footnotes, bookmarks, and links. `PAGEREF` fields are specific to DOCX. Structured JSON/YAML/TOML also preserve inline formatting, list numbering, table alignment, and fenced-code info strings.
+- DOCX endnotes use separate Markdown labels, such as `[^endnote-i]` for lower-Roman numbering or `[^endnote-1]` for decimal numbering. Their definitions are written at the end of the Markdown file. Returning these labels to DOCX preserves the endnote type and Roman/decimal numbering. The GUI Markdown preview supports SVG images, including their text.
 - PDF to Markdown, JSON, YAML, or TOML extracts the document text layer with Pdfium and embedded raster images with `lopdf` (saved as files next to Markdown or embedded in structured output). Page layout, vector graphics, tables, and scanned text are not preserved, and images are appended after the text rather than placed at their original position.
 - Markdown, DOCX, and JSON/YAML/TOML to PDF renders supported document structure, inline formatting, nested lists, aligned tables, code blocks, blockquotes, footnotes, links, bookmarks, and embedded raster images. Long code lines wrap inside their shaded blocks, including across pages. Headings are added to the PDF outline; internal links and HTTP(S)/mailto/tel links remain clickable. Other URI schemes are printed as text. Content is reflowed onto new A4 pages, so original pagination and exact page placement are not retained. JSON/YAML/TOML document schemas are rendered as documents; other valid values are printed as formatted source code. SVG images are not supported for PDF output.
 - Markdown tables convert to and from XLSX and ODS. Each `## Sheet name` heading represents a workbook sheet; the first table row becomes the frozen header row in XLSX.
 - Markdown/DOCX/ODT/PDF/PPTX/ODP/HTML to JSON/YAML/TOML and back preserve supported document structure as an ordered `blocks` array with typed inline `content`, nested list items, footnote definitions and references, links, bookmarks, images, and rich table `cells`. Older `text` and table `rows` documents remain readable. `--tables-only` retains table blocks.
-- Images embedded in a DOCX or PDF are extracted and saved as files in an `image` folder next to the Markdown output, referenced with standard `![alt](image/file.ext)` syntax. Converting to JSON/YAML/TOML embeds image data as base64. Converting structured data back to Markdown restores image files; Markdown-to-HTML embeds local image data in the HTML. Converting back to DOCX does not yet re-embed images as OOXML pictures.
+- Images embedded in a DOCX or PDF are extracted and saved as files in an `image` folder next to the Markdown output, referenced with standard `![alt](image/file.ext)` syntax. Shapes, SmartArt, and charts in DOCX are emitted as simplified SVG previews; the preview keeps visible labels and chart values, not the original editable object or exact layout. Converting to JSON/YAML/TOML embeds image data as base64, and converting structured data back to Markdown restores image files. Markdown-to-DOCX re-embeds supported local raster and SVG images as OOXML pictures. SVG images are not supported for PDF output.
 - JSON, CSV, YAML, and TOML convert to XLSX or ODS as tabular data. JSON/YAML/TOML input for this route must be an array of objects; this is a separate, table-only convention from the whole-document `blocks` schema above.
 - OpenDocument imports append a versioned Markoff service block to Markdown. It contains the complete original ODT/ODS/ODP package. An unchanged Markdown round trip restores the package byte for byte. Text-only edits with the same document structure update `content.xml` while preserving styles, formulas, merged cells, images, charts, slide layouts, speaker notes, metadata, and unknown extension parts. A structural edit that cannot be mapped safely returns an explicit error instead of silently dropping package objects; remove the service block to intentionally create a new document from the visible Markdown.
 - Visible ODT/ODS/ODP Markdown is still a simplified editable projection: advanced layout and embedded images are not independently extracted for direct Markdown editing. They remain losslessly preserved by the service block. PDF output reflows content and does not retain source pagination or exact placement. PPTX conversion remains limited to slide titles and body text/bullets.

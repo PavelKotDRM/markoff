@@ -1,12 +1,26 @@
 use std::collections::HashMap;
 
 use super::hyperlinks::HyperlinkAllocator;
+use super::images::{ImageAllocator, parse_image_destination};
 use crate::docx_inline::markdown_inline_to_docx_runs_with_links;
 
 pub(super) struct Footnote {
     pub(super) id: usize,
     pub(super) label: String,
+    pub(super) kind: NoteKind,
     paragraphs: Vec<String>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum NoteKind {
+    Footnote,
+    Endnote,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct NoteReference {
+    pub(super) id: usize,
+    pub(super) kind: NoteKind,
 }
 
 pub(super) fn extract_footnotes(source: &str) -> (String, Vec<Footnote>) {
@@ -37,9 +51,11 @@ pub(super) fn extract_footnotes(source: &str) -> (String, Vec<Footnote>) {
                     break;
                 }
             }
+            let kind = note_kind(label);
             footnotes.push(Footnote {
-                id: footnotes.len() + 1,
+                id: next_note_id(&footnotes, kind),
                 label: label.to_string(),
+                kind,
                 paragraphs,
             });
             continue;
@@ -79,8 +95,9 @@ fn replace_inline_footnotes(
         let label = format!("inline-{}", *inline_sequence);
         *inline_sequence += 1;
         footnotes.push(Footnote {
-            id: footnotes.len() + 1,
+            id: next_note_id(footnotes, NoteKind::Footnote),
             label: label.clone(),
+            kind: NoteKind::Footnote,
             paragraphs: vec![after_start[..end].to_string()],
         });
         rendered.push_str("[^");
@@ -92,15 +109,30 @@ fn replace_inline_footnotes(
     rendered
 }
 
+fn note_kind(label: &str) -> NoteKind {
+    if label.starts_with("endnote-") {
+        NoteKind::Endnote
+    } else {
+        NoteKind::Footnote
+    }
+}
+
+fn next_note_id(footnotes: &[Footnote], kind: NoteKind) -> usize {
+    footnotes.iter().filter(|note| note.kind == kind).count() + 1
+}
+
 pub(super) fn markdown_inline_to_docx_runs_with_footnotes(
     value: &str,
-    footnote_ids: &HashMap<&str, usize>,
+    footnote_ids: &HashMap<&str, NoteReference>,
     hyperlinks: &mut HyperlinkAllocator,
+    images: &ImageAllocator,
 ) -> String {
     let (value, bookmarks) = extract_bookmark_markers(value);
     let rendered = value
         .split('\n')
-        .map(|line| markdown_inline_to_docx_runs_without_breaks(line, footnote_ids, hyperlinks))
+        .map(|line| {
+            markdown_inline_to_docx_runs_without_breaks(line, footnote_ids, hyperlinks, images)
+        })
         .collect::<Vec<_>>()
         .join("<w:r><w:br/></w:r>");
     hyperlinks.wrap_bookmarks(rendered, bookmarks)
@@ -132,38 +164,65 @@ fn extract_bookmark_markers(value: &str) -> (String, Vec<String>) {
 
 fn markdown_inline_to_docx_runs_without_breaks(
     value: &str,
-    footnote_ids: &HashMap<&str, usize>,
+    footnote_ids: &HashMap<&str, NoteReference>,
     hyperlinks: &mut HyperlinkAllocator,
+    images: &ImageAllocator,
 ) -> String {
     let mut runs = String::new();
     let mut remaining = value;
-    while let Some(start) = remaining.find("[^") {
-        let before = &remaining[..start];
+    loop {
+        let image_start = remaining.find("![");
+        let note_start = remaining.find("[^");
+        let Some(start) = [image_start, note_start].into_iter().flatten().min() else {
+            break;
+        };
         let mut resolve = |destination: &str| hyperlinks.resolve(destination);
         runs.push_str(&markdown_inline_to_docx_runs_with_links(
-            before,
+            &remaining[..start],
             &mut resolve,
         ));
-        let after_start = &remaining[start + 2..];
-        let Some(end) = after_start.find(']') else {
-            let mut resolve = |destination: &str| hyperlinks.resolve(destination);
-            runs.push_str(&markdown_inline_to_docx_runs_with_links(
-                &remaining[start..],
-                &mut resolve,
-            ));
-            return runs;
-        };
-        let label = &after_start[..end];
-        if let Some(id) = footnote_ids.get(label) {
-            runs.push_str(&format!("<w:r><w:footnoteReference w:id=\"{id}\"/></w:r>"));
-        } else {
-            let mut resolve = |destination: &str| hyperlinks.resolve(destination);
-            runs.push_str(&markdown_inline_to_docx_runs_with_links(
-                &remaining[start..start + end + 3],
-                &mut resolve,
-            ));
+
+        if image_start == Some(start)
+            && let Some((alt, destination, consumed)) = parse_image_destination(&remaining[start..])
+            && let Some(drawing) = images.drawing_xml(destination, alt)
+        {
+            runs.push_str(&drawing);
+            remaining = &remaining[start + consumed..];
+            continue;
         }
-        remaining = &after_start[end + 1..];
+
+        if note_start == Some(start) {
+            let after_start = &remaining[start + 2..];
+            if let Some(end) = after_start.find(']') {
+                let label = &after_start[..end];
+                if let Some(reference) = footnote_ids.get(label) {
+                    let element = match reference.kind {
+                        NoteKind::Footnote => "footnoteReference",
+                        NoteKind::Endnote => "endnoteReference",
+                    };
+                    runs.push_str(&format!(
+                        "<w:r><w:{element} w:id=\"{}\"/></w:r>",
+                        reference.id
+                    ));
+                    remaining = &after_start[end + 1..];
+                    continue;
+                }
+                let mut resolve = |destination: &str| hyperlinks.resolve(destination);
+                runs.push_str(&markdown_inline_to_docx_runs_with_links(
+                    &remaining[start..start + end + 3],
+                    &mut resolve,
+                ));
+                remaining = &after_start[end + 1..];
+                continue;
+            }
+        }
+
+        let mut resolve = |destination: &str| hyperlinks.resolve(destination);
+        runs.push_str(&markdown_inline_to_docx_runs_with_links(
+            &remaining[start..start + 2],
+            &mut resolve,
+        ));
+        remaining = &remaining[start + 2..];
     }
     let mut resolve = |destination: &str| hyperlinks.resolve(destination);
     runs.push_str(&markdown_inline_to_docx_runs_with_links(
@@ -175,34 +234,82 @@ fn markdown_inline_to_docx_runs_without_breaks(
 
 pub(super) fn render_footnotes(
     footnotes: &[Footnote],
+    footnote_ids: &HashMap<&str, NoteReference>,
     hyperlinks: &mut HyperlinkAllocator,
+    images: &ImageAllocator,
     paragraph_properties: &str,
 ) -> String {
+    render_notes(
+        footnotes,
+        NoteKind::Footnote,
+        footnote_ids,
+        hyperlinks,
+        images,
+        paragraph_properties,
+    )
+}
+
+pub(super) fn render_endnotes(
+    footnotes: &[Footnote],
+    footnote_ids: &HashMap<&str, NoteReference>,
+    hyperlinks: &mut HyperlinkAllocator,
+    images: &ImageAllocator,
+    paragraph_properties: &str,
+) -> String {
+    render_notes(
+        footnotes,
+        NoteKind::Endnote,
+        footnote_ids,
+        hyperlinks,
+        images,
+        paragraph_properties,
+    )
+}
+
+fn render_notes(
+    footnotes: &[Footnote],
+    kind: NoteKind,
+    footnote_ids: &HashMap<&str, NoteReference>,
+    hyperlinks: &mut HyperlinkAllocator,
+    images: &ImageAllocator,
+    paragraph_properties: &str,
+) -> String {
+    let (note_element, notes_element) = match kind {
+        NoteKind::Footnote => ("footnote", "footnotes"),
+        NoteKind::Endnote => ("endnote", "endnotes"),
+    };
     let entries = footnotes
         .iter()
+        .filter(|footnote| footnote.kind == kind)
         .map(|footnote| {
             let paragraphs = footnote
                 .paragraphs
                 .split(|paragraph| paragraph.is_empty())
                 .filter(|paragraph| !paragraph.is_empty())
                 .map(|paragraph| {
-                    let mut resolve = |destination: &str| hyperlinks.resolve(destination);
                     format!(
                         "<w:p>{paragraph_properties}{}</w:p>",
-                        markdown_inline_to_docx_runs_with_links(
+                        markdown_inline_to_docx_runs_with_footnotes(
                             &paragraph.join("\n"),
-                            &mut resolve
+                            footnote_ids,
+                            hyperlinks,
+                            images,
                         )
                     )
                 })
                 .collect::<String>();
+            let reference = if kind == NoteKind::Endnote {
+                "<w:r><w:endnoteRef/></w:r>"
+            } else {
+                ""
+            };
             format!(
-                "<w:footnote w:id=\"{}\">{paragraphs}</w:footnote>",
+                "<w:{note_element} w:id=\"{}\"><w:p>{paragraph_properties}{reference}</w:p>{paragraphs}</w:{note_element}>",
                 footnote.id
             )
         })
         .collect::<String>();
     format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><w:footnotes xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:footnote w:type=\"separator\" w:id=\"-1\"><w:p><w:r><w:separator/></w:r></w:p></w:footnote><w:footnote w:type=\"continuationSeparator\" w:id=\"0\"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:footnote>{entries}</w:footnotes>"
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><w:{notes_element} xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" xmlns:wp=\"http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing\" xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:pic=\"http://schemas.openxmlformats.org/drawingml/2006/picture\" xmlns:asvg=\"http://schemas.microsoft.com/office/drawing/2016/SVG/main\"><w:{note_element} w:type=\"separator\" w:id=\"-1\"><w:p><w:r><w:separator/></w:r></w:p></w:{note_element}><w:{note_element} w:type=\"continuationSeparator\" w:id=\"0\"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:{note_element}>{entries}</w:{notes_element}>"
     )
 }

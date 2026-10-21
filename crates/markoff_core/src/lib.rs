@@ -64,6 +64,7 @@ mod data;
 mod document;
 mod document_model;
 mod docx_footnotes;
+mod docx_graphics;
 mod docx_inline;
 mod docx_markdown;
 mod docx_math;

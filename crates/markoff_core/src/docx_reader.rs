@@ -1,5 +1,6 @@
 use crate::MarkoffError;
-use crate::docx_footnotes::{read_endnotes, read_footnotes};
+use crate::docx_footnotes::{EndnoteNumbering, read_endnotes, read_footnotes};
+use crate::docx_graphics::extract_svg_graphics;
 use crate::docx_inline::{DocxRunStyle, VerticalAlign, pageref_target};
 use crate::docx_markdown::{heading_anchor, list_prefix, table_from_rows, textual_list_item};
 use crate::docx_math::MathNode;
@@ -220,11 +221,14 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
     let numbering = read_numbering(&mut archive)?;
     let footnotes = read_footnotes(&mut archive)?;
     let endnotes = read_endnotes(&mut archive)?;
+    let mut endnote_numbering = EndnoteNumbering::read(&mut archive, &document)?;
     let relationships = read_relationships(&mut archive)?;
+    let svg_graphics = extract_svg_graphics(&document, &mut archive, &relationships)?;
     let image_dir = output
         .parent()
         .map_or_else(|| PathBuf::from("image"), |parent| parent.join("image"));
     let mut image_counter = 0usize;
+    let mut drawing_index = 0usize;
 
     let mut reader = Reader::from_str(&document);
     reader.config_mut().trim_text(false);
@@ -463,7 +467,8 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                         attribute_value(&event, "id")?.and_then(|value| value.parse::<i64>().ok())
                     {
                         flush_pending_run(&mut paragraph, &mut pending_run);
-                        paragraph.push_str(&format!("[^endnote-{id}]"));
+                        let label = endnote_numbering.label(id);
+                        paragraph.push_str(&format!("[^{label}]"));
                         referenced_endnotes.insert(id);
                     }
                 }
@@ -519,6 +524,7 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                 "instrText" => in_instruction_text = false,
                 "fldSimple" => in_field_result = false,
                 "drawing" if in_paragraph => {
+                    let mut wrote_image = false;
                     if let Some(rel_id) = image_rel_id.take()
                         && let Some(target) = relationships.get(&rel_id)
                         && let Some(bytes) = read_media_part(&mut archive, target)
@@ -534,8 +540,18 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
                         {
                             flush_pending_run(&mut paragraph, &mut pending_run);
                             paragraph.push_str(&format!("![{image_alt}](image/{file_name})"));
+                            wrote_image = true;
                         }
                     }
+                    if !wrote_image && let Some(Some(svg)) = svg_graphics.get(drawing_index) {
+                        std::fs::create_dir_all(&image_dir)?;
+                        let file_name = format!("graphic{}.svg", drawing_index + 1);
+                        std::fs::write(image_dir.join(&file_name), svg)?;
+                        flush_pending_run(&mut paragraph, &mut pending_run);
+                        let alt = image_alt.trim();
+                        paragraph.push_str(&format!("![{alt}](image/{file_name})"));
+                    }
+                    drawing_index += 1;
                     image_alt.clear();
                 }
                 "r" if run_depth > 1 => run_depth -= 1,
@@ -674,9 +690,10 @@ pub(crate) fn convert_docx_to_markdown(input: &Path, output: &Path) -> Result<()
     }
     for id in referenced_endnotes {
         if let Some(content) = endnotes.get(&id) {
+            let label = endnote_numbering.label(id);
             let mut paragraphs = content.split("\n\n");
             if let Some(first) = paragraphs.next() {
-                let mut definition = format!("[^endnote-{id}]: {}", first.trim());
+                let mut definition = format!("[^{label}]: {}", first.trim());
                 for paragraph in paragraphs {
                     definition.push_str("\n\n    ");
                     definition.push_str(paragraph.trim());

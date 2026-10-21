@@ -503,3 +503,55 @@ fn markdown_docx_round_trip_preserves_footnotes() {
 
     remove_files(&[&markdown, &document, &restored]);
 }
+
+#[test]
+fn markdown_docx_round_trip_preserves_endnotes_as_endnotes() {
+    use std::io::Read;
+    use zip::ZipArchive;
+
+    let markdown = temporary_path("endnotes_input", "md");
+    let document = temporary_path("endnotes_document", "docx");
+    let restored = temporary_path("endnotes_output", "md");
+    fs::write(
+        &markdown,
+        "Text with a footnote[^1] and an endnote.[^endnote-1]\n\n[^1]: Footnote content.\n\n[^endnote-1]: Endnote content.\n",
+    )
+    .unwrap();
+
+    convert_file(&markdown, &document, Format::Markdown, Format::Docx).unwrap();
+
+    let file = fs::File::open(&document).unwrap();
+    let mut archive = ZipArchive::new(file).unwrap();
+    let mut document_xml = String::new();
+    archive
+        .by_name("word/document.xml")
+        .unwrap()
+        .read_to_string(&mut document_xml)
+        .unwrap();
+    let mut endnotes_xml = String::new();
+    archive
+        .by_name("word/endnotes.xml")
+        .unwrap()
+        .read_to_string(&mut endnotes_xml)
+        .unwrap();
+    let mut footnotes_xml = String::new();
+    archive
+        .by_name("word/footnotes.xml")
+        .unwrap()
+        .read_to_string(&mut footnotes_xml)
+        .unwrap();
+    assert!(document_xml.contains("<w:footnoteReference w:id=\"1\"/>"));
+    assert!(document_xml.contains("<w:endnoteReference w:id=\"1\"/>"));
+    assert!(footnotes_xml.contains("<w:footnote w:id=\"1\">"));
+    assert!(footnotes_xml.contains("Footnote content."));
+    assert!(endnotes_xml.contains("<w:endnote w:id=\"1\">"));
+    assert!(endnotes_xml.contains("Endnote content."));
+
+    convert_file(&document, &restored, Format::Docx, Format::Markdown).unwrap();
+    let rendered = fs::read_to_string(&restored).unwrap();
+    assert!(rendered.contains("Text with a footnote[^1] and an endnote.[^endnote-1]"));
+    assert!(rendered.contains("[^1]: Footnote content."));
+    assert!(rendered.contains("[^endnote-1]: Endnote content."));
+
+    remove_files(&[&markdown, &document, &restored]);
+}

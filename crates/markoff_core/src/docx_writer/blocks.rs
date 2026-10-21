@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
-use super::footnotes::markdown_inline_to_docx_runs_with_footnotes;
+use super::footnotes::{NoteReference, markdown_inline_to_docx_runs_with_footnotes};
 use super::hyperlinks::{Bookmark, HyperlinkAllocator};
+use super::images::ImageAllocator;
 use super::lists::ListParagraph;
 use crate::MarkoffError;
 use crate::docx_inline::{markdown_code_block_to_docx_runs, markdown_list_item};
@@ -71,10 +72,11 @@ pub(super) fn styles_xml(theme: &DocumentTheme) -> String {
 
 pub(super) fn docx_paragraph(
     line: &str,
-    footnote_ids: &HashMap<&str, usize>,
+    footnote_ids: &HashMap<&str, NoteReference>,
     list_item: Option<ListParagraph>,
     bookmark: Option<&Bookmark>,
     hyperlinks: &mut HyperlinkAllocator,
+    images: &ImageAllocator,
     theme: &DocumentTheme,
 ) -> Result<String, MarkoffError> {
     let heading_level = line
@@ -130,7 +132,8 @@ pub(super) fn docx_paragraph(
     } else {
         (String::new(), line)
     };
-    let runs = markdown_inline_to_docx_runs_with_footnotes(content, footnote_ids, hyperlinks);
+    let runs =
+        markdown_inline_to_docx_runs_with_footnotes(content, footnote_ids, hyperlinks, images);
     let content = if let Some(bookmark) = bookmark {
         format!(
             "<w:bookmarkStart w:id=\"{}\" w:name=\"{}\"/>{runs}<w:bookmarkEnd w:id=\"{}\"/>",
@@ -164,8 +167,9 @@ pub(super) fn docx_code_block(value: &str, theme: &DocumentTheme) -> String {
 
 pub(super) fn docx_table(
     rows: &[Vec<String>],
-    footnote_ids: &HashMap<&str, usize>,
+    footnote_ids: &HashMap<&str, NoteReference>,
     hyperlinks: &mut HyperlinkAllocator,
+    images: &ImageAllocator,
     theme: &DocumentTheme,
 ) -> String {
     let column_count = rows.iter().map(Vec::len).max().unwrap_or(0);
@@ -214,7 +218,8 @@ pub(super) fn docx_table(
                         markdown_inline_to_docx_runs_with_footnotes(
                             cell,
                             footnote_ids,
-                            hyperlinks
+                            hyperlinks,
+                            images,
                         )
                     )
                 })
