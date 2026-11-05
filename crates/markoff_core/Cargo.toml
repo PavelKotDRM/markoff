@@ -10,23 +10,25 @@ publish = false
 [dependencies]
 anyhow = "1"
 base64 = "0.23"
-calamine = "0.37"
+calamine = "0.38"
 csv = "1"
 dejavu = "2.37"
 epaint_default_fonts = "0.37"
 image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
-lopdf = "0.45"
+lopdf = "0.47"
 office_oxide = "0.1"
 pdfium-bundled = { version = "0.2", features = ["bundled"] }
+# pdfium-bundled ships PDFium 8066; pdfium-render 0.9.5 requires API 8125.
+pdfium-render = "=0.9.4"
 png = "0.18"
 pulldown-cmark = "0.13"
 quick-xml = "0.42"
-rust_xlsxwriter = "0.101"
+rust_xlsxwriter = "0.102"
 same-file = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
-skrifa = "0.48"
+skrifa = "0.49"
 thiserror = "2.0"
 toml = "1"
 tracing = "0.1"
