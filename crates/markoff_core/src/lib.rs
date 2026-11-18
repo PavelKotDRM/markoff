@@ -78,24 +78,29 @@ mod html;
 mod html_tokenizer;
 mod legacy_office;
 mod model;
+mod ocr;
 mod opendocument;
 mod pdf;
 mod pdf_writer;
 mod pptx;
 mod pptx_reader;
+mod slides;
 mod style;
 mod style_import;
 mod tables;
+mod workflow;
 mod xlsx;
 mod xml_utils;
 mod zip_utils;
 
 pub use model::{ConversionRequest, Format, MarkoffError, detect_format};
+pub use ocr::OcrConfig;
 pub use style::{
     StyleColor, StylePageOrientation, StylePageSize, StyleTextAlign, StyleThemePreview,
     default_style_theme_toml, load_style_theme_preview, write_default_style_theme,
 };
 pub use style_import::write_style_theme_from_document;
+pub use workflow::{ConversionOptions, convert_document_with_options, intermediate_document_path};
 
 use csv_format::{convert_csv_to_markdown, convert_markdown_to_csv};
 use data::{convert_data_to_xlsx, convert_xlsx_to_data};
@@ -110,7 +115,6 @@ use opendocument::{
     convert_data_to_ods, convert_markdown_to_odp, convert_markdown_to_ods, convert_markdown_to_odt,
     convert_odp_to_markdown, convert_ods_to_data, convert_ods_to_markdown, convert_odt_to_markdown,
 };
-use pdf::convert_pdf_to_markdown;
 use pdf_writer::convert_markdown_to_pdf;
 use pptx::{convert_markdown_to_pptx, convert_pptx_to_markdown};
 use style::{DocumentTheme, load_document_theme};
@@ -140,6 +144,10 @@ static INTERMEDIATE_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 /// - [`MarkoffError::Io`] when reading, writing, or converting a file fails.
 /// - [`MarkoffError::NotImplemented`] when the format pair is unavailable.
 pub fn convert_document(request: &ConversionRequest) -> Result<(), MarkoffError> {
+    convert_document_with_options(request, &ConversionOptions::default())
+}
+
+fn validate_request(request: &ConversionRequest) -> Result<(), MarkoffError> {
     if !request.input.exists() {
         return Err(MarkoffError::InvalidInput {
             path: request.input.to_string_lossy().to_string(),
@@ -186,21 +194,24 @@ pub fn convert_document(request: &ConversionRequest) -> Result<(), MarkoffError>
         })?;
     }
 
-    route_conversion(request)
+    Ok(())
 }
 
-fn route_conversion(request: &ConversionRequest) -> Result<(), MarkoffError> {
+fn route_with_options(
+    request: &ConversionRequest,
+    options: &ConversionOptions,
+) -> Result<(), MarkoffError> {
     if legacy_office::modern_equivalent(request.from).is_some() {
-        return route_legacy_input(request);
+        return route_legacy_input(request, options);
     }
     if legacy_office::modern_equivalent(request.to).is_some() {
-        return route_legacy_output(request);
+        return route_legacy_output(request, options);
     }
-    match request.from {
+    let result = match request.from {
         Format::Doc | Format::Xls | Format::Ppt => not_implemented(request),
         Format::Docx => route_docx(request),
         Format::Odt => route_odt(request),
-        Format::Pdf => route_pdf(request),
+        Format::Pdf => route_pdf(request, options),
         Format::Markdown => route_markdown(request),
         Format::Csv => route_csv(request),
         Format::Xlsx => route_xlsx(request),
@@ -209,10 +220,43 @@ fn route_conversion(request: &ConversionRequest) -> Result<(), MarkoffError> {
         Format::Pptx => route_pptx(request),
         Format::Odp => route_odp(request),
         Format::Html => route_html(request),
+    };
+    if matches!(result, Err(MarkoffError::NotImplemented { .. }))
+        && request.from != Format::Markdown
+        && request.to != Format::Markdown
+        && request.from != request.to
+    {
+        return convert_via_markdown_intermediate(
+            |markdown| {
+                route_with_options(
+                    &ConversionRequest {
+                        output: markdown.to_path_buf(),
+                        to: Format::Markdown,
+                        style: None,
+                        ..request.clone()
+                    },
+                    options,
+                )
+            },
+            |markdown| {
+                route_with_options(
+                    &ConversionRequest {
+                        input: markdown.to_path_buf(),
+                        from: Format::Markdown,
+                        ..request.clone()
+                    },
+                    options,
+                )
+            },
+        );
     }
+    result
 }
 
-fn route_legacy_input(request: &ConversionRequest) -> Result<(), MarkoffError> {
+fn route_legacy_input(
+    request: &ConversionRequest,
+    options: &ConversionOptions,
+) -> Result<(), MarkoffError> {
     let Some(modern_format) = legacy_office::modern_equivalent(request.from) else {
         return not_implemented(request);
     };
@@ -232,10 +276,13 @@ fn route_legacy_input(request: &ConversionRequest) -> Result<(), MarkoffError> {
         from: modern_format,
         ..request.clone()
     };
-    route_conversion(&modern_request)
+    route_with_options(&modern_request, options)
 }
 
-fn route_legacy_output(request: &ConversionRequest) -> Result<(), MarkoffError> {
+fn route_legacy_output(
+    request: &ConversionRequest,
+    options: &ConversionOptions,
+) -> Result<(), MarkoffError> {
     let Some(modern_format) = legacy_office::modern_equivalent(request.to) else {
         return not_implemented(request);
     };
@@ -261,7 +308,7 @@ fn route_legacy_output(request: &ConversionRequest) -> Result<(), MarkoffError> 
         to: modern_format,
         ..request.clone()
     };
-    route_conversion(&modern_request)?;
+    route_with_options(&modern_request, options)?;
     legacy_office::convert_from_modern(&modern_output, request.to, &request.output, &workspace)
 }
 
@@ -328,12 +375,14 @@ fn route_docx(request: &ConversionRequest) -> Result<(), MarkoffError> {
     }
 }
 
-fn route_pdf(request: &ConversionRequest) -> Result<(), MarkoffError> {
+fn route_pdf(request: &ConversionRequest, options: &ConversionOptions) -> Result<(), MarkoffError> {
     match request.to {
-        Format::Markdown => convert_pdf_to_markdown(&request.input, &request.output),
+        Format::Markdown => {
+            pdf::convert_pdf_with_ocr(&request.input, &request.output, &options.ocr)
+        }
         Format::Json | Format::Yaml | Format::Toml => {
             convert_source_to_structured(request, |markdown| {
-                convert_pdf_to_markdown(&request.input, markdown)
+                pdf::convert_pdf_with_ocr(&request.input, markdown, &options.ocr)
             })
         }
         _ => not_implemented(request),
@@ -367,6 +416,11 @@ fn route_markdown(request: &ConversionRequest) -> Result<(), MarkoffError> {
 fn route_csv(request: &ConversionRequest) -> Result<(), MarkoffError> {
     let theme = request_theme(request)?;
     match request.to {
+        Format::Json | Format::Yaml | Format::Toml => {
+            let sheets =
+                data::read_data_sheets(&request.input, request.from, request.csv_delimiter)?;
+            data::write_data_sheets(&request.output, request.to, request.csv_delimiter, &sheets)
+        }
         Format::Markdown => {
             convert_csv_to_markdown(&request.input, &request.output, request.csv_delimiter)
         }
@@ -412,10 +466,7 @@ fn route_ods(request: &ConversionRequest) -> Result<(), MarkoffError> {
             |markdown| convert_ods_to_markdown(&request.input, markdown),
             |markdown| convert_markdown_to_csv(markdown, &request.output, request.csv_delimiter),
         ),
-        Format::Xlsx => convert_via_markdown_intermediate(
-            |markdown| convert_ods_to_markdown(&request.input, markdown),
-            |markdown| convert_markdown_to_xlsx(markdown, &request.output),
-        ),
+        Format::Xlsx => opendocument::convert_ods_to_xlsx(&request.input, &request.output),
         Format::Json | Format::Yaml | Format::Toml => convert_ods_to_data(
             &request.input,
             &request.output,
@@ -434,10 +485,7 @@ fn route_xlsx(request: &ConversionRequest) -> Result<(), MarkoffError> {
             |markdown| convert_xlsx_to_markdown(&request.input, markdown),
             |markdown| convert_markdown_to_docx(markdown, &request.output, &theme),
         ),
-        Format::Ods => convert_via_markdown_intermediate(
-            |markdown| convert_xlsx_to_markdown(&request.input, markdown),
-            |markdown| convert_markdown_to_ods(markdown, &request.output),
-        ),
+        Format::Ods => opendocument::convert_xlsx_to_ods(&request.input, &request.output),
         Format::Json | Format::Csv | Format::Yaml | Format::Toml => convert_xlsx_to_data(
             &request.input,
             &request.output,
@@ -450,7 +498,24 @@ fn route_xlsx(request: &ConversionRequest) -> Result<(), MarkoffError> {
 
 fn route_structured_data(request: &ConversionRequest) -> Result<(), MarkoffError> {
     let theme = request_theme(request)?;
+    if matches!(request.to, Format::Csv | Format::Xlsx | Format::Ods) {
+        let source = std::fs::read_to_string(&request.input)?;
+        if document::is_document_schema(&source, request.from)? {
+            return convert_structured_via_markdown(request, |markdown| {
+                route_markdown(&ConversionRequest {
+                    input: markdown.to_path_buf(),
+                    from: Format::Markdown,
+                    ..request.clone()
+                })
+            });
+        }
+    }
     match request.to {
+        Format::Csv => {
+            let sheets =
+                data::read_data_sheets(&request.input, request.from, request.csv_delimiter)?;
+            data::write_data_sheets(&request.output, request.to, request.csv_delimiter, &sheets)
+        }
         Format::Markdown => convert_document_to_markdown(
             &request.input,
             &request.output,

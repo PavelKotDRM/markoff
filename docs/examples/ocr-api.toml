@@ -1,0 +1,8 @@
+# No local OCR build feature or weights are needed for this backend.
+keep_intermediate = true
+
+[ocr]
+backend = "api"
+endpoint = "http://127.0.0.1:8000/ocr"
+timeout_seconds = 120
+# token_env = "MARKOFF_OCR_TOKEN"

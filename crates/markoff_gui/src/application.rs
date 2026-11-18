@@ -2,7 +2,8 @@ use eframe::egui;
 use egui_commonmark::CommonMarkCache;
 use egui_extras::{Column, TableBuilder};
 use markoff_core::{
-    ConversionRequest, Format, convert_document, detect_format, supports_tables_only,
+    ConversionOptions, ConversionRequest, Format, convert_document_with_options, detect_format,
+    supports_tables_only,
 };
 use std::path::{Path, PathBuf};
 
@@ -36,6 +37,11 @@ const RENDERER: &str = if cfg!(target_os = "linux") {
 
 /// Runs the native markoff graphical application.
 pub fn run() -> eframe::Result<()> {
+    run_with_options(ConversionOptions::default())
+}
+
+/// Run the GUI with shared conversion and OCR settings.
+pub fn run_with_options(conversion_options: ConversionOptions) -> eframe::Result<()> {
     #[cfg(target_os = "linux")]
     let renderer = eframe::Renderer::Wgpu;
     #[cfg(not(target_os = "linux"))]
@@ -50,9 +56,12 @@ pub fn run() -> eframe::Result<()> {
     eframe::run_native(
         "markoff",
         options,
-        Box::new(|cc| {
+        Box::new(move |cc| {
             egui_extras::install_image_loaders(&cc.egui_ctx);
-            Ok(Box::new(MarkoffApp::default()))
+            Ok(Box::new(MarkoffApp {
+                conversion_options,
+                ..Default::default()
+            }))
         }),
     )
 }
@@ -67,6 +76,7 @@ enum JobStatus {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PreviewPane {
     Source,
+    Intermediate,
     Result,
 }
 
@@ -84,12 +94,14 @@ struct ConversionJob {
     input: PathBuf,
     output: PathBuf,
     source_preview: SourcePreview,
+    intermediate_preview: SourcePreview,
     result_preview: SourcePreview,
     status: JobStatus,
     message: String,
 }
 
 struct MarkoffApp {
+    conversion_options: ConversionOptions,
     jobs: Vec<ConversionJob>,
     selected: Option<usize>,
     target: Format,
@@ -132,6 +144,7 @@ fn make_output_path(input: &Path, output_directory: Option<&Path>, target: Forma
 impl Default for MarkoffApp {
     fn default() -> Self {
         Self {
+            conversion_options: ConversionOptions::default(),
             jobs: Vec::new(),
             selected: None,
             target: Format::Markdown,
@@ -160,6 +173,9 @@ impl MarkoffApp {
         let output = make_output_path(&input, self.output_directory.as_deref(), self.target);
         self.jobs.push(ConversionJob {
             source_preview: load_source_preview(&input),
+            intermediate_preview: SourcePreview::message(
+                "Enable Keep JSON intermediate before converting.",
+            ),
             result_preview: SourcePreview::message("Converted output will appear here."),
             input,
             output,
@@ -177,6 +193,8 @@ impl MarkoffApp {
             job.status = JobStatus::Pending;
             job.message.clear();
             job.result_preview = SourcePreview::message("Converted output will appear here.");
+            job.intermediate_preview =
+                SourcePreview::message("The JSON intermediate will appear after conversion.");
         }
     }
 
@@ -227,18 +245,25 @@ impl MarkoffApp {
         let input = job.input.clone();
         let output = job.output.clone();
         let result = detect_format(&input).and_then(|from| {
-            convert_document(&ConversionRequest {
-                input,
-                output: output.clone(),
-                from,
-                to: self.target,
-                overwrite: self.overwrite,
-                csv_delimiter: delimiter,
-                tables_only: self.tables_only,
-                style: self.style.clone(),
-            })
+            convert_document_with_options(
+                &ConversionRequest {
+                    input,
+                    output: output.clone(),
+                    from,
+                    to: self.target,
+                    overwrite: self.overwrite,
+                    csv_delimiter: delimiter,
+                    tables_only: self.tables_only,
+                    style: self.style.clone(),
+                },
+                &self.conversion_options,
+            )
         });
         let job = &mut self.jobs[index];
+        if self.conversion_options.keep_intermediate {
+            job.intermediate_preview =
+                load_source_preview(&markoff_core::intermediate_document_path(&output));
+        }
         match result {
             Ok(()) => {
                 job.status = JobStatus::Success;
@@ -393,6 +418,23 @@ impl eframe::App for MarkoffApp {
                     self.update_outputs();
                 }
                 ui.checkbox(&mut self.overwrite, "Overwrite existing files");
+                ui.checkbox(&mut self.conversion_options.keep_intermediate, "Keep JSON intermediate")
+                    .on_hover_text("Convert through OUTPUT.intermediate.json. Inspect or edit it and add it to the queue to export again.");
+                if ui.button("OCR / conversion config...").clicked()
+                    && let Some(path) = rfd::FileDialog::new()
+                        .add_filter("Conversion config", &["toml"])
+                        .pick_file()
+                {
+                    match ConversionOptions::from_file(&path) {
+                        Ok(options) => {
+                            self.conversion_options = options;
+                            self.update_outputs();
+                        }
+                        Err(error) => {
+                            self.style_notice = Some(StyleNotice::Failed(error.to_string()));
+                        }
+                    }
+                }
                 let tables_only_supported = self
                     .selected
                     .and_then(|index| self.jobs.get(index))
@@ -654,6 +696,7 @@ impl eframe::App for MarkoffApp {
             let selected_job = self.selected.and_then(|index| self.jobs.get(index));
             let selected_preview = selected_job.map(|job| &job.source_preview);
             let result_preview = selected_job.map(|job| &job.result_preview);
+            let intermediate_preview = selected_job.map(|job| &job.intermediate_preview);
             let markdown_cache = &mut self.markdown_cache;
 
             if let Some(job) = selected_job {
@@ -674,6 +717,11 @@ impl eframe::App for MarkoffApp {
             }
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.preview_pane, PreviewPane::Source, "Source");
+                ui.selectable_value(
+                    &mut self.preview_pane,
+                    PreviewPane::Intermediate,
+                    "Intermediate JSON",
+                );
                 ui.selectable_value(&mut self.preview_pane, PreviewPane::Result, "Result");
             });
             ui.separator();
@@ -692,6 +740,26 @@ impl eframe::App for MarkoffApp {
             }
 
             match self.preview_pane {
+                PreviewPane::Intermediate => {
+                    ui.heading("Intermediate JSON");
+                    if let Some(job) = selected_job {
+                        ui.label(
+                            markoff_core::intermediate_document_path(&job.output)
+                                .display()
+                                .to_string(),
+                        );
+                    }
+                    egui::ScrollArea::vertical()
+                        .id_salt("intermediate_scroll")
+                        .show(ui, |ui| {
+                            render_preview(
+                                ui,
+                                intermediate_preview,
+                                markdown_cache,
+                                "Enable Keep JSON intermediate before converting.",
+                            );
+                        });
+                }
                 PreviewPane::Source => {
                     ui.heading("Source");
                     egui::ScrollArea::vertical()
@@ -1039,6 +1107,32 @@ mod tests {
 
         fs::remove_file(markdown).ok();
         fs::remove_file(output).ok();
+    }
+
+    #[test]
+    fn keeps_an_inspectable_intermediate_in_the_gui() {
+        let markdown = temporary_path("intermediate_source", "md");
+        fs::write(&markdown, "# Inspectable\n\nText.\n").unwrap();
+        let mut app = MarkoffApp {
+            target: Format::Docx,
+            conversion_options: markoff_core::ConversionOptions {
+                keep_intermediate: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        app.add_file(markdown.clone());
+        app.convert_selected();
+        assert!(matches!(app.jobs[0].status, JobStatus::Success));
+        let SourcePreview::Tree(value) = &app.jobs[0].intermediate_preview else {
+            panic!("expected an inspectable JSON tree");
+        };
+        assert!(value["blocks"].is_array());
+        assert!(value.to_string().contains("Inspectable"));
+        let output = app.jobs[0].output.clone();
+        fs::remove_file(markoff_core::intermediate_document_path(&output)).unwrap();
+        fs::remove_file(output).unwrap();
+        fs::remove_file(markdown).unwrap();
     }
 
     #[test]

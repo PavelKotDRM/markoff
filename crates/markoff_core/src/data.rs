@@ -92,29 +92,17 @@ pub(crate) fn convert_data_to_xlsx(
     format: Format,
     delimiter: u8,
 ) -> Result<(), MarkoffError> {
-    let rows = read_data_rows(input, format, delimiter)?;
-    let mut sheets = BTreeMap::new();
-    sheets.insert("Sheet1".to_string(), rows);
+    let sheets = read_data_sheets(input, format, delimiter)?;
     write_xlsx_value_sheets(output, &sheets)
 }
 
-pub(crate) fn read_data_rows(
+pub(crate) fn read_data_sheets(
     input: &Path,
     format: Format,
     delimiter: u8,
-) -> Result<Vec<Vec<CellValue>>, MarkoffError> {
+) -> Result<BTreeMap<String, Vec<Vec<CellValue>>>, MarkoffError> {
     let source = std::fs::read_to_string(input)?;
-    Ok(match format {
-        Format::Json => rows_from_json(&serde_json::from_str(&source).map_err(invalid_data)?)?,
-        Format::Yaml => {
-            let value: serde_json::Value = serde_yaml::from_str(&source).map_err(invalid_data)?;
-            rows_from_json(&value)?
-        }
-        Format::Toml => {
-            let value: toml::Value = source.parse().map_err(invalid_data)?;
-            let value = serde_json::to_value(value).map_err(invalid_data)?;
-            rows_from_json(&value)?
-        }
+    let rows = match format {
         Format::Csv => {
             let mut reader = csv::ReaderBuilder::new()
                 .delimiter(delimiter)
@@ -138,8 +126,24 @@ pub(crate) fn read_data_rows(
             }
             rows
         }
-        _ => unreachable!("only structured data formats use this helper"),
-    })
+        Format::Json | Format::Yaml | Format::Toml => {
+            let value = crate::document::parse_structured_value(&source, format)?;
+            if let Some(object) = value.as_object() {
+                if object.len() == 1 && object.contains_key("rows") {
+                    rows_from_json(&object["rows"])?
+                } else {
+                    return object
+                        .iter()
+                        .map(|(name, rows)| Ok((name.clone(), rows_from_json(rows)?)))
+                        .collect();
+                }
+            } else {
+                rows_from_json(&value)?
+            }
+        }
+        _ => unreachable!("only CSV and structured data formats use this helper"),
+    };
+    Ok(BTreeMap::from([("Sheet1".to_string(), rows)]))
 }
 
 pub(crate) fn convert_xlsx_to_data(
@@ -191,7 +195,7 @@ pub(crate) fn write_data_sheets(
             };
             std::fs::write(
                 output,
-                toml::to_string_pretty(&value).map_err(invalid_data)?,
+                crate::document::render_structured_value(&value, Format::Toml)?,
             )?
         }
         Format::Csv => {

@@ -1,12 +1,23 @@
 use crate::MarkoffError;
 use crate::error::invalid_data;
+use crate::slides::{ImageSink, Slide, SlideBlock, chart_to_table, render_slides_markdown};
 use crate::xml_utils::{MarkdownEscapeContext, markdown_escape, parse_relationships};
-use std::io::{Error, ErrorKind};
+use std::io::{Error, ErrorKind, Read};
 use std::path::Path;
 
-pub(crate) fn convert_pptx_to_markdown(input: &Path, output: &Path) -> Result<(), MarkoffError> {
-    use std::io::Read;
+enum RawBlock {
+    Text(String, bool),
+    Image { alt: String, relationship: String },
+    Table(Vec<Vec<String>>),
+    Chart(String),
+}
 
+struct RawSlide {
+    title: String,
+    blocks: Vec<RawBlock>,
+}
+
+pub(crate) fn convert_pptx_to_markdown(input: &Path, output: &Path) -> Result<(), MarkoffError> {
     let file = std::fs::File::open(input)?;
     let mut archive = zip::ZipArchive::new(file).map_err(invalid_data)?;
 
@@ -24,7 +35,8 @@ pub(crate) fn convert_pptx_to_markdown(input: &Path, output: &Path) -> Result<()
     let relationship_targets = parse_relationships(&rels_xml)?;
     let slide_relationship_ids = read_slide_relationship_order(&presentation_xml)?;
 
-    let mut sections = Vec::new();
+    let mut slides = Vec::new();
+    let mut images = ImageSink::new(output);
     for (index, relationship_id) in slide_relationship_ids.iter().enumerate() {
         let target = relationship_targets.get(relationship_id).ok_or_else(|| {
             pptx_invalid(format!(
@@ -46,12 +58,111 @@ pub(crate) fn convert_pptx_to_markdown(input: &Path, output: &Path) -> Result<()
                 index + 1
             ))
         })?;
-        sections.push(slide_to_markdown(&slide_xml, index + 1)?);
+        drop(part);
+        let raw = parse_slide(&slide_xml, index + 1)?;
+        let (slide_dir, slide_file) = part_path.rsplit_once('/').unwrap_or(("", &part_path));
+        let slide_relationships = read_part_text(
+            &mut archive,
+            &format!("{slide_dir}/_rels/{slide_file}.rels"),
+        )
+        .map(|xml| parse_relationships(&xml))
+        .transpose()?
+        .unwrap_or_default();
+        slides.push(resolve_slide(
+            raw,
+            index + 1,
+            slide_dir,
+            &slide_relationships,
+            &mut archive,
+            &mut images,
+        )?);
     }
 
-    let markdown = sections.join("\n---\n\n");
-    std::fs::write(output, markdown)?;
+    std::fs::write(output, render_slides_markdown(&slides))?;
     Ok(())
+}
+
+fn read_part_bytes(archive: &mut zip::ZipArchive<std::fs::File>, name: &str) -> Option<Vec<u8>> {
+    let mut part = archive.by_name(name).ok()?;
+    let mut bytes = Vec::new();
+    part.read_to_end(&mut bytes).ok()?;
+    Some(bytes)
+}
+
+fn read_part_text(archive: &mut zip::ZipArchive<std::fs::File>, name: &str) -> Option<String> {
+    String::from_utf8(read_part_bytes(archive, name)?).ok()
+}
+
+fn resolve_slide(
+    raw: RawSlide,
+    slide_number: usize,
+    slide_dir: &str,
+    relationships: &std::collections::BTreeMap<String, String>,
+    archive: &mut zip::ZipArchive<std::fs::File>,
+    images: &mut ImageSink,
+) -> Result<Slide, MarkoffError> {
+    let escape = |text: &str| markdown_escape(text, MarkdownEscapeContext::Plain);
+    let escape_rows = |rows: Vec<Vec<String>>| {
+        rows.into_iter()
+            .map(|row| row.iter().map(|cell| escape(cell)).collect())
+            .collect::<Vec<_>>()
+    };
+    let mut blocks = Vec::new();
+    for block in raw.blocks {
+        match block {
+            RawBlock::Text(text, bulleted) => blocks.push(SlideBlock::Text { text, bulleted }),
+            RawBlock::Table(rows) => blocks.push(SlideBlock::Table(escape_rows(rows))),
+            RawBlock::Chart(relationship) => {
+                let rows = relationships
+                    .get(&relationship)
+                    .and_then(|target| {
+                        read_part_text(archive, &resolve_part_path(slide_dir, target))
+                    })
+                    .map(|xml| chart_to_table(&xml))
+                    .unwrap_or_default();
+                if !rows.is_empty() {
+                    blocks.push(SlideBlock::Table(escape_rows(rows)));
+                }
+            }
+            RawBlock::Image { alt, relationship } => {
+                let Some(target) = relationships.get(&relationship) else {
+                    continue;
+                };
+                let alt = escape(&alt);
+                if target.contains("://") {
+                    blocks.push(SlideBlock::Image {
+                        alt,
+                        source: target.clone(),
+                        data: None,
+                    });
+                    continue;
+                }
+                let part = resolve_part_path(slide_dir, target);
+                if let Some(source) = images.saved(&part) {
+                    blocks.push(SlideBlock::Image {
+                        alt,
+                        source,
+                        data: None,
+                    });
+                    continue;
+                }
+                let Some(bytes) = read_part_bytes(archive, &part) else {
+                    tracing::warn!(part, "slide image part is missing");
+                    continue;
+                };
+                let source = images.save(slide_number, &part, &bytes)?;
+                blocks.push(SlideBlock::Image {
+                    alt,
+                    source,
+                    data: None,
+                });
+            }
+        }
+    }
+    Ok(Slide {
+        title: raw.title,
+        blocks,
+    })
 }
 
 fn resolve_part_path(base_dir: &str, target: &str) -> String {
@@ -146,7 +257,19 @@ fn read_slide_relationship_order(xml: &str) -> Result<Vec<String>, Error> {
     Ok(ids)
 }
 
-fn slide_to_markdown(xml: &str, slide_number: usize) -> Result<String, Error> {
+fn tag_attribute(tag: &quick_xml::events::BytesStart<'_>, name: &str) -> Option<String> {
+    tag.attributes()
+        .flatten()
+        .find(|attribute| attribute.key.local_name().as_ref() == name)
+        .and_then(|attribute| {
+            attribute
+                .normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                .ok()
+                .map(|value| value.into_owned())
+        })
+}
+
+fn parse_slide(xml: &str, slide_number: usize) -> Result<RawSlide, Error> {
     use quick_xml::Reader;
     use quick_xml::events::Event;
 
@@ -154,14 +277,16 @@ fn slide_to_markdown(xml: &str, slide_number: usize) -> Result<String, Error> {
     reader.config_mut().trim_text(false);
 
     let mut title = String::new();
-    let mut body_paragraphs: Vec<(String, bool)> = Vec::new();
+    let mut blocks = Vec::new();
 
     let mut in_shape = false;
     let mut is_title_shape = false;
-    let mut in_paragraph = false;
+    let mut paragraph: Option<(String, bool)> = None;
     let mut in_run_text = false;
-    let mut paragraph_text = String::new();
-    let mut paragraph_bulleted = false;
+    let mut table: Option<Vec<Vec<String>>> = None;
+    let mut row: Option<Vec<String>> = None;
+    let mut cell: Option<Vec<String>> = None;
+    let mut picture: Option<(String, Option<String>)> = None;
     let mut open_elements = 0usize;
 
     loop {
@@ -185,28 +310,45 @@ fn slide_to_markdown(xml: &str, slide_number: usize) -> Result<String, Error> {
             open_elements = open_elements.saturating_sub(1);
         }
         match event {
-            Event::Start(tag) | Event::Empty(tag) => match tag.local_name().as_ref() {
+            Event::Start(tag) => match tag.local_name().as_ref() {
                 "sp" => {
                     in_shape = true;
                     is_title_shape = false;
                 }
-                "ph" if in_shape => {
-                    let is_title = tag.attributes().flatten().any(|attribute| {
-                        attribute.key.local_name().as_ref() == "type"
-                            && matches!(attribute.value.as_ref(), "title" | "ctrTitle")
-                    });
-                    if is_title {
-                        is_title_shape = true;
+                "tbl" => table = Some(Vec::new()),
+                "tr" if table.is_some() => row = Some(Vec::new()),
+                "tc" if row.is_some() => cell = Some(Vec::new()),
+                "p" if in_shape || cell.is_some() => paragraph = Some((String::new(), false)),
+                "t" => in_run_text = paragraph.is_some(),
+                "pic" => picture = Some((String::new(), None)),
+                _ => handle_empty_like(
+                    &tag,
+                    &mut blocks,
+                    &mut picture,
+                    &mut paragraph,
+                    in_shape,
+                    &mut is_title_shape,
+                ),
+            },
+            Event::Empty(tag) => match tag.local_name().as_ref() {
+                "tc" => {
+                    if let Some(row) = row.as_mut() {
+                        row.push(String::new());
                     }
                 }
-                "p" if in_shape => {
-                    in_paragraph = true;
-                    paragraph_text.clear();
-                    paragraph_bulleted = false;
+                "br" => {
+                    if let Some((text, _)) = paragraph.as_mut() {
+                        text.push(if cell.is_some() { '\n' } else { ' ' });
+                    }
                 }
-                "buChar" | "buAutoNum" if in_paragraph => paragraph_bulleted = true,
-                "t" if in_paragraph => in_run_text = true,
-                _ => {}
+                _ => handle_empty_like(
+                    &tag,
+                    &mut blocks,
+                    &mut picture,
+                    &mut paragraph,
+                    in_shape,
+                    &mut is_title_shape,
+                ),
             },
             Event::Text(text) if in_run_text => {
                 let unescaped = quick_xml::escape::unescape(text.as_ref()).map_err(|error| {
@@ -214,19 +356,49 @@ fn slide_to_markdown(xml: &str, slide_number: usize) -> Result<String, Error> {
                         "invalid escaped text in slide {slide_number}: {error}"
                     ))
                 })?;
-                paragraph_text.push_str(&unescaped);
+                if let Some((paragraph_text, _)) = paragraph.as_mut() {
+                    paragraph_text.push_str(&unescaped);
+                }
             }
             Event::End(tag) => match tag.local_name().as_ref() {
                 "t" => in_run_text = false,
-                "p" if in_shape => {
-                    in_paragraph = false;
+                "p" => {
+                    let Some((paragraph_text, bulleted)) = paragraph.take() else {
+                        continue;
+                    };
+                    if let Some(lines) = cell.as_mut() {
+                        lines.push(paragraph_text.trim().to_string());
+                        continue;
+                    }
                     let text = markdown_escape(paragraph_text.trim(), MarkdownEscapeContext::Plain);
                     if !text.is_empty() {
                         if is_title_shape && title.is_empty() {
                             title = text;
                         } else {
-                            body_paragraphs.push((text, paragraph_bulleted));
+                            blocks.push(RawBlock::Text(text, bulleted));
                         }
+                    }
+                }
+                "tc" => {
+                    if let (Some(lines), Some(row)) = (cell.take(), row.as_mut()) {
+                        let mut value = lines.join("\n");
+                        value.truncate(value.trim_end().len());
+                        row.push(value.trim_start().to_string());
+                    }
+                }
+                "tr" => {
+                    if let (Some(finished), Some(table)) = (row.take(), table.as_mut()) {
+                        table.push(finished);
+                    }
+                }
+                "tbl" => {
+                    if let Some(rows) = table.take().filter(|rows| !rows.is_empty()) {
+                        blocks.push(RawBlock::Table(rows));
+                    }
+                }
+                "pic" => {
+                    if let Some((alt, Some(relationship))) = picture.take() {
+                        blocks.push(RawBlock::Image { alt, relationship });
                     }
                 }
                 "sp" => in_shape = false,
@@ -236,25 +408,54 @@ fn slide_to_markdown(xml: &str, slide_number: usize) -> Result<String, Error> {
         }
     }
 
-    let heading = if title.is_empty() {
-        format!("Slide {slide_number}")
-    } else {
-        title
-    };
-    let mut section = format!("## {heading}\n\n");
-    for (text, bulleted) in body_paragraphs {
-        if bulleted {
-            section.push_str("- ");
+    Ok(RawSlide { title, blocks })
+}
+
+/// Handles elements whose meaning does not depend on being empty or not.
+fn handle_empty_like(
+    tag: &quick_xml::events::BytesStart<'_>,
+    blocks: &mut Vec<RawBlock>,
+    picture: &mut Option<(String, Option<String>)>,
+    paragraph: &mut Option<(String, bool)>,
+    in_shape: bool,
+    is_title_shape: &mut bool,
+) {
+    match tag.local_name().as_ref() {
+        "ph" if in_shape => {
+            if matches!(
+                tag_attribute(tag, "type").as_deref(),
+                Some("title" | "ctrTitle")
+            ) {
+                *is_title_shape = true;
+            }
         }
-        section.push_str(&text);
-        section.push_str("\n\n");
+        "buChar" | "buAutoNum" => {
+            if let Some((_, bulleted)) = paragraph.as_mut() {
+                *bulleted = true;
+            }
+        }
+        "cNvPr" => {
+            if let Some((alt, _)) = picture.as_mut() {
+                *alt = tag_attribute(tag, "descr").unwrap_or_default();
+            }
+        }
+        "blip" => {
+            if let Some((_, relationship)) = picture.as_mut() {
+                *relationship = tag_attribute(tag, "embed").or_else(|| tag_attribute(tag, "link"));
+            }
+        }
+        "chart" => {
+            if let Some(relationship) = tag_attribute(tag, "id") {
+                blocks.push(RawBlock::Chart(relationship));
+            }
+        }
+        _ => {}
     }
-    Ok(section)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{convert_pptx_to_markdown, read_slide_relationship_order, slide_to_markdown};
+    use super::{RawBlock, convert_pptx_to_markdown, parse_slide, read_slide_relationship_order};
     use crate::test_support::unique_temp_path;
     use std::io::Write;
     use zip::write::SimpleFileOptions;
@@ -269,8 +470,27 @@ mod tests {
     }
 
     #[test]
+    fn collects_pictures_tables_and_charts_in_order() {
+        let slide = parse_slide(
+            r#"<p:sld xmlns:p="p" xmlns:a="a" xmlns:r="r" xmlns:c="c"><p:cSld><p:spTree><p:pic><p:nvPicPr><p:cNvPr id="4" name="Pic" descr="Logo"/></p:nvPicPr><p:blipFill><a:blip r:embed="rId2"/></p:blipFill></p:pic><p:graphicFrame><a:graphic><a:graphicData><a:tbl><a:tr><a:tc><a:txBody><a:p><a:r><a:t>A</a:t></a:r></a:p></a:txBody></a:tc><a:tc/></a:tr></a:tbl></a:graphicData></a:graphic></p:graphicFrame><p:graphicFrame><a:graphic><a:graphicData><c:chart r:id="rId3"/></a:graphicData></a:graphic></p:graphicFrame></p:spTree></p:cSld></p:sld>"#,
+            1,
+        )
+        .unwrap();
+        assert!(matches!(
+            &slide.blocks[..],
+            [
+                RawBlock::Image { alt, relationship },
+                RawBlock::Table(rows),
+                RawBlock::Chart(chart),
+            ] if alt == "Logo" && relationship == "rId2" && rows == &[vec!["A".to_string(), String::new()]] && chart == "rId3"
+        ));
+    }
+
+    #[test]
     fn reports_truncated_slide_xml() {
-        let error = slide_to_markdown("<p:sld><p:cSld>", 3).unwrap_err();
+        let Err(error) = parse_slide("<p:sld><p:cSld>", 3) else {
+            panic!("truncated XML must fail");
+        };
         assert!(error.to_string().contains("slide 3"));
         assert!(error.to_string().contains("unexpected end of file"));
     }

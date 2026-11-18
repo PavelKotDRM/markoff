@@ -37,10 +37,11 @@ The project has moved beyond the initial stub stage:
 - `ODT <-> Markdown` for supported document structure and inline formatting
 - `DOCX -> HTML` through Markdown, preserving supported document elements
 - `DOCX tables -> CSV / XLSX / JSON / YAML / TOML`, plus `CSV / XLSX -> DOCX`
-- `PDF -> Markdown / JSON / YAML / TOML` for documents with an embedded text layer, and `Markdown / DOCX / JSON / YAML / TOML -> PDF`
-- `PPTX <-> Markdown` for slide titles and body text/bullets
+- PDF text-layer detection per page, with configurable `oar-ocr`, `oar-ocr-vl`, or API OCR for textless pages
+- Shared Markdown-backed routes between document formats, plus an optional persistent JSON intermediate for editable conversion chains
+- `PPTX <-> Markdown` for slide titles, body text/bullets, images, tables, and charts (as data tables)
 - legacy `DOC`, `XLS`, and `PPT` input through `office_oxide`, and output through LibreOffice
-- `ODP <-> Markdown` for slide titles and body text/bullets
+- `ODP <-> Markdown` for slide titles, body text/bullets, images, and tables
 - `HTML <-> Markdown` for headings, emphasis, links, images, lists, blockquotes, code blocks, and tables
 - `PDF / PPTX / HTML -> JSON / YAML / TOML` and JSON/YAML/TOML back to Markdown, DOCX, PDF, PPTX, or HTML
 - CLI `convert` with text stdin/stdout and `batch` with glob patterns and progress bars
@@ -49,7 +50,7 @@ The project has moved beyond the initial stub stage:
 
 ### Still pending
 
-- PPTX shape layout, embedded images/charts, and speaker notes are not preserved (only slide titles and body text/bullets)
+- PPTX/ODP slides are re-laid out automatically: exact shape positions, themes, animations, and speaker notes are not preserved; charts become data tables; SVG images are embedded in ODP but appear as alt text in PPTX output
 
 ## Architecture
 
@@ -171,7 +172,90 @@ cargo run -p markoff_cli -- convert .\report.csv --to md --delimiter ';'
 cargo run -p markoff_cli -- convert .\report.csv --to md --delimiter tab
 ```
 
-Supported format identifiers are `docx`, `odt`, `pdf`, `md`/`markdown`, `xlsx`/`xlsm`, `ods`, `json`, `csv`, `yaml`/`yml`, `toml`, `pptx`, `odp`, and `html`/`htm`. PDF input converts to Markdown or the JSON/YAML/TOML document schema when it has an embedded text layer; PDF output is available from Markdown, DOCX, ODT, and JSON/YAML/TOML. PDF export preserves supported document elements, embeds PNG/JPEG/GIF/BMP/WebP images, makes internal links and HTTP(S)/mailto/tel links clickable, and exposes headings in the PDF outline. It reflows content onto A4 pages rather than reproducing source pagination or precise page layout. SVG images and scanned-PDF OCR are not currently supported. PPTX/ODP conversion covers slide titles and body text/bullets only (shape layout, images, charts, and speaker notes are not preserved).
+Supported format identifiers are `docx`, `odt`, `pdf`, `md`/`markdown`, `xlsx`/`xlsm`, `ods`, `json`, `csv`, `yaml`/`yml`, `toml`, `pptx`, `odp`, and `html`/`htm`. PDF pages with usable embedded text use it directly; textless pages require configured OCR (see below). Document formats can convert through shared Markdown-backed routes, including PDF to DOC/DOCX. PDF export preserves supported document elements, embeds PNG/JPEG/GIF/BMP/WebP images, makes internal links and HTTP(S)/mailto/tel links clickable, and exposes headings in the PDF outline. It reflows content onto A4 pages rather than reproducing source pagination or precise page layout. SVG images are not currently supported by PDF export. PPTX/ODP conversion keeps slide titles, text, bullets, images (extracted next to the Markdown in `image/`), and tables; PPTX charts are exported as data tables. Exact shape layout, themes, animations, and speaker notes are not preserved.
+
+### Editable intermediate and round trips
+
+```powershell
+cargo run -p markoff_cli -- convert .\report.docx --to md --keep-intermediate
+# Creates report.md and the actual final-stage input report.md.intermediate.json.
+cargo run -p markoff_cli -- convert .\report.md.intermediate.json --to toml
+cargo run -p markoff_cli -- convert .\report.md.intermediate.toml --to yaml
+cargo run -p markoff_cli -- convert .\report.md.intermediate.yaml -o .\restored.docx
+```
+
+`--keep-intermediate` uses a self-contained JSON document (including base64 image
+assets) as the input to the final exporter, and retains it even if export fails.
+Both output files honor `--overwrite`; neither may overwrite the source.
+Edit the intermediate and convert it again to change the final document.
+The GUI has **Keep JSON intermediate**, **Intermediate JSON** preview, and
+**OCR / conversion config...** controls. Batch conversion accepts the same flags
+and creates one intermediate per result. Stdout cannot retain an intermediate.
+
+Supported headings, inline styles, lists, tables, links, code, footnotes and
+images survive the document schema chain. XLSX/ODS conversions retain typed
+cell values and sheet names rather than passing them through Markdown strings.
+JSON/YAML/TOML workbook data can be imported again, including multi-sheet
+objects and the `rows` wrapper emitted for a single-sheet TOML file.
+For JSON root arrays/scalars or values containing `null`, TOML uses the reserved
+`__markoff_json_value_v1` string containing editable JSON; markoff unwraps it on
+import. This preserves values that TOML cannot represent natively.
+This is not lossless Office archival: macros, unsupported objects/styles,
+presentation graphics, pagination and exact layout are not retained. Legacy
+DOC output still requires LibreOffice. Markdown and CSV cannot represent every
+Office feature; keep the JSON intermediate for the richest supported structure.
+
+### OCR configuration
+
+OCR is lazy and page-specific: text pages do not load models or contact an API.
+With OCR disabled, a textless page produces an explicit error instead of an
+apparently successful empty conversion. An empty successful OCR response retains
+the page's images (or a rendered page when there are no extractable images).
+Extracted PDF images remain associated with their source pages.
+
+Local OCR is optional because the ONNX/Candle dependencies and model weights are
+large. Enable both `oar-ocr` and `oar-ocr-vl` adapters with:
+
+```powershell
+cargo build --release -p markoff_cli --features markoff_core/ocr-local
+cargo run -p markoff_cli --features markoff_core/ocr-local -- convert .\scan.pdf --to md --config .\docs\examples\ocr-auto.toml
+```
+
+Choose a configuration:
+
+- [Automatic local OCR](docs/examples/ocr-auto.toml): downloads registered models on first use.
+- [Offline local OCR](docs/examples/ocr-local.toml): explicit ONNX files and their matching dictionary.
+- [Layout-aware VL OCR](docs/examples/ocr-vl.toml): automatic checkpoints or local model/layout directories.
+- [OCR API](docs/examples/ocr-api.toml): no local OCR feature or models required.
+
+Pass `--config FILE` (or set `MARKOFF_CONFIG`) for CLI conversion/batch, or choose
+the file in the GUI. Local paths are resolved relative to the config file.
+Downloads are opt-in, use upstream oar caching (`OAR_HOME`, otherwise `~/.oar`),
+and can require several GB for VL. Local inference currently uses the CPU.
+The `oar` backend also requires an installed ONNX Runtime shared library
+(recommended 1.24 or newer). Set `ORT_DYLIB_PATH` to its full path, e.g.
+`$env:ORT_DYLIB_PATH = 'C:\onnxruntime\lib\onnxruntime.dll'`; on Linux/macOS,
+use `libonnxruntime.so` / `libonnxruntime.dylib`. Without this variable, the
+platform library name is used. Dynamic loading avoids native-library copying
+assumptions in upstream build scripts and reports load failures explicitly.
+The Candle-based `oar_vl` backend and API backend do not require ONNX Runtime.
+Choose recognition weights/dictionaries appropriate for the document languages;
+OCR quality depends on the models and scans and is not guaranteed.
+
+The API endpoint receives one JSON POST per textless page:
+
+```json
+{"page": 2, "mime_type": "image/png", "image_base64": "<base64 PNG>"}
+```
+
+It must return `{"markdown":"recognized page Markdown"}`. Page numbers are
+one-based; rendered images are bounded to 2000 x 3000 pixels. Inline image data
+URIs are supported in the returned Markdown; server-local image paths are not
+portable. `token_env` optionally names an environment variable containing a
+bearer token; do not put credentials in the config. HTTP errors, invalid
+responses, timeouts and local model failures propagate as conversion failures;
+requests are not redirected or retried. API OCR sends page images to the
+configured server: use a trusted endpoint and HTTPS for non-local servers.
 
 `--delimiter` sets the CSV field delimiter (a single character, or the word `tab`); it defaults to a comma and applies wherever CSV is read or written (`convert` and `batch`, including through XLSX/DOCX intermediates).
 
@@ -272,7 +356,7 @@ applies to PDF and HTML, and HTML page settings apply when printing.
 - Images embedded in a DOCX or PDF are extracted and saved as files in an `image` folder next to the Markdown output, referenced with standard `![alt](image/file.ext)` syntax. Shapes, SmartArt, and charts in DOCX are emitted as simplified SVG previews; the preview keeps visible labels and chart values, not the original editable object or exact layout. Converting to JSON/YAML/TOML embeds image data as base64, and converting structured data back to Markdown restores image files. Markdown-to-DOCX re-embeds supported local raster and SVG images as OOXML pictures. SVG images are not supported for PDF output.
 - JSON, CSV, YAML, and TOML convert to XLSX or ODS as tabular data. JSON/YAML/TOML input for this route must be an array of objects; this is a separate, table-only convention from the whole-document `blocks` schema above.
 - OpenDocument imports append a versioned Markoff service block to Markdown. It contains the complete original ODT/ODS/ODP package. An unchanged Markdown round trip restores the package byte for byte. Text-only edits with the same document structure update `content.xml` while preserving styles, formulas, merged cells, images, charts, slide layouts, speaker notes, metadata, and unknown extension parts. A structural edit that cannot be mapped safely returns an explicit error instead of silently dropping package objects; remove the service block to intentionally create a new document from the visible Markdown.
-- Visible ODT/ODS/ODP Markdown is still a simplified editable projection: advanced layout and embedded images are not independently extracted for direct Markdown editing. They remain losslessly preserved by the service block. PDF output reflows content and does not retain source pagination or exact placement. PPTX conversion remains limited to slide titles and body text/bullets.
+- Visible ODT/ODS/ODP Markdown is still a simplified editable projection: ODP slide images and tables are extracted for editing, while advanced layout remains losslessly preserved by the service block. PDF output reflows content and does not retain source pagination or exact placement. PPTX conversion keeps slide text, images, tables, and chart data, but not exact layout or speaker notes.
 
 ## Rust code quality
 

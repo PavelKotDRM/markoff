@@ -1,6 +1,9 @@
 use clap::{Parser, Subcommand};
 use indicatif::{ProgressBar, ProgressStyle};
-use markoff_core::{ConversionRequest, Format, MarkoffError, convert_document, detect_format};
+use markoff_core::{
+    ConversionOptions, ConversionRequest, Format, MarkoffError, convert_document_with_options,
+    detect_format,
+};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -33,9 +36,15 @@ const BUILD_INFO: &str = concat!(
 STYLE IMPORT:
     markoff style-import reference.doc -o theme.toml imports supported formatting
     from DOC/DOCX, XLS/XLSX/XLSM, PPT/PPTX, or ODS into a TOML theme.\n\nSTREAMING:\n  Use '-' as INPUT or --output to read/write stdin/stdout. Streaming supports\n  text formats only: Markdown, JSON, CSV, YAML, TOML, and HTML.\n\nEXAMPLES:\n  markoff convert report.csv --to md\n  markoff convert report.pdf --to md\n  markoff convert report.md -o report.odt\n  markoff convert workbook.ods --to md\n  markoff convert report.md -o report.pdf\n  markoff convert report.docx --to pdf\n  markoff convert report.json --to pdf\n  markoff convert report.md -o report.docx --overwrite\n  markoff convert report.tsv --to md --delimiter tab\n  markoff convert slides.odp --to md\n  markoff convert report.md -o page.html\n  markoff style-template -o theme.toml\n  markoff convert report.md -o report.pdf --style theme.toml\n  markoff convert - --from json --to yaml -o -\n  markoff batch documents --pattern '*.odt' --to md -o converted\n      markoff batch documents --pattern '*.docx' --to md -o converted --overwrite",
-      after_long_help = "LEGACY OFFICE FORMATS:\n  .doc, .xls, and .ppt input is converted to OOXML with office_oxide.\n  Writing these legacy formats requires LibreOffice. Install it with\n  `soffice` or `libreoffice` on PATH, or set MARKOFF_LIBREOFFICE."
+      after_long_help = "OCR AND INTERMEDIATE:\n  --config FILE (or MARKOFF_CONFIG) selects a TOML OCR/conversion config.\n  PDF pages with text use it directly; textless pages require configured OCR.\n  Backends: oar, oar_vl (build with markoff_core/ocr-local), or api.\n  --keep-intermediate uses and retains OUTPUT.intermediate.json, including\n  embedded image assets. Edit it and convert again to any supported format.\n  Document pairs without a direct route use a shared Markdown stage.\n\nLEGACY OFFICE FORMATS:\n  .doc, .xls, and .ppt input is converted to OOXML with office_oxide.\n  Writing these legacy formats requires LibreOffice. Install it with\n  `soffice` or `libreoffice` on PATH, or set MARKOFF_LIBREOFFICE."
 )]
 struct Cli {
+    /// TOML conversion/OCR configuration shared with the GUI.
+    #[arg(long, global = true, env = "MARKOFF_CONFIG", value_name = "FILE")]
+    config: Option<PathBuf>,
+    /// Use and retain OUTPUT.intermediate.json as the editable conversion stage.
+    #[arg(long, global = true)]
+    keep_intermediate: bool,
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -247,19 +256,42 @@ struct ConvertOptions<'a> {
     style: Option<&'a Path>,
 }
 
-fn convert_one(options: ConvertOptions<'_>) -> anyhow::Result<()> {
+fn convert_one(options: ConvertOptions<'_>, settings: &ConversionOptions) -> anyhow::Result<()> {
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     let mut stdin = stdin.lock();
     let mut stdout = stdout.lock();
-    convert_one_with_io(options, &mut stdin, &mut stdout, TemporaryFile::new)
+    convert_one_with_settings(
+        options,
+        &mut stdin,
+        &mut stdout,
+        TemporaryFile::new,
+        settings,
+    )
 }
 
+#[cfg(test)]
 fn convert_one_with_io(
     options: ConvertOptions<'_>,
     stdin: &mut impl Read,
     stdout: &mut impl Write,
+    temporary_file: impl FnMut(Format) -> std::io::Result<TemporaryFile>,
+) -> anyhow::Result<()> {
+    convert_one_with_settings(
+        options,
+        stdin,
+        stdout,
+        temporary_file,
+        &ConversionOptions::default(),
+    )
+}
+
+fn convert_one_with_settings(
+    options: ConvertOptions<'_>,
+    stdin: &mut impl Read,
+    stdout: &mut impl Write,
     mut temporary_file: impl FnMut(Format) -> std::io::Result<TemporaryFile>,
+    settings: &ConversionOptions,
 ) -> anyhow::Result<()> {
     let ConvertOptions {
         input,
@@ -280,6 +312,11 @@ fn convert_one_with_io(
     let to = target_format(to, output)?;
     let reads_stdin = input == Path::new("-");
     let writes_stdout = output == Some(Path::new("-"));
+    if writes_stdout && settings.keep_intermediate {
+        return Err(anyhow::anyhow!(
+            "--keep-intermediate requires a file output, not stdout"
+        ));
+    }
     if (reads_stdin || writes_stdout) && (!from.is_text() || !to.is_text()) {
         return Err(anyhow::anyhow!(
             "stdin/stdout are available only for text formats"
@@ -318,21 +355,30 @@ fn convert_one_with_io(
     if source_path == destination {
         return Err(anyhow::anyhow!("input and output paths must differ"));
     }
-    convert_document(&ConversionRequest {
-        input: source_path.to_path_buf(),
-        output: destination.clone(),
-        from,
-        to,
-        overwrite: overwrite || writes_stdout,
-        csv_delimiter: delimiter,
-        tables_only,
-        style: style.map(Path::to_path_buf),
-    })?;
+    convert_document_with_options(
+        &ConversionRequest {
+            input: source_path.to_path_buf(),
+            output: destination.clone(),
+            from,
+            to,
+            overwrite: overwrite || writes_stdout,
+            csv_delimiter: delimiter,
+            tables_only,
+            style: style.map(Path::to_path_buf),
+        },
+        settings,
+    )?;
     if writes_stdout {
         let rendered = std::fs::read_to_string(&destination)?;
         stdout.write_all(rendered.as_bytes())?;
     } else {
         println!("Converted {} -> {}", input.display(), destination.display());
+        if settings.keep_intermediate {
+            println!(
+                "Intermediate: {}",
+                markoff_core::intermediate_document_path(&destination).display()
+            );
+        }
     }
     Ok(())
 }
@@ -366,7 +412,15 @@ struct BatchOptions<'a> {
     style: Option<&'a Path>,
 }
 
+#[cfg(test)]
 fn run_batch(options: BatchOptions<'_>) -> anyhow::Result<()> {
+    run_batch_with_settings(options, &ConversionOptions::default())
+}
+
+fn run_batch_with_settings(
+    options: BatchOptions<'_>,
+    settings: &ConversionOptions,
+) -> anyhow::Result<()> {
     let BatchOptions {
         directory,
         pattern,
@@ -390,16 +444,19 @@ fn run_batch(options: BatchOptions<'_>) -> anyhow::Result<()> {
             .ok_or_else(|| anyhow::anyhow!("invalid input filename"))?;
         let destination = output.join(stem).with_extension(to.to_string());
         progress.set_message(input.display().to_string());
-        convert_document(&ConversionRequest {
-            input: input.clone(),
-            output: destination,
-            from,
-            to,
-            overwrite,
-            csv_delimiter: delimiter,
-            tables_only,
-            style: style.map(Path::to_path_buf),
-        })?;
+        convert_document_with_options(
+            &ConversionRequest {
+                input: input.clone(),
+                output: destination,
+                from,
+                to,
+                overwrite,
+                csv_delimiter: delimiter,
+                tables_only,
+                style: style.map(Path::to_path_buf),
+            },
+            settings,
+        )?;
         progress.inc(1);
     }
     progress.finish_with_message("complete");
@@ -412,6 +469,13 @@ fn main() -> anyhow::Result<()> {
         .without_time()
         .init();
     let cli = Cli::parse();
+    let mut settings = cli
+        .config
+        .as_deref()
+        .map(ConversionOptions::from_file)
+        .transpose()?
+        .unwrap_or_default();
+    settings.keep_intermediate |= cli.keep_intermediate;
 
     match cli.command {
         Some(Commands::Convert {
@@ -424,16 +488,19 @@ fn main() -> anyhow::Result<()> {
             delimiter,
             style,
         }) => {
-            convert_one(ConvertOptions {
-                input: &input,
-                output: output.as_deref(),
-                from: from.as_deref(),
-                to: to.as_deref(),
-                overwrite,
-                delimiter: parse_delimiter(delimiter.as_deref())?,
-                tables_only,
-                style: style.as_deref(),
-            })?;
+            convert_one(
+                ConvertOptions {
+                    input: &input,
+                    output: output.as_deref(),
+                    from: from.as_deref(),
+                    to: to.as_deref(),
+                    overwrite,
+                    delimiter: parse_delimiter(delimiter.as_deref())?,
+                    tables_only,
+                    style: style.as_deref(),
+                },
+                &settings,
+            )?;
         }
         Some(Commands::Batch {
             directory,
@@ -445,16 +512,19 @@ fn main() -> anyhow::Result<()> {
             delimiter,
             style,
         }) => {
-            run_batch(BatchOptions {
-                directory: &directory,
-                pattern: &pattern,
-                output: &output,
-                to: parse_format_spec(&to)?,
-                overwrite,
-                delimiter: parse_delimiter(delimiter.as_deref())?,
-                tables_only,
-                style: style.as_deref(),
-            })?;
+            run_batch_with_settings(
+                BatchOptions {
+                    directory: &directory,
+                    pattern: &pattern,
+                    output: &output,
+                    to: parse_format_spec(&to)?,
+                    overwrite,
+                    delimiter: parse_delimiter(delimiter.as_deref())?,
+                    tables_only,
+                    style: style.as_deref(),
+                },
+                &settings,
+            )?;
         }
         Some(Commands::StyleTemplate { output, overwrite }) => {
             write_style_template(output.as_deref(), overwrite, &mut std::io::stdout().lock())?;
@@ -467,7 +537,8 @@ fn main() -> anyhow::Result<()> {
             write_imported_style_theme(&input, &output, overwrite)?;
         }
         Some(Commands::Gui) => {
-            markoff_gui::run().map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            markoff_gui::run_with_options(settings)
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
         }
         None => {
             println!(
@@ -530,6 +601,49 @@ mod tests {
             panic!("expected convert command");
         };
         assert_eq!(style, Some(PathBuf::from("corporate.toml")));
+    }
+
+    #[test]
+    fn convert_accepts_shared_ocr_config_and_intermediate_flags() {
+        let cli = Cli::try_parse_from([
+            "markoff",
+            "convert",
+            "scan.pdf",
+            "--to",
+            "docx",
+            "--config",
+            "ocr.toml",
+            "--keep-intermediate",
+        ])
+        .unwrap();
+        assert_eq!(cli.config, Some(PathBuf::from("ocr.toml")));
+        assert!(cli.keep_intermediate);
+    }
+
+    #[test]
+    fn persistent_intermediate_cannot_be_written_beside_temporary_stdout() {
+        let [input, _] = temporary_paths("intermediate_stdout");
+        let error = super::convert_one_with_settings(
+            ConvertOptions {
+                input: &input,
+                output: Some(Path::new("-")),
+                from: Some("json"),
+                to: Some("yaml"),
+                overwrite: false,
+                delimiter: b',',
+                tables_only: false,
+                style: None,
+            },
+            &mut Cursor::new(Vec::<u8>::new()),
+            &mut Vec::new(),
+            TemporaryFile::new,
+            &markoff_core::ConversionOptions {
+                keep_intermediate: true,
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("requires a file output"));
     }
 
     #[test]

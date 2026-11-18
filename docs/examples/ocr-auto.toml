@@ -1,0 +1,10 @@
+# Build with --features markoff_core/ocr-local.
+# Set ORT_DYLIB_PATH to an installed ONNX Runtime shared library (1.24+ recommended).
+keep_intermediate = true
+
+[ocr]
+backend = "oar"
+auto_download = true
+detection = "pp-ocrv6_tiny_det.onnx"
+recognition = "pp-ocrv6_tiny_rec.onnx"
+dictionary = "ppocrv6_tiny_dict.txt"

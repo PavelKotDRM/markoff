@@ -18,12 +18,12 @@ pub(super) fn load_image_asset(
             .to_ascii_lowercase()
             .as_str()
         {
-            "image/jpeg" => Some("jpg".to_string()),
-            "image/svg+xml" => Some("svg".to_string()),
-            "image/png" => Some("png".to_string()),
-            "image/gif" => Some("gif".to_string()),
-            "image/webp" => Some("webp".to_string()),
-            "image/bmp" => Some("bmp".to_string()),
+            "jpeg" => Some("jpg".to_string()),
+            "svg+xml" => Some("svg".to_string()),
+            "png" => Some("png".to_string()),
+            "gif" => Some("gif".to_string()),
+            "webp" => Some("webp".to_string()),
+            "bmp" => Some("bmp".to_string()),
             _ => None,
         };
         let decoded = base64::engine::general_purpose::STANDARD

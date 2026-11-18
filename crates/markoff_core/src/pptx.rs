@@ -1,72 +1,37 @@
 //! Bidirectional PowerPoint (PPTX) <-> Markdown conversion.
 //!
-//! Scope is intentionally limited to slide titles and body text (plain
-//! paragraphs and bulleted items), mirroring the pragmatic subset already
-//! supported for DOCX/PDF: shape positioning, images, charts, speaker notes,
-//! and slide layouts/themes are not preserved.
+//! Slides carry titles, paragraphs, bulleted items, images, and tables (charts
+//! are imported as tables of their cached data). Blocks are reflowed
+//! top-to-bottom; exact shape positioning, speaker notes, animations, and
+//! custom layouts/themes are not preserved.
 
 use crate::MarkoffError;
 use crate::error::invalid_data;
-use crate::xml_utils::xml_escape;
+use crate::slides::{Slide, SlideBlock, SlideImage, image_placeholder_text, parse_markdown_slides};
+use crate::xml_utils::{xml_attribute_escape, xml_escape};
 use crate::zip_utils::write_zip_part;
 use pulldown_cmark::{Event, Options, Parser};
+use std::collections::BTreeMap;
+use std::io::Write;
 use std::path::Path;
 
 pub(crate) use crate::pptx_reader::convert_pptx_to_markdown;
 
-struct Slide {
-    title: String,
-    items: Vec<(String, bool)>,
-}
+const SLIDE_WIDTH: i64 = 9_144_000;
+const SLIDE_HEIGHT: i64 = 6_858_000;
+const MARGIN: i64 = 457_200;
+const CONTENT_WIDTH: i64 = SLIDE_WIDTH - 2 * MARGIN;
+const CONTENT_TOP: i64 = 1_600_200;
+const LINE_HEIGHT: i64 = 411_480;
+const ROW_HEIGHT: i64 = 370_840;
+const GAP: i64 = 91_440;
+const EMU_PER_PIXEL: f64 = 9_525.0;
 
 pub(crate) fn convert_markdown_to_pptx(input: &Path, output: &Path) -> Result<(), MarkoffError> {
     let source = std::fs::read_to_string(input)?;
-    let slides = parse_markdown_into_slides(&source);
+    let base_dir = input.parent().unwrap_or_else(|| Path::new("."));
+    let slides = parse_markdown_slides(&source, base_dir);
     write_pptx(&slides, output)
-}
-
-fn parse_markdown_into_slides(source: &str) -> Vec<Slide> {
-    let mut slides = Vec::new();
-    let mut current: Option<Slide> = None;
-    for raw_line in source.lines() {
-        let line = raw_line.trim();
-        if line.is_empty() || line == "---" {
-            continue;
-        }
-        if let Some(text) = line.strip_prefix("# ").or_else(|| line.strip_prefix("## ")) {
-            if let Some(slide) = current.take() {
-                slides.push(slide);
-            }
-            current = Some(Slide {
-                title: markdown_inline_to_plain_text(text),
-                items: Vec::new(),
-            });
-            continue;
-        }
-        let (text, bulleted) =
-            if let Some(rest) = line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")) {
-                (markdown_inline_to_plain_text(rest), true)
-            } else if let Some(rest) = strip_ordered_marker(line) {
-                (markdown_inline_to_plain_text(&rest), true)
-            } else {
-                (markdown_inline_to_plain_text(line), false)
-            };
-        let slide = current.get_or_insert_with(|| Slide {
-            title: String::new(),
-            items: Vec::new(),
-        });
-        slide.items.push((text, bulleted));
-    }
-    if let Some(slide) = current.take() {
-        slides.push(slide);
-    }
-    if slides.is_empty() {
-        slides.push(Slide {
-            title: String::new(),
-            items: Vec::new(),
-        });
-    }
-    slides
 }
 
 pub(crate) fn markdown_inline_to_plain_text(markdown: &str) -> String {
@@ -102,18 +67,21 @@ pub(crate) fn markdown_inline_to_plain_text(markdown: &str) -> String {
     text.trim().to_string()
 }
 
-fn strip_ordered_marker(line: &str) -> Option<String> {
-    let digits_end = line.find(|character: char| !character.is_ascii_digit())?;
-    if digits_end == 0 {
-        return None;
-    }
-    line.get(digits_end..)?
-        .strip_prefix(". ")
-        .map(str::to_string)
+struct SlidePart {
+    xml: String,
+    relationships: String,
+    media: Vec<(String, Vec<u8>)>,
 }
 
 fn write_pptx(slides: &[Slide], output: &Path) -> Result<(), MarkoffError> {
     use zip::write::SimpleFileOptions;
+
+    let mut media_counter = 0usize;
+    let mut media_types = BTreeMap::new();
+    let slide_parts = slides
+        .iter()
+        .map(|slide| build_slide(slide, &mut media_counter, &mut media_types))
+        .collect::<Vec<_>>();
 
     let slide_count = slides.len();
     let file = std::fs::File::create(output)?;
@@ -123,7 +91,7 @@ fn write_pptx(slides: &[Slide], output: &Path) -> Result<(), MarkoffError> {
     let app_properties = build_app_properties(slide_count);
     let presentation_xml = build_presentation_xml(slide_count);
     let presentation_rels = build_presentation_rels(slide_count);
-    let content_types = build_content_types(slide_count);
+    let content_types = build_content_types(slide_count, &media_types);
     let mut parts = vec![
         ("[Content_Types].xml".to_string(), content_types.as_str()),
         ("_rels/.rels".to_string(), PACKAGE_RELS),
@@ -155,24 +123,37 @@ fn write_pptx(slides: &[Slide], output: &Path) -> Result<(), MarkoffError> {
             SLIDE_LAYOUT_RELS,
         ),
     ];
-    let slide_xml = slides.iter().map(build_slide_xml).collect::<Vec<_>>();
-    for (index, xml) in slide_xml.iter().enumerate() {
-        parts.push((format!("ppt/slides/slide{}.xml", index + 1), xml.as_str()));
+    for (index, part) in slide_parts.iter().enumerate() {
+        parts.push((
+            format!("ppt/slides/slide{}.xml", index + 1),
+            part.xml.as_str(),
+        ));
         parts.push((
             format!("ppt/slides/_rels/slide{}.xml.rels", index + 1),
-            SLIDE_RELS,
+            part.relationships.as_str(),
         ));
     }
 
     for (name, content) in parts {
         write_zip_part(&mut archive, options, &name, content)?;
     }
+    let stored = options.compression_method(zip::CompressionMethod::Stored);
+    for (name, bytes) in slide_parts.iter().flat_map(|part| &part.media) {
+        archive.start_file(name, stored).map_err(invalid_data)?;
+        archive.write_all(bytes)?;
+    }
 
     archive.finish().map_err(invalid_data)?;
     Ok(())
 }
 
-fn build_content_types(slide_count: usize) -> String {
+fn build_content_types(slide_count: usize, media_types: &BTreeMap<&str, &str>) -> String {
+    let mut defaults = String::new();
+    for (extension, media_type) in media_types {
+        defaults.push_str(&format!(
+            "<Default Extension=\"{extension}\" ContentType=\"{media_type}\"/>"
+        ));
+    }
     let mut overrides = String::new();
     for index in 1..=slide_count {
         overrides.push_str(&format!(
@@ -180,7 +161,7 @@ fn build_content_types(slide_count: usize) -> String {
         ));
     }
     format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/><Override PartName=\"/ppt/presentation.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml\"/><Override PartName=\"/ppt/slideMasters/slideMaster1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml\"/><Override PartName=\"/ppt/slideLayouts/slideLayout1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml\"/><Override PartName=\"/ppt/theme/theme1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.theme+xml\"/>{overrides}<Override PartName=\"/docProps/core.xml\" ContentType=\"application/vnd.openxmlformats-package.core-properties+xml\"/><Override PartName=\"/docProps/app.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.extended-properties+xml\"/></Types>"
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/>{defaults}<Override PartName=\"/ppt/presentation.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml\"/><Override PartName=\"/ppt/slideMasters/slideMaster1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml\"/><Override PartName=\"/ppt/slideLayouts/slideLayout1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml\"/><Override PartName=\"/ppt/theme/theme1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.theme+xml\"/>{overrides}<Override PartName=\"/docProps/core.xml\" ContentType=\"application/vnd.openxmlformats-package.core-properties+xml\"/><Override PartName=\"/docProps/app.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.extended-properties+xml\"/></Types>"
     )
 }
 
@@ -219,30 +200,208 @@ fn build_app_properties(slide_count: usize) -> String {
     )
 }
 
-fn build_slide_xml(slide: &Slide) -> String {
-    let title = xml_escape(&slide.title);
-    let mut body = String::new();
-    if slide.items.is_empty() {
-        body.push_str("<a:p><a:endParaRPr lang=\"en-US\"/></a:p>");
-    }
-    for (text, bulleted) in &slide.items {
-        let paragraph_properties = if *bulleted {
-            "<a:pPr><a:buChar char=\"\u{2022}\"/></a:pPr>"
-        } else {
-            "<a:pPr><a:buNone/></a:pPr>"
+fn build_slide(
+    slide: &Slide,
+    media_counter: &mut usize,
+    media_types: &mut BTreeMap<&'static str, &'static str>,
+) -> SlidePart {
+    let mut shapes = String::new();
+    let mut relationships = String::from(
+        "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout\" Target=\"../slideLayouts/slideLayout1.xml\"/>",
+    );
+    let mut media = Vec::new();
+    let mut next_id = 3u32;
+    let mut y = CONTENT_TOP;
+    let mut pending_text: Vec<(String, bool)> = Vec::new();
+    let mut used_body_placeholder = false;
+
+    let mut flush_text =
+        |pending: &mut Vec<(String, bool)>, shapes: &mut String, next_id: &mut u32, y: &mut i64| {
+            if pending.is_empty() {
+                return;
+            }
+            let height = text_height(pending);
+            shapes.push_str(&text_shape(
+                *next_id,
+                !used_body_placeholder,
+                pending,
+                *y,
+                height,
+            ));
+            used_body_placeholder = true;
+            *next_id += 1;
+            *y += height + GAP;
+            pending.clear();
         };
-        body.push_str(&format!(
-            "<a:p>{paragraph_properties}<a:r><a:t>{}</a:t></a:r></a:p>",
-            xml_escape(text)
-        ));
+
+    for block in &slide.blocks {
+        match block {
+            SlideBlock::Text { text, bulleted } => pending_text.push((text.clone(), *bulleted)),
+            SlideBlock::Image {
+                alt,
+                source,
+                data: Some(image),
+            } if image.extension != "svg" => {
+                flush_text(&mut pending_text, &mut shapes, &mut next_id, &mut y);
+                *media_counter += 1;
+                let relationship_id = format!("rId{}", media.len() + 2);
+                let name = format!("image{}.{}", *media_counter, image.extension);
+                relationships.push_str(&format!(
+                    "<Relationship Id=\"{relationship_id}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"../media/{name}\"/>"
+                ));
+                media_types.insert(image.extension, image.media_type);
+                let (width, height) = image_extent(image, y);
+                let x = MARGIN + (CONTENT_WIDTH - width) / 2;
+                let description = if alt.is_empty() { source } else { alt };
+                shapes.push_str(&format!(
+                    "<p:pic><p:nvPicPr><p:cNvPr id=\"{next_id}\" name=\"Picture {next_id}\" descr=\"{}\"/><p:cNvPicPr><a:picLocks noChangeAspect=\"1\"/></p:cNvPicPr><p:nvPr/></p:nvPicPr><p:blipFill><a:blip r:embed=\"{relationship_id}\"/><a:stretch><a:fillRect/></a:stretch></p:blipFill><p:spPr><a:xfrm><a:off x=\"{x}\" y=\"{y}\"/><a:ext cx=\"{width}\" cy=\"{height}\"/></a:xfrm><a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></p:spPr></p:pic>",
+                    xml_attribute_escape(description)
+                ));
+                media.push((format!("ppt/media/{name}"), image.bytes.clone()));
+                next_id += 1;
+                y += height + GAP;
+            }
+            SlideBlock::Image { alt, source, .. } => {
+                pending_text.push((image_placeholder_text(alt, source), false));
+            }
+            SlideBlock::Table(rows) => {
+                flush_text(&mut pending_text, &mut shapes, &mut next_id, &mut y);
+                let height = table_height(rows);
+                shapes.push_str(&table_frame(next_id, rows, y, height));
+                next_id += 1;
+                y += height + GAP;
+            }
+        }
     }
+    flush_text(&mut pending_text, &mut shapes, &mut next_id, &mut y);
+
+    let title = xml_escape(&slide.title);
     let title_paragraph = if title.is_empty() {
         "<a:p><a:endParaRPr lang=\"en-US\"/></a:p>".to_string()
     } else {
-        format!("<a:p><a:r><a:t>{title}</a:t></a:r></a:p>")
+        format!("<a:p><a:r><a:rPr lang=\"en-US\"/><a:t>{title}</a:t></a:r></a:p>")
+    };
+    let title_height = CONTENT_TOP - MARGIN - GAP;
+    let xml = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><p:sld xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\"><p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id=\"1\" name=\"\"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/><p:sp><p:nvSpPr><p:cNvPr id=\"2\" name=\"Title\"/><p:cNvSpPr><a:spLocks noGrp=\"1\"/></p:cNvSpPr><p:nvPr><p:ph type=\"title\"/></p:nvPr></p:nvSpPr><p:spPr><a:xfrm><a:off x=\"{MARGIN}\" y=\"{MARGIN}\"/><a:ext cx=\"{CONTENT_WIDTH}\" cy=\"{title_height}\"/></a:xfrm></p:spPr><p:txBody><a:bodyPr anchor=\"b\"><a:normAutofit/></a:bodyPr><a:lstStyle/>{title_paragraph}</p:txBody></p:sp>{shapes}</p:spTree></p:cSld></p:sld>"
+    );
+    SlidePart {
+        xml,
+        relationships: format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">{relationships}</Relationships>"
+        ),
+        media,
+    }
+}
+
+fn text_height(items: &[(String, bool)]) -> i64 {
+    let lines = items
+        .iter()
+        .map(|(text, _)| text.chars().count() / 80 + 1)
+        .sum::<usize>()
+        .max(1);
+    i64::try_from(lines).unwrap_or(i64::MAX / LINE_HEIGHT) * LINE_HEIGHT + 2 * GAP
+}
+
+fn text_shape(id: u32, placeholder: bool, items: &[(String, bool)], y: i64, height: i64) -> String {
+    let mut paragraphs = String::new();
+    for (text, bulleted) in items {
+        let properties = if *bulleted {
+            "<a:pPr marL=\"285750\" indent=\"-285750\"><a:buFont typeface=\"Arial\"/><a:buChar char=\"\u{2022}\"/></a:pPr>"
+        } else {
+            "<a:pPr marL=\"0\" indent=\"0\"><a:buNone/></a:pPr>"
+        };
+        paragraphs.push_str(&format!(
+            "<a:p>{properties}<a:r><a:rPr lang=\"en-US\"/><a:t>{}</a:t></a:r></a:p>",
+            xml_escape(text)
+        ));
+    }
+    let (name, shape_properties, placeholder_properties) = if placeholder {
+        (
+            "Content",
+            "<p:cNvSpPr><a:spLocks noGrp=\"1\"/></p:cNvSpPr>",
+            "<p:nvPr><p:ph type=\"body\" idx=\"1\"/></p:nvPr>",
+        )
+    } else {
+        ("Text", "<p:cNvSpPr txBox=\"1\"/>", "<p:nvPr/>")
     };
     format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><p:sld xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\"><p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id=\"1\" name=\"\"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/><p:sp><p:nvSpPr><p:cNvPr id=\"2\" name=\"Title\"/><p:cNvSpPr><a:spLocks noGrp=\"1\"/></p:cNvSpPr><p:nvPr><p:ph type=\"title\"/></p:nvPr></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:lstStyle/>{title_paragraph}</p:txBody></p:sp><p:sp><p:nvSpPr><p:cNvPr id=\"3\" name=\"Content\"/><p:cNvSpPr><a:spLocks noGrp=\"1\"/></p:cNvSpPr><p:nvPr><p:ph type=\"body\" idx=\"1\"/></p:nvPr></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:lstStyle/>{body}</p:txBody></p:sp></p:spTree></p:cSld></p:sld>"
+        "<p:sp><p:nvSpPr><p:cNvPr id=\"{id}\" name=\"{name} {id}\"/>{shape_properties}{placeholder_properties}</p:nvSpPr><p:spPr><a:xfrm><a:off x=\"{MARGIN}\" y=\"{y}\"/><a:ext cx=\"{CONTENT_WIDTH}\" cy=\"{height}\"/></a:xfrm><a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></p:spPr><p:txBody><a:bodyPr wrap=\"square\"><a:normAutofit/></a:bodyPr><a:lstStyle/>{paragraphs}</p:txBody></p:sp>"
+    )
+}
+
+fn image_extent(image: &SlideImage, y: i64) -> (i64, i64) {
+    let (pixel_width, pixel_height) = image.size.unwrap_or((640, 480));
+    let natural_width = f64::from(pixel_width.max(1)) * EMU_PER_PIXEL;
+    let natural_height = f64::from(pixel_height.max(1)) * EMU_PER_PIXEL;
+    let max_height = (SLIDE_HEIGHT - y - MARGIN).max(SLIDE_HEIGHT / 4) as f64;
+    let scale = (CONTENT_WIDTH as f64 / natural_width)
+        .min(max_height / natural_height)
+        .min(1.0);
+    (
+        ((natural_width * scale).round() as i64).max(1),
+        ((natural_height * scale).round() as i64).max(1),
+    )
+}
+
+fn table_height(rows: &[Vec<String>]) -> i64 {
+    rows.iter()
+        .map(|row| {
+            let lines = row
+                .iter()
+                .map(|cell| cell.lines().count().max(1))
+                .max()
+                .unwrap_or(1);
+            i64::try_from(lines).unwrap_or(1) * ROW_HEIGHT
+        })
+        .sum::<i64>()
+        .max(ROW_HEIGHT)
+}
+
+fn table_frame(id: u32, rows: &[Vec<String>], y: i64, height: i64) -> String {
+    let columns = rows.iter().map(Vec::len).max().unwrap_or(0).max(1);
+    let column_width = CONTENT_WIDTH / i64::try_from(columns).unwrap_or(1);
+    let border = |side: &str| {
+        format!(
+            "<a:{side} w=\"12700\"><a:solidFill><a:srgbClr val=\"808080\"/></a:solidFill></a:{side}>"
+        )
+    };
+    let cell_properties = format!(
+        "<a:tcPr>{}{}{}{}</a:tcPr>",
+        border("lnL"),
+        border("lnR"),
+        border("lnT"),
+        border("lnB")
+    );
+    let mut grid = String::new();
+    for _ in 0..columns {
+        grid.push_str(&format!("<a:gridCol w=\"{column_width}\"/>"));
+    }
+    let mut table_rows = String::new();
+    for (row_index, row) in rows.iter().enumerate() {
+        table_rows.push_str(&format!("<a:tr h=\"{ROW_HEIGHT}\">"));
+        for column in 0..columns {
+            let cell = row.get(column).map_or("", String::as_str);
+            let bold = if row_index == 0 { " b=\"1\"" } else { "" };
+            let mut paragraphs = String::new();
+            for line in cell.split('\n') {
+                if line.is_empty() {
+                    paragraphs.push_str("<a:p><a:endParaRPr lang=\"en-US\"/></a:p>");
+                } else {
+                    paragraphs.push_str(&format!(
+                        "<a:p><a:r><a:rPr lang=\"en-US\" sz=\"1400\"{bold}/><a:t>{}</a:t></a:r></a:p>",
+                        xml_escape(line)
+                    ));
+                }
+            }
+            table_rows.push_str(&format!(
+                "<a:tc><a:txBody><a:bodyPr/><a:lstStyle/>{paragraphs}</a:txBody>{cell_properties}</a:tc>"
+            ));
+        }
+        table_rows.push_str("</a:tr>");
+    }
+    format!(
+        "<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id=\"{id}\" name=\"Table {id}\"/><p:cNvGraphicFramePr><a:graphicFrameLocks noGrp=\"1\"/></p:cNvGraphicFramePr><p:nvPr/></p:nvGraphicFramePr><p:xfrm><a:off x=\"{MARGIN}\" y=\"{y}\"/><a:ext cx=\"{CONTENT_WIDTH}\" cy=\"{height}\"/></p:xfrm><a:graphic><a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/table\"><a:tbl><a:tblPr firstRow=\"1\" bandRow=\"1\"/><a:tblGrid>{grid}</a:tblGrid>{table_rows}</a:tbl></a:graphicData></a:graphic></p:graphicFrame>"
     )
 }
 
@@ -259,8 +418,6 @@ const SLIDE_MASTER_RELS: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\" standa
 const SLIDE_LAYOUT_XML: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><p:sldLayout xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\" type=\"title\" preserve=\"1\"><p:cSld name=\"Title and Content\"><p:spTree><p:nvGrpSpPr><p:cNvPr id=\"1\" name=\"\"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/><p:sp><p:nvSpPr><p:cNvPr id=\"2\" name=\"Title\"/><p:cNvSpPr><a:spLocks noGrp=\"1\"/></p:cNvSpPr><p:nvPr><p:ph type=\"title\"/></p:nvPr></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:endParaRPr lang=\"en-US\"/></a:p></p:txBody></p:sp><p:sp><p:nvSpPr><p:cNvPr id=\"3\" name=\"Content\"/><p:cNvSpPr><a:spLocks noGrp=\"1\"/></p:cNvSpPr><p:nvPr><p:ph type=\"body\" idx=\"1\"/></p:nvPr></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:endParaRPr lang=\"en-US\"/></a:p></p:txBody></p:sp></p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sldLayout>";
 
 const SLIDE_LAYOUT_RELS: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster\" Target=\"../slideMasters/slideMaster1.xml\"/></Relationships>";
-
-const SLIDE_RELS: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout\" Target=\"../slideLayouts/slideLayout1.xml\"/></Relationships>";
 
 #[cfg(test)]
 mod tests {

@@ -1,12 +1,17 @@
-use crate::data::{read_data_rows, write_data_sheets};
+use crate::data::{read_data_sheets, write_data_sheets};
 use crate::document::parse_markdown_document;
 use crate::document_model::{Block, Inline, ListItem};
 use crate::error::invalid_data;
-use crate::pptx::markdown_inline_to_plain_text;
+use crate::slides::{
+    ImageSink, Slide, SlideBlock, image_placeholder_text, parse_markdown_slides,
+    render_slides_markdown,
+};
 use crate::style::{DocumentTheme, PageTextSegment, StyleTextAlign};
 use crate::tables::{markdown_table_from_rows, parse_markdown_tables};
 use crate::xlsx::CellValue;
-use crate::xml_utils::{attribute_value, xml_attribute_escape, xml_escape};
+use crate::xml_utils::{
+    MarkdownEscapeContext, attribute_value, markdown_escape, xml_attribute_escape, xml_escape,
+};
 use crate::{Format, MarkoffError};
 use base64::Engine as _;
 use pulldown_cmark::{Event as MarkdownEvent, Options as MarkdownOptions, Parser};
@@ -67,7 +72,7 @@ pub(crate) fn convert_markdown_to_odt(
     } else {
         ODF_STYLES.to_string()
     };
-    write_odf_package(output, ODT_MIME, &content, &styles)
+    write_odf_package(output, ODT_MIME, &content, &styles, &[])
 }
 
 pub(crate) fn convert_odt_to_markdown(input: &Path, output: &Path) -> Result<(), MarkoffError> {
@@ -116,12 +121,17 @@ pub(crate) fn convert_data_to_ods(
     format: Format,
     delimiter: u8,
 ) -> Result<(), MarkoffError> {
-    let mut sheets = BTreeMap::new();
-    sheets.insert(
-        "Sheet1".to_string(),
-        read_data_rows(input, format, delimiter)?,
-    );
+    let sheets = read_data_sheets(input, format, delimiter)?;
     write_ods_value_sheets(output, &sheets)
+}
+
+pub(crate) fn convert_xlsx_to_ods(input: &Path, output: &Path) -> Result<(), MarkoffError> {
+    write_ods_value_sheets(output, &crate::xlsx::read_xlsx_value_sheets(input)?)
+}
+
+pub(crate) fn convert_ods_to_xlsx(input: &Path, output: &Path) -> Result<(), MarkoffError> {
+    let content = read_odf_content(input, ODS_MIME)?;
+    crate::xlsx::write_xlsx_value_sheets(output, &read_ods_value_sheets(&content)?)
 }
 
 pub(crate) fn convert_ods_to_data(
@@ -170,7 +180,7 @@ fn write_ods_value_sheets(
         body.push_str("</table:table>");
     }
     let content = odf_document("spreadsheet", &body, "");
-    write_odf_package(output, ODS_MIME, &content, ODF_STYLES)
+    write_odf_package(output, ODS_MIME, &content, ODF_STYLES, &[])
 }
 
 pub(crate) fn convert_ods_to_markdown(input: &Path, output: &Path) -> Result<(), MarkoffError> {
@@ -207,8 +217,24 @@ pub(crate) fn convert_markdown_to_odp(input: &Path, output: &Path) -> Result<(),
     if patch_edited_package(source, payload.as_ref(), Format::Odp, output)? {
         return Ok(());
     }
-    let slides = markdown_slides(source);
+    let base_dir = input.parent().unwrap_or_else(|| Path::new("."));
+    let slides = parse_markdown_slides(source, base_dir);
+    let (body, media) = render_odp_slides(&slides);
+    let content = odf_document("presentation", &body, ODP_AUTOMATIC_STYLES);
+    write_odf_package(output, ODP_MIME, &content, ODF_STYLES, &media)
+}
+
+const ODP_CONTENT_WIDTH_CM: f64 = 24.0;
+const ODP_CONTENT_TOP_CM: f64 = 4.0;
+const ODP_MAX_IMAGE_HEIGHT_CM: f64 = 12.0;
+
+/// Package media entry: (path inside the package, media type, bytes).
+type OdfMedia = (String, &'static str, Vec<u8>);
+
+fn render_odp_slides(slides: &[Slide]) -> (String, Vec<OdfMedia>) {
     let mut body = String::new();
+    let mut media = Vec::new();
+    let mut frame_counter = 0usize;
     for (index, slide) in slides.iter().enumerate() {
         body.push_str(&format!(
             "<draw:page draw:name=\"page{}\" draw:style-name=\"dp1\" draw:master-page-name=\"Default\">",
@@ -217,26 +243,113 @@ pub(crate) fn convert_markdown_to_odp(input: &Path, output: &Path) -> Result<(),
         body.push_str("<draw:frame presentation:class=\"title\" svg:x=\"1cm\" svg:y=\"1cm\" svg:width=\"24cm\" svg:height=\"3cm\"><draw:text-box>");
         body.push_str(&format!("<text:p>{}</text:p>", xml_escape(&slide.title)));
         body.push_str("</draw:text-box></draw:frame>");
-        body.push_str("<draw:frame presentation:class=\"outline\" svg:x=\"1cm\" svg:y=\"4cm\" svg:width=\"24cm\" svg:height=\"14cm\"><draw:text-box>");
-        for (text, bulleted) in &slide.items {
-            if *bulleted {
-                body.push_str(&format!(
-                    "<text:list text:style-name=\"Bullet\"><text:list-item><text:p>{}</text:p></text:list-item></text:list>",
-                    xml_escape(text)
-                ));
+
+        let mut y = ODP_CONTENT_TOP_CM;
+        let mut pending: Vec<(String, bool)> = Vec::new();
+        let mut used_outline = false;
+        let mut flush = |pending: &mut Vec<(String, bool)>, body: &mut String, y: &mut f64| {
+            if pending.is_empty() && used_outline {
+                return;
+            }
+            let lines = pending
+                .iter()
+                .map(|(text, _)| text.chars().count() / 80 + 1)
+                .sum::<usize>()
+                .max(1);
+            let height = lines as f64 * 1.1 + 0.5;
+            let class = if used_outline {
+                String::new()
             } else {
-                body.push_str(&format!("<text:p>{}</text:p>", xml_escape(text)));
+                " presentation:class=\"outline\"".to_string()
+            };
+            body.push_str(&format!(
+                "<draw:frame{class} svg:x=\"1cm\" svg:y=\"{y:.2}cm\" svg:width=\"24cm\" svg:height=\"{height:.2}cm\"><draw:text-box>"
+            ));
+            for (text, bulleted) in pending.iter() {
+                if *bulleted {
+                    body.push_str(&format!(
+                        "<text:list text:style-name=\"Bullet\"><text:list-item><text:p>{}</text:p></text:list-item></text:list>",
+                        xml_escape(text)
+                    ));
+                } else {
+                    body.push_str(&format!("<text:p>{}</text:p>", xml_escape(text)));
+                }
+            }
+            body.push_str("</draw:text-box></draw:frame>");
+            used_outline = true;
+            *y += height + 0.3;
+            pending.clear();
+        };
+
+        for block in &slide.blocks {
+            match block {
+                SlideBlock::Text { text, bulleted } => pending.push((text.clone(), *bulleted)),
+                SlideBlock::Image {
+                    alt,
+                    source,
+                    data: Some(image),
+                } => {
+                    if !pending.is_empty() {
+                        flush(&mut pending, &mut body, &mut y);
+                    }
+                    frame_counter += 1;
+                    let name = format!("Pictures/image{frame_counter}.{}", image.extension);
+                    let (pixel_width, pixel_height) = image.size.unwrap_or((640, 480));
+                    let natural_width = f64::from(pixel_width.max(1)) * 2.54 / 96.0;
+                    let natural_height = f64::from(pixel_height.max(1)) * 2.54 / 96.0;
+                    let scale = (ODP_CONTENT_WIDTH_CM / natural_width)
+                        .min(ODP_MAX_IMAGE_HEIGHT_CM / natural_height)
+                        .min(1.0);
+                    let width = natural_width * scale;
+                    let height = natural_height * scale;
+                    let x = 1.0 + (ODP_CONTENT_WIDTH_CM - width) / 2.0;
+                    let description = if alt.is_empty() { source } else { alt };
+                    body.push_str(&format!(
+                        "<draw:frame draw:name=\"Image {frame_counter}\" svg:x=\"{x:.3}cm\" svg:y=\"{y:.3}cm\" svg:width=\"{width:.3}cm\" svg:height=\"{height:.3}cm\"><draw:image xlink:href=\"{name}\" xlink:type=\"simple\" xlink:show=\"embed\" xlink:actuate=\"onLoad\"/><svg:title>{}</svg:title></draw:frame>",
+                        xml_escape(description)
+                    ));
+                    media.push((name, image.media_type, image.bytes.clone()));
+                    y += height + 0.3;
+                }
+                SlideBlock::Image { alt, source, .. } => {
+                    pending.push((image_placeholder_text(alt, source), false));
+                }
+                SlideBlock::Table(rows) => {
+                    if !pending.is_empty() {
+                        flush(&mut pending, &mut body, &mut y);
+                    }
+                    frame_counter += 1;
+                    let columns = rows.iter().map(Vec::len).max().unwrap_or(0).max(1);
+                    let height = rows.len().max(1) as f64 * 0.9;
+                    body.push_str(&format!(
+                        "<draw:frame draw:name=\"Table {frame_counter}\" svg:x=\"1cm\" svg:y=\"{y:.2}cm\" svg:width=\"24cm\" svg:height=\"{height:.2}cm\"><table:table table:name=\"Table{frame_counter}\"><table:table-column table:number-columns-repeated=\"{columns}\"/>"
+                    ));
+                    for row in rows {
+                        body.push_str("<table:table-row>");
+                        for column in 0..columns {
+                            body.push_str("<table:table-cell office:value-type=\"string\">");
+                            for line in row.get(column).map_or("", String::as_str).split('\n') {
+                                body.push_str(&format!("<text:p>{}</text:p>", xml_escape(line)));
+                            }
+                            body.push_str("</table:table-cell>");
+                        }
+                        body.push_str("</table:table-row>");
+                    }
+                    body.push_str("</table:table></draw:frame>");
+                    y += height + 0.3;
+                }
             }
         }
-        body.push_str("</draw:text-box></draw:frame></draw:page>");
+        flush(&mut pending, &mut body, &mut y);
+        body.push_str("</draw:page>");
     }
-    let content = odf_document("presentation", &body, ODP_AUTOMATIC_STYLES);
-    write_odf_package(output, ODP_MIME, &content, ODF_STYLES)
+    (body, media)
 }
-
 pub(crate) fn convert_odp_to_markdown(input: &Path, output: &Path) -> Result<(), MarkoffError> {
     let content = read_odf_content(input, ODP_MIME)?;
-    let markdown = odp_to_markdown(&content)?;
+    let mut slides = odp_slides(&content)?;
+    extract_odp_images(&mut slides, input, output)?;
+    let markdown = render_slides_markdown(&slides);
     std::fs::write(
         output,
         append_open_document_payload(&markdown, input, Format::Odp)?,
@@ -584,6 +697,7 @@ fn write_odf_package(
     mime_type: &str,
     content: &str,
     styles: &str,
+    media: &[OdfMedia],
 ) -> Result<(), MarkoffError> {
     let file = std::fs::File::create(output)?;
     let mut archive = zip::ZipWriter::new(file);
@@ -598,8 +712,19 @@ fn write_odf_package(
     write_odf_part(&mut archive, compressed, "content.xml", content)?;
     write_odf_part(&mut archive, compressed, "styles.xml", styles)?;
     write_odf_part(&mut archive, compressed, "meta.xml", ODF_META)?;
+    let mut media_entries = String::new();
+    for (name, media_type, bytes) in media {
+        archive
+            .start_file(name.as_str(), stored)
+            .map_err(invalid_data)?;
+        archive.write_all(bytes)?;
+        media_entries.push_str(&format!(
+            "<manifest:file-entry manifest:full-path=\"{}\" manifest:media-type=\"{media_type}\"/>",
+            xml_attribute_escape(name)
+        ));
+    }
     let manifest = format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><manifest:manifest xmlns:manifest=\"urn:oasis:names:tc:opendocument:xmlns:manifest:1.0\" manifest:version=\"1.3\"><manifest:file-entry manifest:full-path=\"/\" manifest:media-type=\"{mime_type}\"/><manifest:file-entry manifest:full-path=\"content.xml\" manifest:media-type=\"text/xml\"/><manifest:file-entry manifest:full-path=\"styles.xml\" manifest:media-type=\"text/xml\"/><manifest:file-entry manifest:full-path=\"meta.xml\" manifest:media-type=\"text/xml\"/></manifest:manifest>"
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><manifest:manifest xmlns:manifest=\"urn:oasis:names:tc:opendocument:xmlns:manifest:1.0\" manifest:version=\"1.3\"><manifest:file-entry manifest:full-path=\"/\" manifest:media-type=\"{mime_type}\"/><manifest:file-entry manifest:full-path=\"content.xml\" manifest:media-type=\"text/xml\"/><manifest:file-entry manifest:full-path=\"styles.xml\" manifest:media-type=\"text/xml\"/><manifest:file-entry manifest:full-path=\"meta.xml\" manifest:media-type=\"text/xml\"/>{media_entries}</manifest:manifest>"
     );
     write_odf_part(&mut archive, compressed, "META-INF/manifest.xml", &manifest)?;
     archive.finish().map_err(invalid_data)?;
@@ -1329,132 +1454,159 @@ fn read_ods_value_sheets(xml: &str) -> Result<BTreeMap<String, Vec<Vec<CellValue
     Ok(sheets)
 }
 
-struct Slide {
-    title: String,
-    items: Vec<(String, bool)>,
-}
-
-fn markdown_slides(source: &str) -> Vec<Slide> {
-    let mut slides = Vec::new();
-    let mut current = None;
-    for raw_line in source.lines() {
-        let line = raw_line.trim();
-        if line.is_empty() || line == "---" {
-            continue;
-        }
-        if let Some(title) = line.strip_prefix("# ").or_else(|| line.strip_prefix("## ")) {
-            if let Some(slide) = current.take() {
-                slides.push(slide);
-            }
-            current = Some(Slide {
-                title: markdown_inline_to_plain_text(title),
-                items: Vec::new(),
-            });
-            continue;
-        }
-        let (text, bullet) =
-            if let Some(text) = line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")) {
-                (text, true)
-            } else {
-                (line, false)
-            };
-        current
-            .get_or_insert_with(|| Slide {
-                title: String::new(),
-                items: Vec::new(),
-            })
-            .items
-            .push((markdown_inline_to_plain_text(text), bullet));
-    }
-    if let Some(slide) = current {
-        slides.push(slide);
-    }
-    if slides.is_empty() {
-        slides.push(Slide {
-            title: String::new(),
-            items: Vec::new(),
-        });
-    }
-    slides
-}
-
-fn odp_to_markdown(xml: &str) -> Result<String, MarkoffError> {
+/// Parses ODP content into slides. Image sources hold package-relative paths.
+fn odp_slides(xml: &str) -> Result<Vec<Slide>, MarkoffError> {
+    let escape = |text: &str| markdown_escape(text, MarkdownEscapeContext::Plain);
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(false);
     let mut slides = Vec::new();
-    let mut title = String::new();
-    let mut items = Vec::new();
+    let mut slide = Slide::default();
     let mut frame_class = String::new();
+    let mut frame_image: Option<String> = None;
+    let mut frame_alt = String::new();
+    let mut in_alt = false;
     let mut text = String::new();
     let mut in_paragraph = false;
     let mut list_depth = 0usize;
+    let mut table: Option<Vec<Vec<String>>> = None;
+    let mut row: Option<Vec<String>> = None;
+    let mut cell: Option<Vec<String>> = None;
     loop {
         match reader.read_event().map_err(invalid_data)? {
             Event::Start(tag) => match tag.local_name().as_ref() {
-                "page" => {
-                    title.clear();
-                    items.clear();
+                "page" => slide = Slide::default(),
+                "frame" => {
+                    frame_class = attribute_value(&tag, "class")?.unwrap_or_default();
+                    frame_image = None;
+                    frame_alt.clear();
                 }
-                "frame" => frame_class = attribute_value(&tag, "class")?.unwrap_or_default(),
+                "image" => frame_image = attribute_value(&tag, "href")?,
+                "title" | "desc" if !in_paragraph && frame_alt.is_empty() => in_alt = true,
                 "list" => list_depth += 1,
+                "table" => table = Some(Vec::new()),
+                "table-row" if table.is_some() => row = Some(Vec::new()),
+                "table-cell" | "covered-table-cell" if row.is_some() => cell = Some(Vec::new()),
                 "p" | "h" => {
                     in_paragraph = true;
                     text.clear();
                 }
-                "line-break" if in_paragraph => text.push(' '),
                 _ => {}
             },
-            Event::Text(value) if in_paragraph => {
-                text.push_str(&quick_xml::escape::unescape(value.as_ref()).map_err(invalid_data)?);
+            Event::Empty(tag) => match tag.local_name().as_ref() {
+                "image" => frame_image = attribute_value(&tag, "href")?,
+                "line-break" if in_paragraph => text.push(if cell.is_some() { '\n' } else { ' ' }),
+                "s" if in_paragraph => text.push(' '),
+                "table-cell" | "covered-table-cell" => {
+                    if let Some(row) = row.as_mut() {
+                        let repeated = attribute_value(&tag, "number-columns-repeated")?
+                            .and_then(|value| value.parse::<usize>().ok())
+                            .unwrap_or(1)
+                            .clamp(1, 64);
+                        row.extend(std::iter::repeat_n(String::new(), repeated));
+                    }
+                }
+                _ => {}
+            },
+            Event::Text(value) if in_paragraph || in_alt => {
+                let value = quick_xml::escape::unescape(value.as_ref()).map_err(invalid_data)?;
+                if in_paragraph {
+                    text.push_str(&value);
+                } else {
+                    frame_alt.push_str(&value);
+                }
             }
             Event::End(tag) => match tag.local_name().as_ref() {
+                "title" | "desc" => in_alt = false,
                 "p" | "h" => {
                     in_paragraph = false;
-                    let value = text.trim().to_string();
+                    if let Some(lines) = cell.as_mut() {
+                        lines.push(text.trim().to_string());
+                        continue;
+                    }
+                    let value = escape(text.trim());
                     if !value.is_empty() {
-                        if frame_class == "title" && title.is_empty() {
-                            title = value;
+                        if frame_class == "title" && slide.title.is_empty() {
+                            slide.title = value;
                         } else {
-                            items.push((value, list_depth > 0));
+                            slide.blocks.push(SlideBlock::Text {
+                                text: value,
+                                bulleted: list_depth > 0,
+                            });
                         }
                     }
                 }
                 "list" => list_depth = list_depth.saturating_sub(1),
-                "frame" => frame_class.clear(),
-                "page" => slides.push(Slide {
-                    title: std::mem::take(&mut title),
-                    items: std::mem::take(&mut items),
-                }),
+                "table-cell" | "covered-table-cell" => {
+                    if let (Some(lines), Some(row)) = (cell.take(), row.as_mut()) {
+                        row.push(escape(lines.join("\n").trim()));
+                    }
+                }
+                "table-row" => {
+                    if let (Some(finished), Some(table)) = (row.take(), table.as_mut()) {
+                        table.push(finished);
+                    }
+                }
+                "table" => {
+                    if let Some(rows) = table.take().filter(|rows| !rows.is_empty()) {
+                        slide.blocks.push(SlideBlock::Table(rows));
+                    }
+                }
+                "frame" => {
+                    if let Some(source) = frame_image.take() {
+                        slide.blocks.push(SlideBlock::Image {
+                            alt: escape(frame_alt.trim()),
+                            source,
+                            data: None,
+                        });
+                    }
+                    frame_class.clear();
+                }
+                "page" => slides.push(std::mem::take(&mut slide)),
                 _ => {}
             },
             Event::Eof => break,
             _ => {}
         }
     }
-    let rendered = slides
-        .iter()
-        .enumerate()
-        .map(|(index, slide)| {
-            let heading = if slide.title.is_empty() {
-                format!("Slide {}", index + 1)
-            } else {
-                slide.title.clone()
-            };
-            let mut section = format!("## {heading}\n\n");
-            for (text, bullet) in &slide.items {
-                if *bullet {
-                    section.push_str("- ");
-                }
-                section.push_str(text);
-                section.push_str("\n\n");
-            }
-            section
-        })
-        .collect::<Vec<_>>()
-        .join("---\n\n");
-    Ok(rendered)
+    Ok(slides)
 }
 
+/// Extracts package images next to the Markdown output and rewrites links.
+fn extract_odp_images(
+    slides: &mut [Slide],
+    input: &Path,
+    output: &Path,
+) -> Result<(), MarkoffError> {
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(input)?).map_err(invalid_data)?;
+    let mut sink = ImageSink::new(output);
+    for (index, slide) in slides.iter_mut().enumerate() {
+        for block in &mut slide.blocks {
+            let SlideBlock::Image { source, .. } = block else {
+                continue;
+            };
+            if source.contains("://") {
+                continue;
+            }
+            let part = source.trim_start_matches("./").to_string();
+            if let Some(link) = sink.saved(&part) {
+                *source = link;
+                continue;
+            }
+            let mut bytes = Vec::new();
+            match archive.by_name(&part) {
+                Ok(mut entry) => {
+                    entry.read_to_end(&mut bytes)?;
+                }
+                Err(error) => {
+                    tracing::warn!(part, %error, "ODP image part is missing");
+                    continue;
+                }
+            }
+            *source = sink.save(index + 1, &part, &bytes)?;
+        }
+    }
+    Ok(())
+}
 fn odt_text_align(align: StyleTextAlign) -> &'static str {
     match align {
         StyleTextAlign::Left => "start",

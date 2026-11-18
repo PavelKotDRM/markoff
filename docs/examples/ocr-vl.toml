@@ -1,0 +1,10 @@
+# Build with --features markoff_core/ocr-local. First use may download several GB.
+keep_intermediate = true
+
+[ocr]
+backend = "oar_vl"
+auto_download = true
+model = "PaddlePaddle/PaddleOCR-VL-1.5"
+# To run offline, set auto_download = false and provide both directories:
+# model_dir = 'models\PaddleOCR-VL-1.5'
+# layout_dir = 'models\PP-DocLayoutV3'

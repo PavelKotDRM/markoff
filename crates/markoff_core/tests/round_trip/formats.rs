@@ -610,6 +610,69 @@ fn markdown_to_pptx_converts_inline_markup_to_equivalent_plain_text() {
 }
 
 #[test]
+fn presentations_round_trip_images_and_tables_stably() {
+    let directory = temporary_path("slides_media", "dir");
+    fs::create_dir_all(&directory).unwrap();
+    let mut figure = image::RgbImage::new(3, 2);
+    figure.put_pixel(2, 1, image::Rgb([255, 0, 0]));
+    figure.save(directory.join("figure.png")).unwrap();
+    let source = directory.join("source.md");
+    fs::write(
+        &source,
+        "# Results\n\nSummary line.\n\n| Name | Score |\n| --- | --- |\n| Ada | 42 |\n| Bob \\| Jr | 7 |\n\n![Red figure](figure.png)\n\n- Closing point\n",
+    )
+    .unwrap();
+
+    for format in [Format::Pptx, Format::Odp] {
+        let first = directory.join(format!("first.{format}"));
+        let restored = directory.join(format!("restored-{format}.md"));
+        let second = directory.join(format!("second.{format}"));
+        let restored_again = directory.join(format!("again-{format}.md"));
+        convert_file(&source, &first, Format::Markdown, format).unwrap();
+        convert_file(&first, &restored, format, Format::Markdown).unwrap();
+        convert_file(&restored, &second, Format::Markdown, format).unwrap();
+        convert_file(&second, &restored_again, format, Format::Markdown).unwrap();
+
+        let markdown = fs::read_to_string(&restored).unwrap();
+        let positions = [
+            "## Results",
+            "Summary line.",
+            "| Name | Score |\n| --- | --- |\n| Ada | 42 |\n| Bob \\| Jr | 7 |",
+            "![Red figure](image/",
+            "- Closing point",
+        ]
+        .map(|expected| {
+            markdown
+                .find(expected)
+                .unwrap_or_else(|| panic!("{format}: missing {expected:?} in {markdown:?}"))
+        });
+        assert!(positions.is_sorted(), "{format}: block order changed");
+
+        let link_start = positions[3] + "![Red figure](".len();
+        let link = &markdown[link_start..link_start + markdown[link_start..].find(')').unwrap()];
+        let extracted = image::open(directory.join(link)).unwrap().to_rgb8();
+        assert_eq!(extracted, figure, "{format}: image pixels changed");
+
+        let body = |text: &str, stem: &str| {
+            text.split("<!-- markoff:opendocument")
+                .next()
+                .unwrap()
+                .replace(stem, "STEM")
+        };
+        assert_eq!(
+            body(&markdown, &format!("restored-{format}")),
+            body(
+                &fs::read_to_string(&restored_again).unwrap(),
+                &format!("again-{format}")
+            ),
+            "{format}: second round trip changed the Markdown"
+        );
+    }
+
+    fs::remove_dir_all(directory).ok();
+}
+
+#[test]
 fn odt_round_trip_preserves_supported_document_elements() {
     let markdown = temporary_path("odt_input", "md");
     let odt = temporary_path("odt_document", "odt");

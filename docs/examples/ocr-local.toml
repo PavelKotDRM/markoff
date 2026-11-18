@@ -1,0 +1,10 @@
+# Paths are relative to this configuration file. Supply matching models and dictionary.
+# Set ORT_DYLIB_PATH to an installed ONNX Runtime shared library (1.24+ recommended).
+keep_intermediate = true
+
+[ocr]
+backend = "oar"
+auto_download = false
+detection = 'models\det.onnx'
+recognition = 'models\rec.onnx'
+dictionary = 'models\dict.txt'

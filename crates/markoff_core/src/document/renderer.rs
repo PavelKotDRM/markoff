@@ -11,7 +11,7 @@ use std::path::Path;
 
 const MAX_DOCUMENT_NESTING_DEPTH: usize = 128;
 
-pub(super) fn document_to_markdown(
+pub(crate) fn document_to_markdown(
     document: &Document,
     base_dir: &Path,
 ) -> Result<String, MarkoffError> {

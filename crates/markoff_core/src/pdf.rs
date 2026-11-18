@@ -1,22 +1,47 @@
 use crate::MarkoffError;
 use crate::error::invalid_data;
-use pdfium_bundled::pdfium_render::prelude::Pdfium;
+use crate::ocr::{OcrConfig, Recognizer};
+use pdfium_bundled::pdfium_render::prelude::{PdfRenderConfig, Pdfium};
 use std::path::Path;
 use std::sync::OnceLock;
 
-pub(crate) fn convert_pdf_to_markdown(input: &Path, output: &Path) -> Result<(), MarkoffError> {
+pub(crate) fn convert_pdf_with_ocr(
+    input: &Path,
+    output: &Path,
+    config: &OcrConfig,
+) -> Result<(), MarkoffError> {
     let pdfium = bundled_pdfium()?;
     let document = pdfium
         .load_pdf_from_file(input, None)
         .map_err(invalid_data)?;
     let mut pages = Vec::with_capacity(usize::try_from(document.pages().len()).unwrap_or_default());
+    let mut recognizer = Recognizer::new(config);
+    let mut page_images = Vec::new();
     for index in document.pages().as_range() {
         let page = document.pages().get(index).map_err(invalid_data)?;
-        pages.push(page.text().map_err(invalid_data)?.all());
+        let text = page.text().map_err(invalid_data)?.all();
+        if has_usable_text(&text) {
+            pages.push(text);
+        } else {
+            let image = page
+                .render_with_config(
+                    &PdfRenderConfig::new()
+                        .set_target_width(2000)
+                        .set_maximum_height(3000),
+                )
+                .map_err(invalid_data)?
+                .as_image()
+                .map_err(invalid_data)?
+                .to_rgb8();
+            let recognized =
+                recognizer.recognize(image, u32::try_from(index).map_err(invalid_data)? + 1)?;
+            // A blank or illustration-only page remains visible even when OCR finds no words.
+            if !has_usable_text(&recognized) {
+                page_images.push(index);
+            }
+            pages.push(recognized);
+        }
     }
-    let text = pages.join("\n");
-    let mut markdown = text.trim_end().to_string();
-
     let image_dir = output
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -25,13 +50,46 @@ pub(crate) fn convert_pdf_to_markdown(input: &Path, output: &Path) -> Result<(),
             |parent| parent.join("image"),
         );
     let image_links = extract_pdf_images(input, &image_dir)?;
-    if !image_links.is_empty() {
-        markdown.push_str("\n\n");
-        markdown.push_str(&image_links.join("\n\n"));
+    for (page, links) in pages.iter_mut().zip(&image_links) {
+        if !links.is_empty() {
+            page.push_str("\n\n");
+            page.push_str(&links.join("\n\n"));
+        }
+    }
+    for index in page_images {
+        if !image_links[usize::try_from(index).map_err(invalid_data)?].is_empty() {
+            continue;
+        }
+        let page = document.pages().get(index).map_err(invalid_data)?;
+        let name = format!("page{}.png", index + 1);
+        std::fs::create_dir_all(&image_dir)?;
+        page.render_with_config(
+            &PdfRenderConfig::new()
+                .set_target_width(2000)
+                .set_maximum_height(3000),
+        )
+        .map_err(invalid_data)?
+        .as_image()
+        .map_err(invalid_data)?
+        .save(image_dir.join(&name))
+        .map_err(invalid_data)?;
+        pages[usize::try_from(index).map_err(invalid_data)?]
+            .push_str(&format!("\n\n![Page {}](image/{name})", index + 1));
     }
 
-    std::fs::write(output, format!("{markdown}\n"))?;
+    std::fs::write(output, format!("{}\n", pages.join("\n\n").trim_end()))?;
     Ok(())
+}
+
+fn has_usable_text(text: &str) -> bool {
+    text.chars().any(|character| {
+        !character.is_whitespace()
+            && !character.is_control()
+            && !matches!(
+                character,
+                '\u{fffd}' | '\u{feff}' | '\u{200b}' | '\u{200c}' | '\u{200d}'
+            )
+    })
 }
 
 static PDFIUM: OnceLock<Result<Pdfium, PdfiumInitializationError>> = OnceLock::new();
@@ -59,13 +117,15 @@ pub(crate) fn bundled_pdfium() -> std::io::Result<&'static Pdfium> {
 /// Extracts every image XObject referenced by the PDF's pages, saving each
 /// as a file under `image_dir` and returning a Markdown image link per
 /// extracted image, in page/appearance order.
-fn extract_pdf_images(input: &Path, image_dir: &Path) -> Result<Vec<String>, MarkoffError> {
+fn extract_pdf_images(input: &Path, image_dir: &Path) -> Result<Vec<Vec<String>>, MarkoffError> {
     let document = lopdf::Document::load(input).map_err(invalid_data)?;
     let mut links = Vec::new();
     let mut counter = 0usize;
 
     for (_, page_id) in document.get_pages() {
+        let mut page_links = Vec::new();
         let Ok(images) = document.get_page_images(page_id) else {
+            links.push(page_links);
             continue;
         };
         for image in images {
@@ -76,8 +136,9 @@ fn extract_pdf_images(input: &Path, image_dir: &Path) -> Result<Vec<String>, Mar
             let file_name = format!("image{counter}.{extension}");
             std::fs::create_dir_all(image_dir)?;
             std::fs::write(image_dir.join(&file_name), bytes)?;
-            links.push(format!("![](image/{file_name})"));
+            page_links.push(format!("![](image/{file_name})"));
         }
+        links.push(page_links);
     }
     Ok(links)
 }
@@ -123,7 +184,227 @@ fn decode_pdf_image(
 
 #[cfg(test)]
 mod tests {
-    use super::bundled_pdfium;
+    use super::*;
+    use lopdf::{Object, Stream, dictionary};
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    fn mixed_pdf(path: &Path) {
+        let mut document = lopdf::Document::with_version("1.5");
+        let pages_id = document.new_object_id();
+        let font = document.add_object(dictionary! {
+            "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica",
+        });
+        let mut pages = Vec::new();
+        for content in [
+            "BT /F1 14 Tf 50 700 Td (Embedded first page) Tj ET",
+            "",
+            "BT /F1 14 Tf 50 700 Td (Embedded last page) Tj ET",
+        ] {
+            let content =
+                document.add_object(Stream::new(dictionary! {}, content.as_bytes().to_vec()));
+            let page = document.add_object(dictionary! {
+                "Type" => "Page", "Parent" => pages_id,
+                "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+                "Resources" => dictionary! { "Font" => dictionary! { "F1" => font } },
+                "Contents" => content,
+            });
+            pages.push(Object::Reference(page));
+        }
+        document.objects.insert(
+            pages_id,
+            dictionary! {
+                "Type" => "Pages", "Kids" => pages, "Count" => 3,
+            }
+            .into(),
+        );
+        let catalog = document.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+        document.trailer.set("Root", catalog);
+        document.save(path).unwrap();
+    }
+
+    fn api_server(status: &str, body: &str) -> (String, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let endpoint = format!("http://{}/ocr", listener.local_addr().unwrap());
+        let response = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let thread = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+            let mut socket = loop {
+                match listener.accept() {
+                    Ok((socket, _)) => break socket,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "OCR server was not called"
+                        );
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("{error}"),
+                }
+            };
+            socket.set_nonblocking(false).unwrap();
+            socket
+                .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                .unwrap();
+            let mut request = Vec::new();
+            let header_end = loop {
+                let mut byte = [0];
+                socket.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+                if request.ends_with(b"\r\n\r\n") {
+                    break request.len();
+                }
+            };
+            let headers = String::from_utf8_lossy(&request).to_ascii_lowercase();
+            let length: usize = headers
+                .lines()
+                .find_map(|line| line.strip_prefix("content-length:"))
+                .expect("JSON request must have content length")
+                .trim()
+                .parse()
+                .unwrap();
+            request.resize(header_end + length, 0);
+            socket.read_exact(&mut request[header_end..]).unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&request[header_end..]).unwrap();
+            assert_eq!(json["page"], 2);
+            assert_eq!(json["mime_type"], "image/png");
+            use base64::Engine as _;
+            let png = base64::engine::general_purpose::STANDARD
+                .decode(json["image_base64"].as_str().unwrap())
+                .unwrap();
+            assert!(png.starts_with(b"\x89PNG"));
+            socket.write_all(response.as_bytes()).unwrap();
+        });
+        (endpoint, thread)
+    }
+
+    #[test]
+    fn mixed_pdf_recognizes_only_the_textless_page_and_preserves_order() {
+        let temporary = crate::intermediate_path("pdf").unwrap();
+        mixed_pdf(&temporary);
+        let output = temporary.with_extension("md");
+        let (endpoint, server) = api_server(
+            "200 OK",
+            r##"{"markdown":"# Recognized middle\n\n| A | B |\n| --- | --- |\n| 1 | 2 |"}"##,
+        );
+        convert_pdf_with_ocr(
+            &temporary,
+            &output,
+            &OcrConfig::Api {
+                endpoint,
+                token_env: None,
+                timeout_seconds: 10,
+            },
+        )
+        .unwrap();
+        server.join().unwrap();
+        let markdown = std::fs::read_to_string(&output).unwrap();
+        assert!(
+            markdown.find("Embedded first").unwrap() < markdown.find("Recognized middle").unwrap()
+        );
+        assert!(
+            markdown.find("Recognized middle").unwrap() < markdown.find("Embedded last").unwrap()
+        );
+        assert!(markdown.contains("| 1 | 2 |"));
+        crate::remove_intermediate_markdown(&temporary);
+    }
+
+    #[test]
+    fn missing_ocr_and_server_errors_do_not_publish_empty_success() {
+        let temporary = crate::intermediate_path("pdf").unwrap();
+        mixed_pdf(&temporary);
+        let output = temporary.with_extension("md");
+        let error = convert_pdf_with_ocr(&temporary, &output, &OcrConfig::Disabled).unwrap_err();
+        assert!(error.to_string().contains("page 2"));
+        assert!(!output.exists());
+        let (endpoint, server) =
+            api_server("500 Internal Server Error", r#"{"error":"unavailable"}"#);
+        assert!(
+            convert_pdf_with_ocr(
+                &temporary,
+                &output,
+                &OcrConfig::Api {
+                    endpoint,
+                    token_env: None,
+                    timeout_seconds: 10,
+                }
+            )
+            .is_err()
+        );
+        server.join().unwrap();
+        assert!(!output.exists());
+        crate::remove_intermediate_markdown(&temporary);
+    }
+
+    #[test]
+    fn invisible_characters_are_not_a_text_layer() {
+        assert!(!has_usable_text(" \n\r\0\u{fffd}\u{200b}\u{feff}"));
+        assert!(has_usable_text("42"));
+        assert!(has_usable_text("Text"));
+    }
+
+    #[test]
+    fn text_pages_do_not_initialize_a_configured_ocr_backend() {
+        let temporary = crate::intermediate_path("pdf").unwrap();
+        mixed_pdf(&temporary);
+        let mut document = lopdf::Document::load(&temporary).unwrap();
+        document.delete_pages(&[2]);
+        document.save(&temporary).unwrap();
+        let output = temporary.with_extension("md");
+        for config in [
+            OcrConfig::Api {
+                endpoint: "invalid URL".into(),
+                token_env: None,
+                timeout_seconds: 0,
+            },
+            OcrConfig::Oar {
+                auto_download: false,
+                detection: "missing.onnx".into(),
+                recognition: "missing.onnx".into(),
+                dictionary: "missing.txt".into(),
+            },
+        ] {
+            convert_pdf_with_ocr(&temporary, &output, &config).unwrap();
+            let markdown = std::fs::read_to_string(&output).unwrap();
+            assert!(markdown.contains("Embedded first page"));
+            assert!(markdown.contains("Embedded last page"));
+        }
+        crate::remove_intermediate_markdown(&temporary);
+    }
+
+    #[test]
+    fn empty_successful_ocr_retains_the_original_page() {
+        let temporary = crate::intermediate_path("pdf").unwrap();
+        mixed_pdf(&temporary);
+        let output = temporary.with_extension("md");
+        let (endpoint, server) = api_server("200 OK", r#"{"markdown":""}"#);
+        convert_pdf_with_ocr(
+            &temporary,
+            &output,
+            &OcrConfig::Api {
+                endpoint,
+                token_env: None,
+                timeout_seconds: 10,
+            },
+        )
+        .unwrap();
+        server.join().unwrap();
+        let markdown = std::fs::read_to_string(&output).unwrap();
+        assert!(markdown.contains("![Page 2](image/page2.png)"));
+        assert!(
+            temporary
+                .parent()
+                .unwrap()
+                .join("image")
+                .join("page2.png")
+                .is_file()
+        );
+        crate::remove_intermediate_markdown(&temporary);
+    }
 
     #[test]
     fn reuses_the_bundled_pdfium_binding() {
