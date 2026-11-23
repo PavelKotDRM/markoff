@@ -77,7 +77,13 @@ cargo test --workspace
 
 В следующих примерах для разработки используется `cargo run`. Релизная сборка создаётся командой `cargo build --release`; исполняемый файл CLI будет находиться в `target/release/markoff` (или `markoff.exe` в Windows), а GUI — в `target/release/markoff_gui` (`markoff_gui.exe`). Имена Cargo-пакетов остаются `markoff_cli` и `markoff_gui`, поэтому `-p markoff_cli` выбирает пакет CLI; имена исполняемых файлов задаются секциями `[[bin]]` в `Cargo.toml` каждого crate.
 
-Для чтения и создания PDF используется `pdfium-render`. Соответствующая нативная библиотека Pdfium загружается и встраивается во время сборки, увеличивая размер каждого бинарного файла приложения примерно на 30 МБ. При первом преобразовании PDF она извлекается в кэш пользователя; во время выполнения сетевой доступ и отдельно установленная библиотека Pdfium не требуются. PDF-файлы создаются со встроенным шрифтом, поддерживающим кириллицу, и автоматически перевёрстанным текстом.
+Для чтения и создания PDF используется `pdfium-render`. Сборка закрепляет
+PDFium chromium/8125 для целевой платформы и проверяет SHA-256 архива перед
+встраиванием нативной библиотеки. Это увеличивает размер каждого бинарного
+файла приложения примерно на 30 МБ. При первом преобразовании PDF библиотека
+извлекается в кэш пользователя; во время выполнения сеть и отдельно
+установленный Pdfium не требуются. PDF-файлы создаются со встроенным шрифтом,
+поддерживающим кириллицу, и автоматически перевёрстанным текстом.
 
 ### OCR и промежуточный формат
 
@@ -88,8 +94,8 @@ cargo test --workspace
 явную ошибку, а не пустой успешный результат.
 
 ```powershell
-cargo build --release -p markoff_cli --features markoff_core/ocr-local
-cargo run -p markoff_cli --features markoff_core/ocr-local -- convert .\scan.pdf --to md --config .\docs\examples\ocr-auto.toml
+cargo build --release -p markoff_cli
+cargo run -p markoff_cli -- convert .\scan.pdf --to md --config .\docs\examples\ocr-auto.toml
 cargo run -p markoff_cli -- convert .\report.docx --to md --keep-intermediate
 ```
 
@@ -106,7 +112,8 @@ intermediate**, вкладка **Intermediate JSON** и **OCR / conversion confi
 `MARKOFF_CONFIG`. Пути к локальным моделям отсчитываются от файла конфигурации.
 API получает JSON с `page`, `mime_type` и `image_base64`, возвращает
 `{"markdown":"..."}`; изображения страниц передаются выбранному серверу.
-Для API сборка с локальными OCR-зависимостями не нужна.
+Все OCR-backend'ы входят в приложение; веса моделей загружаются только при
+`auto_download = true`.
 Для backend `oar` также установите ONNX Runtime (рекомендуется 1.24 или новее)
 и задайте `ORT_DYLIB_PATH` с полным путём к `onnxruntime.dll` (Linux:
 `libonnxruntime.so`, macOS: `libonnxruntime.dylib`). Backend `oar_vl` работает

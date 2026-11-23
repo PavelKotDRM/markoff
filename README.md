@@ -74,7 +74,13 @@ cargo test --workspace
 
 The commands below use `cargo run` during development. A release build is created with `cargo build --release`; the CLI executable is `target/release/markoff` (or `markoff.exe` on Windows) and the GUI executable is `target/release/markoff_gui` (`markoff_gui.exe`). The Cargo package names stay `markoff_cli` and `markoff_gui`, so `-p markoff_cli` selects the CLI package; the executable names are set by the `[[bin]]` sections in each crate's `Cargo.toml`.
 
-PDF import and export use `pdfium-render`. The matching Pdfium native library is downloaded and embedded at build time, adding roughly 30 MB to each application binary. On first PDF conversion it is extracted to the user's cache; no network access or separately installed Pdfium library is required at runtime. PDF output embeds fonts with Cyrillic support and renders supported document structure, formatting, links, code, tables, footnotes, and raster images.
+PDF import and export use `pdfium-render`. The build pins PDFium chromium/8125
+for each target and verifies the upstream archive SHA-256 before embedding it.
+This adds roughly 30 MB to each application binary. On first PDF conversion it
+is extracted to the user's cache; no network access or separately installed
+Pdfium library is required at runtime. PDF output embeds fonts with Cyrillic
+support and renders supported document structure, formatting, links, code,
+tables, footnotes, and raster images.
 
 PDF output uses the embedded DejaVu fonts for broad Unicode coverage and Twemoji
 graphics for emoji fallback. DejaVu fonts are distributed under their bundled
@@ -213,12 +219,12 @@ apparently successful empty conversion. An empty successful OCR response retains
 the page's images (or a rendered page when there are no extractable images).
 Extracted PDF images remain associated with their source pages.
 
-Local OCR is optional because the ONNX/Candle dependencies and model weights are
-large. Enable both `oar-ocr` and `oar-ocr-vl` adapters with:
+Local OCR backends are included in every build. Model weights are downloaded
+only when the selected configuration enables `auto_download`:
 
 ```powershell
-cargo build --release -p markoff_cli --features markoff_core/ocr-local
-cargo run -p markoff_cli --features markoff_core/ocr-local -- convert .\scan.pdf --to md --config .\docs\examples\ocr-auto.toml
+cargo build --release -p markoff_cli
+cargo run -p markoff_cli -- convert .\scan.pdf --to md --config .\docs\examples\ocr-auto.toml
 ```
 
 Choose a configuration:
@@ -226,7 +232,7 @@ Choose a configuration:
 - [Automatic local OCR](docs/examples/ocr-auto.toml): downloads registered models on first use.
 - [Offline local OCR](docs/examples/ocr-local.toml): explicit ONNX files and their matching dictionary.
 - [Layout-aware VL OCR](docs/examples/ocr-vl.toml): automatic checkpoints or local model/layout directories.
-- [OCR API](docs/examples/ocr-api.toml): no local OCR feature or models required.
+- [OCR API](docs/examples/ocr-api.toml): sends textless page images to a configured server.
 
 Pass `--config FILE` (or set `MARKOFF_CONFIG`) for CLI conversion/batch, or choose
 the file in the GUI. Local paths are resolved relative to the config file.

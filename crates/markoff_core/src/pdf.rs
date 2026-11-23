@@ -1,8 +1,11 @@
 use crate::MarkoffError;
 use crate::error::invalid_data;
 use crate::ocr::{OcrConfig, Recognizer};
-use pdfium_bundled::pdfium_render::prelude::{PdfRenderConfig, Pdfium};
-use std::path::Path;
+use pdfium_render::prelude::{PdfRenderConfig, Pdfium};
+use sha2::{Digest, Sha256};
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 pub(crate) fn convert_pdf_with_ocr(
@@ -107,11 +110,112 @@ impl std::error::Error for PdfiumInitializationError {}
 
 pub(crate) fn bundled_pdfium() -> std::io::Result<&'static Pdfium> {
     match PDFIUM.get_or_init(|| {
-        pdfium_bundled::bind_bundled().map_err(|error| PdfiumInitializationError(error.to_string()))
+        let path = ensure_pdfium_library()
+            .map_err(|error| PdfiumInitializationError(error.to_string()))?;
+        Pdfium::bind_to_library(path)
+            .map(Pdfium::new)
+            .map_err(|error| PdfiumInitializationError(error.to_string()))
     }) {
         Ok(pdfium) => Ok(pdfium),
         Err(error) => Err(invalid_data(PdfiumInitializationError(error.0.clone()))),
     }
+}
+
+const PDFIUM_BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/pdfium.bin"));
+const PDFIUM_SHA256: &str = env!("MARKOFF_PDFIUM_SHA256");
+const PDFIUM_VERSION: &str = env!("MARKOFF_PDFIUM_VERSION");
+const PDFIUM_LIBRARY_NAME: &str = env!("MARKOFF_PDFIUM_LIBRARY_NAME");
+const PDFIUM_TARGET: &str = env!("MARKOFF_PDFIUM_TARGET");
+
+fn ensure_pdfium_library() -> io::Result<std::path::PathBuf> {
+    let base = if let Some(path) = std::env::var_os("MARKOFF_PDFIUM_CACHE_DIR") {
+        PathBuf::from(path)
+    } else {
+        #[cfg(target_os = "windows")]
+        let base = std::env::var_os("LOCALAPPDATA")
+            .or_else(|| std::env::var_os("APPDATA"))
+            .map(PathBuf::from)
+            .ok_or_else(|| io::Error::other("no Windows application cache directory is set"))?;
+
+        #[cfg(target_os = "macos")]
+        let base = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .ok_or_else(|| io::Error::other("HOME is not set"))?
+            .join("Library")
+            .join("Caches");
+
+        #[cfg(all(unix, not(target_os = "macos")))]
+        let base = std::env::var_os("XDG_CACHE_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
+            .ok_or_else(|| io::Error::other("no user cache directory is available"))?;
+
+        base
+    };
+
+    let path = base
+        .join("markoff")
+        .join("pdfium")
+        .join(PDFIUM_VERSION)
+        .join(PDFIUM_TARGET)
+        .join(PDFIUM_LIBRARY_NAME);
+    if cached_pdfium_is_valid(&path) {
+        return Ok(path);
+    }
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::other("PDFium cache path has no parent directory"))?;
+    fs::create_dir_all(parent)?;
+    if path.exists() {
+        fs::remove_file(&path)?;
+    }
+
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(io::Error::other)?
+        .as_nanos();
+    let temporary = parent.join(format!(
+        ".{}.{}.{}.tmp",
+        PDFIUM_LIBRARY_NAME,
+        std::process::id(),
+        timestamp
+    ));
+    let write_result = (|| {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        file.write_all(PDFIUM_BYTES)?;
+        file.sync_all()?;
+        fs::rename(&temporary, &path)?;
+        Ok::<_, io::Error>(())
+    })();
+
+    if let Err(error) = write_result {
+        let _ = fs::remove_file(&temporary);
+        if cached_pdfium_is_valid(&path) {
+            return Ok(path);
+        }
+        return Err(error);
+    }
+
+    Ok(path)
+}
+
+fn cached_pdfium_is_valid(path: &Path) -> bool {
+    fs::read(path).is_ok_and(|bytes| sha256_hex(&bytes) == PDFIUM_SHA256)
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+
+    let mut output = String::with_capacity(64);
+    for byte in Sha256::digest(bytes) {
+        output.push(char::from(HEX[usize::from(byte >> 4)]));
+        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    output
 }
 
 /// Extracts every image XObject referenced by the PDF's pages, saving each

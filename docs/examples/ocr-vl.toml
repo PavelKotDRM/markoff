@@ -1,4 +1,4 @@
-# Build with --features markoff_core/ocr-local. First use may download several GB.
+# First use may download several GB.
 keep_intermediate = true
 
 [ocr]

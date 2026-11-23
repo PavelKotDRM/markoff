@@ -320,9 +320,7 @@ fn converts_markdown_to_pdf_with_cyrillic_text() {
 
 #[test]
 fn pdf_wraps_formatted_text_and_code_and_preserves_unicode() {
-    use pdfium_bundled::pdfium_render::prelude::{
-        PdfPageObjectCommon, PdfPageObjectType, PdfPageObjectsCommon,
-    };
+    use pdfium_render::prelude::{PdfPageObjectCommon, PdfPageObjectType, PdfPageObjectsCommon};
 
     let input = unique_temp_path("markdown_to_pdf_layout_input");
     let output = unique_temp_path("markdown_to_pdf_layout_output");
@@ -395,9 +393,7 @@ fn pdf_wraps_formatted_text_and_code_and_preserves_unicode() {
 
 #[test]
 fn pdf_code_text_stays_inside_its_background_across_pages() {
-    use pdfium_bundled::pdfium_render::prelude::{
-        PdfPageObjectCommon, PdfPageObjectType, PdfPageObjectsCommon,
-    };
+    use pdfium_render::prelude::{PdfPageObjectCommon, PdfPageObjectType, PdfPageObjectsCommon};
 
     let input = unique_temp_path("pdf_code_bounds_input");
     let output = unique_temp_path("pdf_code_bounds_output");
@@ -449,9 +445,7 @@ fn pdf_code_text_stays_inside_its_background_across_pages() {
 
 #[test]
 fn pdf_long_table_cells_stay_inside_page_and_cell() {
-    use pdfium_bundled::pdfium_render::prelude::{
-        PdfPageObjectCommon, PdfPageObjectType, PdfPageObjectsCommon,
-    };
+    use pdfium_render::prelude::{PdfPageObjectCommon, PdfPageObjectType, PdfPageObjectsCommon};
 
     let input = unique_temp_path("pdf_table_bounds_input");
     let output = unique_temp_path("pdf_table_bounds_output");
@@ -501,9 +495,7 @@ fn pdf_long_table_cells_stay_inside_page_and_cell() {
 
 #[test]
 fn pdf_paragraph_after_table_does_not_overlap_the_table() {
-    use pdfium_bundled::pdfium_render::prelude::{
-        PdfPageObjectCommon, PdfPageObjectType, PdfPageObjectsCommon,
-    };
+    use pdfium_render::prelude::{PdfPageObjectCommon, PdfPageObjectType, PdfPageObjectsCommon};
 
     let input = unique_temp_path("pdf_table_following_paragraph_input");
     let output = unique_temp_path("pdf_table_following_paragraph_output");

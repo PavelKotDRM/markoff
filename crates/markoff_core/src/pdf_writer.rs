@@ -1,9 +1,7 @@
 use crate::MarkoffError;
 use crate::document_model::{Document, TableAlignment};
 use crate::style::{DocumentTheme, Rgb};
-use pdfium_bundled::pdfium_render::prelude::{
-    PdfColor, PdfDocument, PdfFontToken, PdfPage, Pdfium,
-};
+use pdfium_render::prelude::{PdfColor, PdfDocument, PdfFontToken, PdfPage, Pdfium};
 use std::collections::HashMap;
 use std::path::Path;
 

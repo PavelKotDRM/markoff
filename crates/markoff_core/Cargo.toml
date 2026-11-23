@@ -6,9 +6,6 @@ license.workspace = true
 description = "Core conversion engine for markoff"
 publish = false
 
-[features]
-ocr-local = ["dep:oar-ocr", "dep:oar-ocr-vl", "dep:ort"]
-
 [dependencies]
 anyhow = "1"
 base64 = "0.23"
@@ -19,20 +16,19 @@ epaint_default_fonts = "0.37"
 image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
 lopdf = "0.47"
 office_oxide = "0.1"
-oar-ocr = { version = "0.10.3", optional = true, default-features = false, features = ["auto-download", "simd"] }
-oar-ocr-vl = { version = "0.10.3", optional = true, features = ["auto-download"] }
-ort = { version = "=2.0.0-rc.13", optional = true, default-features = false, features = ["std", "load-dynamic"] }
-pdfium-bundled = { version = "0.2", features = ["bundled"] }
-# pdfium-bundled ships PDFium 8066; pdfium-render 0.9.5 requires API 8125.
-pdfium-render = "=0.9.4"
+oar-ocr = { version = "0.11", default-features = false, features = ["auto-download", "simd"] }
+oar-ocr-vl = { version = "0.11", features = ["auto-download"] }
+ort = { version = "2.0.0-rc.15", default-features = false, features = ["std", "load-dynamic"] }
+pdfium-render = "0.9"
 png = "0.18"
 pulldown-cmark = "0.13"
 quick-xml = "0.42"
-rust_xlsxwriter = "0.102"
+rust_xlsxwriter = "0.104"
 same-file = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
+sha2 = "0.11"
 skrifa = "0.50"
 thiserror = "2.0"
 toml = "1"
@@ -42,6 +38,12 @@ unicode-bidi = "0.3"
 unicode-segmentation = "1"
 ureq = { version = "3", features = ["json"] }
 zip = "9"
+
+[build-dependencies]
+flate2 = "1"
+sha2 = "0.11"
+tar = "0.4"
+ureq = { version = "3", default-features = false, features = ["rustls"] }
 
 [dev-dependencies]
 criterion = "0.8"

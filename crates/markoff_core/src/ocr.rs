@@ -53,7 +53,6 @@ fn default_timeout() -> u64 {
 
 pub(crate) struct Recognizer<'a> {
     config: &'a OcrConfig,
-    #[cfg(feature = "ocr-local")]
     local: Option<local::LocalRecognizer>,
 }
 
@@ -61,7 +60,6 @@ impl<'a> Recognizer<'a> {
     pub(crate) fn new(config: &'a OcrConfig) -> Self {
         Self {
             config,
-            #[cfg(feature = "ocr-local")]
             local: None,
         }
     }
@@ -87,22 +85,13 @@ impl<'a> Recognizer<'a> {
                 *timeout_seconds,
             ),
             _ => {
-                #[cfg(feature = "ocr-local")]
-                {
-                    if self.local.is_none() {
-                        self.local = Some(local::LocalRecognizer::load(self.config)?);
-                    }
-                    self.local
-                        .as_ref()
-                        .expect("initialized above")
-                        .recognize(image)
+                if self.local.is_none() {
+                    self.local = Some(local::LocalRecognizer::load(self.config)?);
                 }
-                #[cfg(not(feature = "ocr-local"))]
-                {
-                    Err(ocr_error(
-                        "local OCR requires a build with --features markoff_core/ocr-local; alternatively configure backend api",
-                    ))
-                }
+                self.local
+                    .as_ref()
+                    .expect("initialized above")
+                    .recognize(image)
             }
         }
     }
@@ -164,6 +153,5 @@ pub(crate) fn ocr_error(message: impl Into<String>) -> MarkoffError {
     }
 }
 
-#[cfg(feature = "ocr-local")]
 #[path = "ocr_local.rs"]
 mod local;

@@ -7,7 +7,7 @@ use super::*;
 use crate::error::invalid_data;
 use base64::Engine as _;
 use epaint_default_fonts::HACK_REGULAR;
-use pdfium_bundled::pdfium_render::prelude::{
+use pdfium_render::prelude::{
     PdfPageAnnotationCommon, PdfPageContentRegenerationStrategy, PdfPageObjectCommon,
     PdfPageObjectsCommon, PdfPagePaperSize, PdfPoints, PdfRect,
 };

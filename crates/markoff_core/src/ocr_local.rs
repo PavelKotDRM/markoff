@@ -4,6 +4,9 @@ use crate::error::invalid_data;
 use oar_ocr::oarocr::{OAROCR, OAROCRBuilder};
 use oar_ocr_vl::{AnyPageParser, AnyPageParserOptions, DocParserOptions, PageParser};
 use std::path::Path;
+use std::sync::OnceLock;
+
+static ORT_ENVIRONMENT: OnceLock<Result<ort::environment::Environment, String>> = OnceLock::new();
 
 pub(super) enum LocalRecognizer {
     Text(Box<OAROCR>),
@@ -35,11 +38,19 @@ impl LocalRecognizer {
                             "libonnxruntime.so".into()
                         }
                     });
-                ort::init_from(&runtime)
-                    .map_err(|error| ocr_error(format!(
-                        "cannot load ONNX Runtime: {error}; set ORT_DYLIB_PATH to the runtime library"
-                    )))?
-                    .commit();
+                match ORT_ENVIRONMENT.get_or_init(|| {
+                    ort::init_from(&runtime)
+                        .map_err(|error| error.to_string())?
+                        .build()
+                        .map_err(|error| error.to_string())
+                }) {
+                    Ok(_) => {}
+                    Err(error) => {
+                        return Err(ocr_error(format!(
+                            "cannot load ONNX Runtime: {error}; set ORT_DYLIB_PATH to the runtime library"
+                        )));
+                    }
+                }
                 Ok(Self::Text(Box::new(
                     OAROCRBuilder::new(detection.clone(), recognition.clone(), dictionary)
                         .build()
@@ -101,8 +112,11 @@ impl LocalRecognizer {
                 if results.len() != 1 {
                     return Err(ocr_error("oar-ocr returned an unexpected page count"));
                 }
-                let (page, rows) = &results[0];
-                let text = page.text_by_rows(rows).map_err(invalid_data)?;
+                let result = &results[0];
+                let text = result
+                    .page
+                    .text_by_rows(&result.row_ids)
+                    .map_err(invalid_data)?;
                 let document = crate::document_model::Document {
                     blocks: vec![crate::document_model::Block::Paragraph {
                         text: None,
@@ -170,8 +184,7 @@ mod tests {
         let page = document.pages().get(0).unwrap();
         let image = page
             .render_with_config(
-                &pdfium_bundled::pdfium_render::prelude::PdfRenderConfig::new()
-                    .set_target_width(1600),
+                &pdfium_render::prelude::PdfRenderConfig::new().set_target_width(1600),
             )
             .unwrap()
             .as_image()
