@@ -22,6 +22,7 @@ markoff — это рабочее пространство Rust для двун�
 - рабочее пространство Cargo с тремя crate: `markoff_core`, `markoff_cli` и `markoff_gui`;
 - метаданные сборки `vergen 10` в выводе `--version` CLI и в диалоге About GUI;
 - CI на GitHub Actions для Windows и Linux: форматирование, Clippy, тесты и релизные сборки;
+- GitHub Artifact Attestations для каждого релизного бинарного файла и архива;
 - общее перечисление `Format` и определение формата по расширению файла;
 - проверка запросов на конвертацию и типизированная обработка ошибок;
 - преобразование документов Markdown/DOCX/ODT/PDF/PPTX/ODP/HTML в типизированную
@@ -113,7 +114,29 @@ intermediate**, вкладка **Intermediate JSON** и **OCR / conversion confi
 API получает JSON с `page`, `mime_type` и `image_base64`, возвращает
 `{"markdown":"..."}`; изображения страниц передаются выбранному серверу.
 Все OCR-backend'ы входят в приложение; веса моделей загружаются только при
-`auto_download = true`.
+`auto_download = true`. Для локального OCR `device = "auto"` выбирает доступный
+скомпилированный GPU-провайдер и переключается на CPU при его недоступности;
+`device = "cpu"` принудительно использует CPU.
+
+GPU-провайдеры включаются отдельно при сборке, поэтому обычные CPU-сборки не
+требуют GPU-инструментария:
+
+```powershell
+# NVIDIA CUDA для обоих backend'ов (нужны CUDA Toolkit с nvcc и совместимый драйвер).
+cargo build --release -p markoff_cli --features markoff_core/ocr-cuda
+# AMD/NVIDIA/Intel GPU в Windows через DirectML для ONNX-backend oar.
+cargo build --release -p markoff_cli --features markoff_core/ocr-directml
+# CoreML для oar и Metal для oar_vl на Apple.
+cargo build --release -p markoff_cli --features markoff_core/ocr-coreml,markoff_core/ocr-metal
+```
+
+`ocr-cuda` включает CUDA для обоих backend'ов. DirectML и CoreML применяются к
+`oar`, Metal — к `oar_vl`. Для GPU в `oar` требуется ONNX Runtime с поддержкой
+выбранного провайдера; при необходимости задайте путь через `ORT_DYLIB_PATH`.
+`oar_vl` использует Candle и не требует ONNX Runtime. AMD GPU в Windows может
+работать через DirectML в `oar`; AMD GPU в Linux пока использует CPU, так как
+текущая интеграция OCR не предоставляет ROCm.
+Доступность GPU зависит от драйвера, runtime провайдера и поддержки модели.
 Для backend `oar` также установите ONNX Runtime (рекомендуется 1.24 или новее)
 и задайте `ORT_DYLIB_PATH` с полным путём к `onnxruntime.dll` (Linux:
 `libonnxruntime.so`, macOS: `libonnxruntime.dylib`). Backend `oar_vl` работает
@@ -150,6 +173,21 @@ markoff.exe convert .\report.csv --to md
 ```
 
 В Linux и macOS используйте `./target/release/markoff`. В следующих разделах показана форма команд для разработки с `cargo run`; замените `cargo run -p markoff_cli --` путём к исполняемому файлу, чтобы запускать те же команды из собранного приложения.
+
+### Проверка официального релиза
+
+Release workflow GitHub создаёт подписанное подтверждение происхождения сборки
+для каждого исполняемого файла и архива. После установки GitHub CLI проверьте
+скачанный файл командой:
+
+```powershell
+gh attestation verify .\markoff.exe --repo PavelKotDRM/markoff
+gh attestation verify .\markoff_gui.exe --repo PavelKotDRM/markoff
+```
+
+Для Linux используйте имена `markoff` и `markoff_gui`; можно также проверить
+архив релиза. Проверка подтверждает целостность и происхождение артефакта, но
+не заменяет Authenticode или сертификат Apple Developer ID.
 
 ## Командная строка
 

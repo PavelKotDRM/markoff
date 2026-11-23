@@ -94,7 +94,7 @@ mod xml_utils;
 mod zip_utils;
 
 pub use model::{ConversionRequest, Format, MarkoffError, detect_format};
-pub use ocr::OcrConfig;
+pub use ocr::{OcrConfig, OcrDevice};
 pub use style::{
     StyleColor, StylePageOrientation, StylePageSize, StyleTextAlign, StyleThemePreview,
     default_style_theme_toml, load_style_theme_preview, write_default_style_theme,

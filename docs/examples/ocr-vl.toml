@@ -3,6 +3,7 @@ keep_intermediate = true
 
 [ocr]
 backend = "oar_vl"
+device = "auto"
 auto_download = true
 model = "PaddlePaddle/PaddleOCR-VL-1.5"
 # To run offline, set auto_download = false and provide both directories:

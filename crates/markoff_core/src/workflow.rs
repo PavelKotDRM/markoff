@@ -34,6 +34,7 @@ impl ConversionOptions {
                 detection,
                 recognition,
                 dictionary,
+                ..
             } => {
                 for path in [detection, recognition, dictionary] {
                     if !*auto_download || path.components().count() > 1 {

@@ -6,6 +6,12 @@ license.workspace = true
 description = "Core conversion engine for markoff"
 publish = false
 
+[features]
+ocr-cuda = ["oar-ocr/cuda", "oar-ocr-vl/cuda"]
+ocr-directml = ["oar-ocr/directml"]
+ocr-coreml = ["oar-ocr/coreml"]
+ocr-metal = ["oar-ocr-vl/metal"]
+
 [dependencies]
 anyhow = "1"
 base64 = "0.23"
@@ -17,6 +23,7 @@ image = { version = "0.25", default-features = false, features = ["bmp", "gif", 
 lopdf = "0.47"
 office_oxide = "0.1"
 oar-ocr = { version = "0.11", default-features = false, features = ["auto-download", "simd"] }
+oar-ocr-core = { version = "0.11", default-features = false }
 oar-ocr-vl = { version = "0.11", features = ["auto-download"] }
 ort = { version = "2.0.0-rc.15", default-features = false, features = ["std", "load-dynamic"] }
 pdfium-render = "0.9"

@@ -467,6 +467,7 @@ mod tests {
             },
             OcrConfig::Oar {
                 auto_download: false,
+                device: crate::OcrDevice::Auto,
                 detection: "missing.onnx".into(),
                 recognition: "missing.onnx".into(),
                 dictionary: "missing.txt".into(),

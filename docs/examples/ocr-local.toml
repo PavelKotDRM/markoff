@@ -4,6 +4,7 @@ keep_intermediate = true
 
 [ocr]
 backend = "oar"
+device = "auto"
 auto_download = false
 detection = 'models\det.onnx'
 recognition = 'models\rec.onnx'

@@ -45,9 +45,11 @@ jobs:
           - os: windows-latest
             name: windows-x86_64
             archive: markoff-windows-x86_64.zip
+            executable-suffix: .exe
           - os: ubuntu-latest
             name: linux-x86_64
             archive: markoff-linux-x86_64.tar.gz
+            executable-suffix: ""
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -60,10 +62,13 @@ jobs:
       - name: Package Linux binaries
         if: runner.os == 'Linux'
         run: tar -czf ${{ matrix.archive }} -C target/release markoff markoff_gui
-      - name: Attest build provenance
+      - name: Attest release binaries and archive
         uses: actions/attest-build-provenance@v4
         with:
-          subject-path: ${{ matrix.archive }}
+          subject-path: |
+            target/release/markoff${{ matrix.executable-suffix }}
+            target/release/markoff_gui${{ matrix.executable-suffix }}
+            ${{ matrix.archive }}
       - uses: softprops/action-gh-release@v3
         with:
           files: ${{ matrix.archive }}

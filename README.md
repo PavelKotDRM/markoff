@@ -19,6 +19,7 @@ The project has moved beyond the initial stub stage:
 - Cargo workspace with three crates: `markoff_core`, `markoff_cli`, and `markoff_gui`
 - `vergen 10` build metadata in CLI `--version` and GUI About dialog
 - GitHub Actions CI on Windows and Linux for formatting, Clippy, tests, and release builds
+- GitHub Artifact Attestations for each release executable and its downloadable archive
 - Shared `Format` enum and file-extension detection
 - Conversion request validation and typed error handling
 - Whole-document conversion from Markdown/DOCX/ODT/PDF/PPTX/ODP/HTML to a typed
@@ -111,6 +112,21 @@ markoff.exe convert .\report.csv --to md
 ```
 
 On Linux and macOS, use `./target/release/markoff` instead. The commands in the following sections show the development form with `cargo run`; replace `cargo run -p markoff_cli --` with the executable path to run the same command from the compiled application.
+
+### Verify an official release
+
+The GitHub release workflow creates a signed build-provenance attestation for
+each executable and release archive. After installing the GitHub CLI, verify a
+downloaded file against this repository:
+
+```powershell
+gh attestation verify .\markoff.exe --repo PavelKotDRM/markoff
+gh attestation verify .\markoff_gui.exe --repo PavelKotDRM/markoff
+```
+
+Use the Linux executable names (`markoff`, `markoff_gui`) or archive path as
+appropriate. This verifies the artifact's provenance and integrity; it is not
+an Authenticode or Apple Developer ID code-signing certificate.
 
 ## Command line
 
@@ -237,9 +253,31 @@ Choose a configuration:
 Pass `--config FILE` (or set `MARKOFF_CONFIG`) for CLI conversion/batch, or choose
 the file in the GUI. Local paths are resolved relative to the config file.
 Downloads are opt-in, use upstream oar caching (`OAR_HOME`, otherwise `~/.oar`),
-and can require several GB for VL. Local inference currently uses the CPU.
-The `oar` backend also requires an installed ONNX Runtime shared library
-(recommended 1.24 or newer). Set `ORT_DYLIB_PATH` to its full path, e.g.
+and can require several GB for VL. Local OCR uses `device = "auto"` by default:
+it selects an available GPU provider compiled into the application and falls
+back to CPU; set `device = "cpu"` to force CPU inference.
+
+GPU providers are opt-in build features so ordinary CPU builds do not require
+GPU toolchains:
+
+```powershell
+# NVIDIA CUDA for both backends (requires CUDA Toolkit with nvcc and a compatible driver).
+cargo build --release -p markoff_cli --features markoff_core/ocr-cuda
+# AMD/NVIDIA/Intel Windows GPUs through DirectML in the oar ONNX backend.
+cargo build --release -p markoff_cli --features markoff_core/ocr-directml
+# Apple CoreML for oar; Metal for oar_vl.
+cargo build --release -p markoff_cli --features markoff_core/ocr-coreml,markoff_core/ocr-metal
+```
+
+`ocr-cuda` enables CUDA for both local backends. DirectML and CoreML apply to
+`oar`; Metal applies to `oar_vl`. GPU inference through `oar` additionally
+requires an ONNX Runtime shared library that includes the selected provider.
+`oar_vl` uses Candle and does not require ONNX Runtime. AMD GPUs on Windows can
+use DirectML with `oar`; AMD Linux currently falls back to CPU because ROCm is
+not exposed by the OCR integration. GPU availability depends on the provider
+runtime, driver, and model support. The `oar` backend requires an installed ONNX
+Runtime shared library (1.24 or newer recommended). Set `ORT_DYLIB_PATH` to its
+full path, e.g.
 `$env:ORT_DYLIB_PATH = 'C:\onnxruntime\lib\onnxruntime.dll'`; on Linux/macOS,
 use `libonnxruntime.so` / `libonnxruntime.dylib`. Without this variable, the
 platform library name is used. Dynamic loading avoids native-library copying

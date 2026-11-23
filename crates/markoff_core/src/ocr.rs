@@ -16,6 +16,9 @@ pub enum OcrConfig {
         /// Download registered model names on demand when true.
         #[serde(default)]
         auto_download: bool,
+        /// Select an available compiled GPU provider automatically, or force CPU.
+        #[serde(default)]
+        device: OcrDevice,
         /// Detection ONNX file, or registered name when downloads are enabled.
         detection: std::path::PathBuf,
         /// Recognition ONNX file, or registered name when downloads are enabled.
@@ -28,6 +31,9 @@ pub enum OcrConfig {
         /// Download checkpoints on demand when true.
         #[serde(default)]
         auto_download: bool,
+        /// Select an available compiled GPU device automatically, or force CPU.
+        #[serde(default)]
+        device: OcrDevice,
         /// Supported Hugging Face model ID, e.g. PaddlePaddle/PaddleOCR-VL-1.5.
         model: String,
         /// Local checkpoint directory; required without automatic downloads.
@@ -45,6 +51,17 @@ pub enum OcrConfig {
         #[serde(default = "default_timeout")]
         timeout_seconds: u64,
     },
+}
+
+/// Device policy for local OCR inference.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OcrDevice {
+    /// Prefer a compiled, available GPU provider and fall back to CPU.
+    #[default]
+    Auto,
+    /// Run inference on the CPU even when GPU providers are available.
+    Cpu,
 }
 
 fn default_timeout() -> u64 {
@@ -155,3 +172,44 @@ pub(crate) fn ocr_error(message: impl Into<String>) -> MarkoffError {
 
 #[path = "ocr_local.rs"]
 mod local;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_ocr_device_defaults_to_auto_and_can_force_cpu() {
+        let auto: OcrConfig = toml::from_str(
+            r#"
+backend = "oar"
+detection = "det.onnx"
+recognition = "rec.onnx"
+dictionary = "dict.txt"
+"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            auto,
+            OcrConfig::Oar {
+                device: OcrDevice::Auto,
+                ..
+            }
+        ));
+
+        let cpu: OcrConfig = toml::from_str(
+            r#"
+backend = "oar_vl"
+device = "cpu"
+model = "PaddlePaddle/PaddleOCR-VL-1.5"
+"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            cpu,
+            OcrConfig::OarVl {
+                device: OcrDevice::Cpu,
+                ..
+            }
+        ));
+    }
+}

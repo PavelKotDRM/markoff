@@ -1,7 +1,8 @@
-use super::{OcrConfig, ocr_error};
+use super::{OcrConfig, OcrDevice, ocr_error};
 use crate::MarkoffError;
 use crate::error::invalid_data;
 use oar_ocr::oarocr::{OAROCR, OAROCRBuilder};
+use oar_ocr_core::core::config::{OrtExecutionProvider, OrtSessionConfig};
 use oar_ocr_vl::{AnyPageParser, AnyPageParserOptions, DocParserOptions, PageParser};
 use std::path::Path;
 use std::sync::OnceLock;
@@ -18,6 +19,7 @@ impl LocalRecognizer {
         match config {
             OcrConfig::Oar {
                 auto_download,
+                device,
                 detection,
                 recognition,
                 dictionary,
@@ -51,14 +53,21 @@ impl LocalRecognizer {
                         )));
                     }
                 }
+                let session_config = match device {
+                    OcrDevice::Auto => OrtSessionConfig::auto(),
+                    OcrDevice::Cpu => OrtSessionConfig::new()
+                        .with_execution_providers(vec![OrtExecutionProvider::CPU]),
+                };
                 Ok(Self::Text(Box::new(
                     OAROCRBuilder::new(detection.clone(), recognition.clone(), dictionary)
+                        .ort_session(session_config)
                         .build()
                         .map_err(invalid_data)?,
                 )))
             }
             OcrConfig::OarVl {
                 auto_download,
+                device,
                 model,
                 model_dir,
                 layout_dir,
@@ -72,7 +81,12 @@ impl LocalRecognizer {
                         layout.display()
                     )));
                 }
-                let device = oar_ocr_vl::utils::parse_device("cpu").map_err(invalid_data)?;
+                let device = match device {
+                    OcrDevice::Auto => oar_ocr_vl::utils::auto_device(),
+                    OcrDevice::Cpu => {
+                        oar_ocr_vl::utils::parse_device("cpu").map_err(invalid_data)?
+                    }
+                };
                 let parser = if let Some(directory) = model_dir {
                     if !directory.is_dir() {
                         return Err(ocr_error(format!(
@@ -192,6 +206,7 @@ mod tests {
             .to_rgb8();
         let engine = LocalRecognizer::load(&OcrConfig::Oar {
             auto_download: true,
+            device: OcrDevice::Cpu,
             detection: "pp-ocrv6_tiny_det.onnx".into(),
             recognition: "pp-ocrv6_tiny_rec.onnx".into(),
             dictionary: "ppocrv6_tiny_dict.txt".into(),

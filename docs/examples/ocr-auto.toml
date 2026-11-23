@@ -3,6 +3,7 @@ keep_intermediate = true
 
 [ocr]
 backend = "oar"
+device = "auto"
 auto_download = true
 detection = "pp-ocrv6_tiny_det.onnx"
 recognition = "pp-ocrv6_tiny_rec.onnx"
